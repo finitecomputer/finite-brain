@@ -10,7 +10,7 @@
 - Feature branch: `feature/rust-portable-v1-core`
 - Human owner: Austin
 - Started: 2026-06-23
-- Current status: setup and alignment
+- Current status: implementing slices
 - Skill setup status: `AGENTS.md` and `docs/agents/*` created for both repos
 
 ## Goal
@@ -63,8 +63,8 @@ new `finite-nostr` Rust crate so other Finite repos can reuse it.
 
 | Issue | Type | Status | Review thread | Fixes needed | Verified |
 | --- | --- | --- | --- | --- | --- |
-| `finite-nostr#1` | AFK | ready | None | None | Not started |
-| `finite-nostr#2` | AFK | blocked by `finite-nostr#1` | None | None | Not started |
+| `finite-nostr#1` | AFK | complete | Direct review gate in orchestrator | None | `cargo fmt --check`; `cargo test`; `cargo clippy --all-targets -- -D warnings` |
+| `finite-nostr#2` | AFK | ready | None | None | Not started |
 | `finite-brain#2` | AFK | complete | Direct review gate in orchestrator | Fixed README workspace docs and ledger command evidence | `cargo fmt --check`; `cargo test`; `cargo clippy --all-targets -- -D warnings`; `cargo build`; local `/health` curl |
 | `finite-brain#3` | AFK | blocked by `finite-brain#2` | None | None | Not started |
 | `finite-brain#4` | AFK | blocked by `finite-nostr#1`, `finite-brain#3` | None | None | Not started |
@@ -89,6 +89,7 @@ new `finite-nostr` Rust crate so other Finite repos can reuse it.
 
 | Issue | Fixed point | Worker session | Commit | Review result | Checks |
 | --- | --- | --- | --- | --- | --- |
+| `finite-nostr#1` | `c92aaec05eef9f181cf62855743564a13dd4bfd0` | Orchestrator direct implementation | `f5c38f3` | Standards/spec review passed | `cargo fmt --check`; `cargo test`; `cargo clippy --all-targets -- -D warnings` |
 | `finite-brain#2` | `9148111454140fa22568cc035b5ea71db6ad1cfd` | Orchestrator direct implementation | pending commit | Standards/spec review passed after README and ledger fixes | `cargo fmt --check`; `cargo test`; `cargo clippy --all-targets -- -D warnings`; `cargo build`; `curl /health` |
 
 ## Open Questions
