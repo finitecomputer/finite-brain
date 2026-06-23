@@ -57,7 +57,7 @@ new `finite-nostr` Rust crate so other Finite repos can reuse it.
 - Lint: `cargo clippy --all-targets -- -D warnings`
 - Format: `cargo fmt --check`
 - Build: `cargo build`
-- Visual verification: local development-only Smoke UI served by the Rust app
+- Visual verification: `FINITE_BRAIN_ADDR=127.0.0.1:4015 cargo run -p finite-brain-app`, then `curl http://127.0.0.1:4015/health`
 
 ## Slice Ledger
 
@@ -65,7 +65,7 @@ new `finite-nostr` Rust crate so other Finite repos can reuse it.
 | --- | --- | --- | --- | --- | --- |
 | `finite-nostr#1` | AFK | ready | None | None | Not started |
 | `finite-nostr#2` | AFK | blocked by `finite-nostr#1` | None | None | Not started |
-| `finite-brain#2` | AFK | ready | None | None | Not started |
+| `finite-brain#2` | AFK | complete | Direct review gate in orchestrator | Fixed README workspace docs and ledger command evidence | `cargo fmt --check`; `cargo test`; `cargo clippy --all-targets -- -D warnings`; `cargo build`; local `/health` curl |
 | `finite-brain#3` | AFK | blocked by `finite-brain#2` | None | None | Not started |
 | `finite-brain#4` | AFK | blocked by `finite-nostr#1`, `finite-brain#3` | None | None | Not started |
 | `finite-brain#5` | AFK | blocked by `finite-brain#3` | None | None | Not started |
@@ -89,7 +89,7 @@ new `finite-nostr` Rust crate so other Finite repos can reuse it.
 
 | Issue | Fixed point | Worker session | Commit | Review result | Checks |
 | --- | --- | --- | --- | --- | --- |
-| pending | pending | pending | pending | pending | pending |
+| `finite-brain#2` | `9148111454140fa22568cc035b5ea71db6ad1cfd` | Orchestrator direct implementation | pending commit | Standards/spec review passed after README and ledger fixes | `cargo fmt --check`; `cargo test`; `cargo clippy --all-targets -- -D warnings`; `cargo build`; `curl /health` |
 
 ## Open Questions
 

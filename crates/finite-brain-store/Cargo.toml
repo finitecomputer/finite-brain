@@ -1,0 +1,17 @@
+[package]
+name = "finite-brain-store"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "FiniteBrain SQLite store and transaction boundary."
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+finite-brain-core = { path = "../finite-brain-core" }
+
+[lints]
+workspace = true
+
