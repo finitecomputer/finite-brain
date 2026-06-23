@@ -1,5 +1,6 @@
 //! FiniteBrain HTTP server and API surface.
 
+use std::collections::BTreeSet;
 use std::path::Path;
 use std::str;
 use std::sync::{Arc, Mutex};
@@ -15,14 +16,16 @@ use axum::{Json, Router};
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use finite_brain_core::{
-    BootstrapSmokeSummary, CoreError, CryptoRecordError, FolderAccessMode, FolderId,
-    FolderObjectOperation, FolderObjectRevisionPayload, FolderObjectTombstonePayload, FolderRole,
-    ObjectId, RequiredFolderKeyGrant, RevisionValidation, TombstoneValidation, UserId, VaultId,
-    VaultKind, bootstrap_organization_vault, bootstrap_personal_vault, validate_revision_event,
+    AdminAccessAction, AdminAccessChangePayload, AdminAccessChangeValidation,
+    BootstrapSmokeSummary, CoreError, CryptoRecordError, DisplayName, Folder, FolderAccessMode,
+    FolderId, FolderObjectOperation, FolderObjectRevisionPayload, FolderObjectTombstonePayload,
+    FolderRole, ObjectId, RequiredFolderKeyGrant, RevisionValidation, SafeRelativePath,
+    TombstoneValidation, UserId, VaultId, VaultKind, bootstrap_organization_vault,
+    bootstrap_personal_vault, validate_admin_access_change_event, validate_revision_event,
     validate_tombstone_event,
 };
 use finite_brain_store::{
-    BrainStore, FolderKeyGrantMetadata, FolderObjectRevisionSyncRecord,
+    BrainStore, ControlSyncRecord, FolderKeyGrantMetadata, FolderObjectRevisionSyncRecord,
     FolderObjectTombstoneSyncRecord, StoreError, StoredSyncRecord, StoredVault, SyncRecordInput,
     SyncRecordType,
 };
@@ -32,6 +35,7 @@ use serde::{Deserialize, Serialize};
 
 const DEFAULT_PUBLIC_BASE_URL: &str = "http://127.0.0.1:3015";
 const DEFAULT_MAX_AUTH_SKEW_SECONDS: u64 = 300;
+const APP_SPECIFIC_KIND: u16 = 30_078;
 
 /// Development status returned by the first smoke path.
 #[derive(Debug, Clone, Eq, PartialEq, Deserialize, Serialize)]
@@ -274,6 +278,87 @@ struct SyncRecordsQuery {
     limit: Option<u64>,
 }
 
+/// Opaque Folder Key Grant metadata accepted by the server.
+#[derive(Debug, Clone, Eq, PartialEq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FolderKeyGrantRequest {
+    pub id: String,
+    pub key_version: u32,
+    pub recipient_npub: String,
+    pub wrapped_event_json: String,
+    pub created_at: Option<String>,
+}
+
+/// Add/remove member/admin request.
+#[derive(Debug, Clone, Eq, PartialEq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AdminTargetRequest {
+    pub target_npub: String,
+    pub access_change_event: serde_json::Value,
+}
+
+/// Body for path-targeted admin mutations.
+#[derive(Debug, Clone, Eq, PartialEq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AdminEventRequest {
+    pub access_change_event: serde_json::Value,
+}
+
+/// Create Folder request.
+#[derive(Debug, Clone, Eq, PartialEq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateFolderRequest {
+    pub folder_id: String,
+    pub name: String,
+    pub role: FolderRole,
+    pub access: FolderAccessMode,
+    pub parent_folder_id: Option<String>,
+    pub path: String,
+    pub shared_folder_source: Option<bool>,
+    pub access_user_ids: Vec<String>,
+    pub grants: Vec<FolderKeyGrantRequest>,
+    pub access_change_event: serde_json::Value,
+}
+
+/// Finish setup request for setup-incomplete Folders.
+#[derive(Debug, Clone, Eq, PartialEq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FinishFolderSetupRequest {
+    pub grants: Vec<FolderKeyGrantRequest>,
+    pub access_change_event: serde_json::Value,
+}
+
+/// Grant access to one restricted Folder recipient.
+#[derive(Debug, Clone, Eq, PartialEq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GrantFolderAccessRequest {
+    pub target_npub: String,
+    pub grant: FolderKeyGrantRequest,
+    pub access_change_event: serde_json::Value,
+}
+
+/// Re-encrypted object supplied during Folder Key rotation.
+#[derive(Debug, Clone, Eq, PartialEq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RotationObjectRequest {
+    pub object_id: String,
+    pub base_revision: Option<u64>,
+    pub key_version: u32,
+    pub cipher: String,
+    pub ciphertext: String,
+    pub revision_event: serde_json::Value,
+}
+
+/// Remove Folder access with required Folder Key rotation material.
+#[derive(Debug, Clone, Eq, PartialEq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RemoveFolderAccessRequest {
+    pub new_key_version: u32,
+    pub grants: Vec<FolderKeyGrantRequest>,
+    pub reencrypted_records: Vec<RotationObjectRequest>,
+    pub access_change_event: serde_json::Value,
+}
+
 /// Returns the current process health status.
 pub fn health_status() -> HealthStatus {
     HealthStatus {
@@ -311,6 +396,35 @@ pub fn router_with_state(state: ServerState) -> Router {
         .route(
             "/_admin/vaults/{vault_id}/metadata",
             get(vault_metadata_handler),
+        )
+        .route(
+            "/_admin/vaults/{vault_id}/members",
+            post(add_member_handler),
+        )
+        .route(
+            "/_admin/vaults/{vault_id}/members/{target_npub}",
+            axum::routing::delete(remove_member_handler),
+        )
+        .route("/_admin/vaults/{vault_id}/admins", post(add_admin_handler))
+        .route(
+            "/_admin/vaults/{vault_id}/admins/{target_npub}",
+            axum::routing::delete(remove_admin_handler),
+        )
+        .route(
+            "/_admin/vaults/{vault_id}/folders",
+            post(create_folder_handler),
+        )
+        .route(
+            "/_admin/vaults/{vault_id}/folders/{folder_id}/finish-setup",
+            post(finish_folder_setup_handler),
+        )
+        .route(
+            "/_admin/vaults/{vault_id}/folders/{folder_id}/access",
+            post(grant_folder_access_handler),
+        )
+        .route(
+            "/_admin/vaults/{vault_id}/folders/{folder_id}/access/{target_npub}",
+            axum::routing::delete(remove_folder_access_handler),
         )
         .route(
             "/_admin/vaults/{vault_id}/folders/{folder_id}/objects/{object_id}",
@@ -397,6 +511,320 @@ async fn vault_metadata_handler(
     ensure_metadata_visible(&stored, &actor_npub)?;
 
     Ok(Json(metadata_response(stored)))
+}
+
+async fn add_member_handler(
+    State(state): State<ServerState>,
+    headers: HeaderMap,
+    method: Method,
+    OriginalUri(uri): OriginalUri,
+    AxumPath(vault_id): AxumPath<String>,
+    body: Bytes,
+) -> Result<Json<VaultMetadataResponse>, ApiError> {
+    let actor = validate_request_auth(&state, &headers, &method, &uri, Some(&body))?
+        .to_npub()
+        .map_err(auth_error)?;
+    let request: AdminTargetRequest = serde_json::from_slice(&body)
+        .map_err(|_| ApiError::new(StatusCode::BAD_REQUEST, "invalid JSON request body"))?;
+    let vault_id = VaultId::new(vault_id)?;
+    let target = UserId::new(request.target_npub.clone())?;
+    let (event, payload) = validate_admin_access_change_value(
+        request.access_change_event,
+        &vault_id,
+        &actor,
+        AdminAccessAction::AddMember,
+        None,
+        Some(request.target_npub.as_str()),
+        None,
+    )?;
+    mutate_as_admin(state, vault_id, actor, event, payload, |store, vault_id| {
+        store.add_member(vault_id, &target)
+    })
+    .map(Json)
+}
+
+async fn remove_member_handler(
+    State(state): State<ServerState>,
+    headers: HeaderMap,
+    method: Method,
+    OriginalUri(uri): OriginalUri,
+    AxumPath((vault_id, target_npub)): AxumPath<(String, String)>,
+    body: Bytes,
+) -> Result<Json<VaultMetadataResponse>, ApiError> {
+    let actor = validate_request_auth(&state, &headers, &method, &uri, Some(&body))?
+        .to_npub()
+        .map_err(auth_error)?;
+    let request: AdminEventRequest = serde_json::from_slice(&body)
+        .map_err(|_| ApiError::new(StatusCode::BAD_REQUEST, "invalid JSON request body"))?;
+    let vault_id = VaultId::new(vault_id)?;
+    let target = UserId::new(target_npub.clone())?;
+    let (event, payload) = validate_admin_access_change_value(
+        request.access_change_event,
+        &vault_id,
+        &actor,
+        AdminAccessAction::RemoveMember,
+        None,
+        Some(target_npub.as_str()),
+        None,
+    )?;
+    mutate_as_admin(state, vault_id, actor, event, payload, |store, vault_id| {
+        store.remove_member(vault_id, &target)
+    })
+    .map(Json)
+}
+
+async fn add_admin_handler(
+    State(state): State<ServerState>,
+    headers: HeaderMap,
+    method: Method,
+    OriginalUri(uri): OriginalUri,
+    AxumPath(vault_id): AxumPath<String>,
+    body: Bytes,
+) -> Result<Json<VaultMetadataResponse>, ApiError> {
+    let actor = validate_request_auth(&state, &headers, &method, &uri, Some(&body))?
+        .to_npub()
+        .map_err(auth_error)?;
+    let request: AdminTargetRequest = serde_json::from_slice(&body)
+        .map_err(|_| ApiError::new(StatusCode::BAD_REQUEST, "invalid JSON request body"))?;
+    let vault_id = VaultId::new(vault_id)?;
+    let target = UserId::new(request.target_npub.clone())?;
+    let (event, payload) = validate_admin_access_change_value(
+        request.access_change_event,
+        &vault_id,
+        &actor,
+        AdminAccessAction::AddAdmin,
+        None,
+        Some(request.target_npub.as_str()),
+        None,
+    )?;
+    mutate_as_admin(state, vault_id, actor, event, payload, |store, vault_id| {
+        store.add_admin(vault_id, &target)
+    })
+    .map(Json)
+}
+
+async fn remove_admin_handler(
+    State(state): State<ServerState>,
+    headers: HeaderMap,
+    method: Method,
+    OriginalUri(uri): OriginalUri,
+    AxumPath((vault_id, target_npub)): AxumPath<(String, String)>,
+    body: Bytes,
+) -> Result<Json<VaultMetadataResponse>, ApiError> {
+    let actor = validate_request_auth(&state, &headers, &method, &uri, Some(&body))?
+        .to_npub()
+        .map_err(auth_error)?;
+    let request: AdminEventRequest = serde_json::from_slice(&body)
+        .map_err(|_| ApiError::new(StatusCode::BAD_REQUEST, "invalid JSON request body"))?;
+    let vault_id = VaultId::new(vault_id)?;
+    let target = UserId::new(target_npub.clone())?;
+    let (event, payload) = validate_admin_access_change_value(
+        request.access_change_event,
+        &vault_id,
+        &actor,
+        AdminAccessAction::RemoveAdmin,
+        None,
+        Some(target_npub.as_str()),
+        None,
+    )?;
+    mutate_as_admin(state, vault_id, actor, event, payload, |store, vault_id| {
+        store.remove_admin(vault_id, &target)
+    })
+    .map(Json)
+}
+
+async fn create_folder_handler(
+    State(state): State<ServerState>,
+    headers: HeaderMap,
+    method: Method,
+    OriginalUri(uri): OriginalUri,
+    AxumPath(vault_id): AxumPath<String>,
+    body: Bytes,
+) -> Result<Json<VaultMetadataResponse>, ApiError> {
+    let actor = validate_request_auth(&state, &headers, &method, &uri, Some(&body))?
+        .to_npub()
+        .map_err(auth_error)?;
+    let request: CreateFolderRequest = serde_json::from_slice(&body)
+        .map_err(|_| ApiError::new(StatusCode::BAD_REQUEST, "invalid JSON request body"))?;
+    let vault_id = VaultId::new(vault_id)?;
+    let folder = Folder {
+        id: FolderId::new(request.folder_id)?,
+        name: DisplayName::new("folder_name", request.name)?,
+        role: request.role,
+        access: request.access,
+        parent_folder_id: request.parent_folder_id.map(FolderId::new).transpose()?,
+        path: SafeRelativePath::new("folder_path", request.path)?,
+        current_key_version: 1,
+        shared_folder_source: request.shared_folder_source.unwrap_or(false),
+    };
+    let access_user_ids = user_id_set(request.access_user_ids)?;
+    let (event, payload) = validate_admin_access_change_value(
+        request.access_change_event,
+        &vault_id,
+        &actor,
+        AdminAccessAction::SetFolderAccessMode,
+        Some(&folder.id),
+        None,
+        Some(1),
+    )?;
+    let event_json = event.as_json();
+    let grants = grant_requests_to_metadata(&request.grants, &folder.id, &actor, Some(event_json))?;
+
+    mutate_as_admin(state, vault_id, actor, event, payload, |store, vault_id| {
+        store.create_folder(vault_id, &folder, &access_user_ids, &grants)
+    })
+    .map(Json)
+}
+
+async fn finish_folder_setup_handler(
+    State(state): State<ServerState>,
+    headers: HeaderMap,
+    method: Method,
+    OriginalUri(uri): OriginalUri,
+    AxumPath((vault_id, folder_id)): AxumPath<(String, String)>,
+    body: Bytes,
+) -> Result<Json<VaultMetadataResponse>, ApiError> {
+    let actor = validate_request_auth(&state, &headers, &method, &uri, Some(&body))?
+        .to_npub()
+        .map_err(auth_error)?;
+    let request: FinishFolderSetupRequest = serde_json::from_slice(&body)
+        .map_err(|_| ApiError::new(StatusCode::BAD_REQUEST, "invalid JSON request body"))?;
+    let vault_id = VaultId::new(vault_id)?;
+    let folder_id = FolderId::new(folder_id)?;
+    let current_key_version = {
+        let store = state.store.lock().map_err(lock_error)?;
+        let stored = store.load_vault(&vault_id)?;
+        ensure_vault_admin(&stored, &actor)?;
+        folder_current_key_version(&stored, &folder_id)?
+    };
+    let (event, payload) = validate_admin_access_change_value(
+        request.access_change_event,
+        &vault_id,
+        &actor,
+        AdminAccessAction::SetFolderAccessMode,
+        Some(&folder_id),
+        None,
+        Some(current_key_version),
+    )?;
+    let event_json = event.as_json();
+    let grants = grant_requests_to_metadata(&request.grants, &folder_id, &actor, Some(event_json))?;
+
+    mutate_as_admin(state, vault_id, actor, event, payload, |store, vault_id| {
+        store.finish_folder_setup(vault_id, &folder_id, &grants)
+    })
+    .map(Json)
+}
+
+async fn grant_folder_access_handler(
+    State(state): State<ServerState>,
+    headers: HeaderMap,
+    method: Method,
+    OriginalUri(uri): OriginalUri,
+    AxumPath((vault_id, folder_id)): AxumPath<(String, String)>,
+    body: Bytes,
+) -> Result<Json<VaultMetadataResponse>, ApiError> {
+    let actor = validate_request_auth(&state, &headers, &method, &uri, Some(&body))?
+        .to_npub()
+        .map_err(auth_error)?;
+    let request: GrantFolderAccessRequest = serde_json::from_slice(&body)
+        .map_err(|_| ApiError::new(StatusCode::BAD_REQUEST, "invalid JSON request body"))?;
+    let vault_id = VaultId::new(vault_id)?;
+    let folder_id = FolderId::new(folder_id)?;
+    let target = UserId::new(request.target_npub.clone())?;
+    let current_key_version = {
+        let store = state.store.lock().map_err(lock_error)?;
+        let stored = store.load_vault(&vault_id)?;
+        ensure_vault_admin(&stored, &actor)?;
+        folder_current_key_version(&stored, &folder_id)?
+    };
+    let (event, payload) = validate_admin_access_change_value(
+        request.access_change_event,
+        &vault_id,
+        &actor,
+        AdminAccessAction::GrantFolderAccess,
+        Some(&folder_id),
+        Some(request.target_npub.as_str()),
+        Some(current_key_version),
+    )?;
+    let grant =
+        grant_request_to_metadata(&request.grant, &folder_id, &actor, Some(event.as_json()))?;
+
+    mutate_as_admin(state, vault_id, actor, event, payload, |store, vault_id| {
+        store.grant_folder_access(vault_id, &folder_id, &target, &grant)
+    })
+    .map(Json)
+}
+
+async fn remove_folder_access_handler(
+    State(state): State<ServerState>,
+    headers: HeaderMap,
+    method: Method,
+    OriginalUri(uri): OriginalUri,
+    AxumPath((vault_id, folder_id, target_npub)): AxumPath<(String, String, String)>,
+    body: Bytes,
+) -> Result<Json<VaultMetadataResponse>, ApiError> {
+    let actor = validate_request_auth(&state, &headers, &method, &uri, Some(&body))?
+        .to_npub()
+        .map_err(auth_error)?;
+    let request: RemoveFolderAccessRequest = serde_json::from_slice(&body)
+        .map_err(|_| ApiError::new(StatusCode::BAD_REQUEST, "invalid JSON request body"))?;
+    let vault_id = VaultId::new(vault_id)?;
+    let folder_id = FolderId::new(folder_id)?;
+    let target = UserId::new(target_npub.clone())?;
+    {
+        let store = state.store.lock().map_err(lock_error)?;
+        let stored = store.load_vault(&vault_id)?;
+        ensure_vault_admin(&stored, &actor)?;
+    }
+    let (event, payload) = validate_admin_access_change_value(
+        request.access_change_event,
+        &vault_id,
+        &actor,
+        AdminAccessAction::RemoveFolderAccess,
+        Some(&folder_id),
+        Some(target_npub.as_str()),
+        Some(request.new_key_version),
+    )?;
+    let event_json = event.as_json();
+    let grants = grant_requests_to_metadata(&request.grants, &folder_id, &actor, Some(event_json))?;
+    let mut reencrypted_records = Vec::new();
+    for record in request.reencrypted_records {
+        if record.key_version != request.new_key_version {
+            return Err(ApiError::new(
+                StatusCode::BAD_REQUEST,
+                "rotation record keyVersion must match newKeyVersion",
+            ));
+        }
+        let object_id = ObjectId::new(record.object_id)?;
+        let write_request = ObjectWriteRequest {
+            base_revision: record.base_revision,
+            key_version: record.key_version,
+            cipher: record.cipher,
+            ciphertext: record.ciphertext,
+            revision_event: record.revision_event,
+        };
+        let (record, _) = validate_object_revision_record(
+            &vault_id,
+            &folder_id,
+            &object_id,
+            &actor,
+            write_request,
+            FolderObjectOperation::Update,
+        )?;
+        reencrypted_records.push(record);
+    }
+
+    mutate_as_admin(state, vault_id, actor, event, payload, |store, vault_id| {
+        store.rotate_folder_key_for_access_removal(
+            vault_id,
+            &folder_id,
+            &target,
+            request.new_key_version,
+            &grants,
+            &reencrypted_records,
+        )
+    })
+    .map(Json)
 }
 
 async fn put_object_handler(
@@ -683,17 +1111,9 @@ fn accept_object_revision(
     request: ObjectWriteRequest,
     operation: FolderObjectOperation,
 ) -> Result<ObjectWriteResponse, ApiError> {
-    if request.cipher != "AES-256-GCM" {
-        return Err(ApiError::new(
-            StatusCode::BAD_REQUEST,
-            "cipher must be AES-256-GCM",
-        ));
-    }
     let vault_id = VaultId::new(vault_id)?;
     let folder_id = FolderId::new(folder_id)?;
     let object_id = ObjectId::new(object_id)?;
-    let revision = request.base_revision.map_or(1, |base| base + 1);
-    let event = event_from_value(request.revision_event)?;
 
     let stored = {
         let store = state.store.lock().map_err(lock_error)?;
@@ -702,6 +1122,42 @@ fn accept_object_revision(
     ensure_folder_visible(&stored, &folder_id, &actor_npub)?;
     ensure_folder_key_version(&stored, &folder_id, request.key_version)?;
 
+    let (record, revision) = validate_object_revision_record(
+        &vault_id,
+        &folder_id,
+        &object_id,
+        &actor_npub,
+        request,
+        operation,
+    )?;
+    let outcome = {
+        let mut store = state.store.lock().map_err(lock_error)?;
+        store.submit_sync_record(&vault_id, &SyncRecordInput::FolderObjectRevision(record))?
+    };
+
+    Ok(ObjectWriteResponse {
+        sequence: outcome.sequence,
+        duplicate: outcome.duplicate,
+        revision,
+    })
+}
+
+fn validate_object_revision_record(
+    vault_id: &VaultId,
+    folder_id: &FolderId,
+    object_id: &ObjectId,
+    actor_npub: &str,
+    request: ObjectWriteRequest,
+    operation: FolderObjectOperation,
+) -> Result<(FolderObjectRevisionSyncRecord, u64), ApiError> {
+    if request.cipher != "AES-256-GCM" {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "cipher must be AES-256-GCM",
+        ));
+    }
+    let revision = request.base_revision.map_or(1, |base| base + 1);
+    let event = event_from_value(request.revision_event)?;
     let expected = RevisionValidation {
         vault_id: vault_id.clone(),
         folder_id: folder_id.clone(),
@@ -711,33 +1167,24 @@ fn accept_object_revision(
         base_revision: request.base_revision,
         key_version: request.key_version,
         envelope_json: request.ciphertext.clone(),
-        author_npub: actor_npub.clone(),
+        author_npub: actor_npub.to_owned(),
         created_at: expected_created_at(&event),
     };
     let payload: FolderObjectRevisionPayload = validate_revision_event(&event, &expected)?;
-    let outcome = {
-        let mut store = state.store.lock().map_err(lock_error)?;
-        store.submit_sync_record(
-            &vault_id,
-            &SyncRecordInput::FolderObjectRevision(FolderObjectRevisionSyncRecord {
-                record_event_id: event.id.to_hex(),
-                folder_id,
-                object_id,
-                revision,
-                base_revision: request.base_revision,
-                actor_npub: UserId::new(actor_npub)?,
-                client_created_at: payload.created_at,
-                payload_json: request.ciphertext,
-                record_event_kind: event.kind.as_u16(),
-            }),
-        )?
-    };
-
-    Ok(ObjectWriteResponse {
-        sequence: outcome.sequence,
-        duplicate: outcome.duplicate,
+    Ok((
+        FolderObjectRevisionSyncRecord {
+            record_event_id: event.id.to_hex(),
+            folder_id: folder_id.clone(),
+            object_id: object_id.clone(),
+            revision,
+            base_revision: request.base_revision,
+            actor_npub: UserId::new(actor_npub.to_owned())?,
+            client_created_at: payload.created_at,
+            payload_json: request.ciphertext,
+            record_event_kind: event.kind.as_u16(),
+        },
         revision,
-    })
+    ))
 }
 
 fn accept_object_tombstone(
@@ -805,8 +1252,165 @@ fn event_from_value(value: serde_json::Value) -> Result<Event, ApiError> {
     })
 }
 
+fn validate_admin_access_change_value(
+    value: serde_json::Value,
+    vault_id: &VaultId,
+    admin_npub: &str,
+    action: AdminAccessAction,
+    folder_id: Option<&FolderId>,
+    target_npub: Option<&str>,
+    key_version: Option<u32>,
+) -> Result<(Event, AdminAccessChangePayload), ApiError> {
+    let event = event_from_value(value)?;
+    if event.kind.as_u16() != APP_SPECIFIC_KIND {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            format!("admin access-change event must be kind {APP_SPECIFIC_KIND}"),
+        ));
+    }
+    let hint: AdminAccessChangePayload = serde_json::from_str(&event.content).map_err(|_| {
+        ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "admin access-change event content did not parse",
+        )
+    })?;
+    let expected = AdminAccessChangeValidation {
+        vault_id: vault_id.clone(),
+        change_id: hint.change_id,
+        action,
+        admin_npub: admin_npub.to_owned(),
+        folder_id: folder_id.cloned(),
+        target_npub: target_npub.map(ToOwned::to_owned),
+        key_version,
+        note: hint.note,
+        created_at: expected_created_at(&event),
+    };
+    let payload = validate_admin_access_change_event(&event, &expected)?;
+    Ok((event, payload))
+}
+
+fn mutate_as_admin<F>(
+    state: ServerState,
+    vault_id: VaultId,
+    actor_npub: String,
+    event: Event,
+    payload: AdminAccessChangePayload,
+    mutation: F,
+) -> Result<VaultMetadataResponse, ApiError>
+where
+    F: FnOnce(&mut BrainStore, &VaultId) -> Result<(), StoreError>,
+{
+    let stored = {
+        let mut store = state.store.lock().map_err(lock_error)?;
+        let stored = store.load_vault(&vault_id)?;
+        ensure_vault_admin(&stored, &actor_npub)?;
+        mutation(&mut store, &vault_id)?;
+        append_admin_access_change_record(&mut store, &vault_id, &actor_npub, &event, &payload)?;
+        store.load_vault(&vault_id)?
+    };
+    Ok(metadata_response(stored))
+}
+
+fn append_admin_access_change_record(
+    store: &mut BrainStore,
+    vault_id: &VaultId,
+    actor_npub: &str,
+    event: &Event,
+    payload: &AdminAccessChangePayload,
+) -> Result<(), ApiError> {
+    let folder_id = payload.folder_id.as_ref().map(FolderId::new).transpose()?;
+    store.submit_sync_record(
+        vault_id,
+        &SyncRecordInput::Control(ControlSyncRecord {
+            record_event_id: event.id.to_hex(),
+            record_type: SyncRecordType::VaultAdminAccessChange,
+            folder_id,
+            actor_npub: UserId::new(actor_npub.to_owned())?,
+            client_created_at: payload.created_at.clone(),
+            payload_json: event.content.clone(),
+            record_event_kind: event.kind.as_u16(),
+        }),
+    )?;
+    Ok(())
+}
+
+fn user_id_set(values: Vec<String>) -> Result<BTreeSet<UserId>, ApiError> {
+    values
+        .into_iter()
+        .map(UserId::new)
+        .collect::<Result<BTreeSet<_>, _>>()
+        .map_err(ApiError::from)
+}
+
+fn grant_requests_to_metadata(
+    requests: &[FolderKeyGrantRequest],
+    folder_id: &FolderId,
+    issuer_npub: &str,
+    access_change_event_json: Option<String>,
+) -> Result<Vec<FolderKeyGrantMetadata>, ApiError> {
+    requests
+        .iter()
+        .map(|request| {
+            grant_request_to_metadata(
+                request,
+                folder_id,
+                issuer_npub,
+                access_change_event_json.clone(),
+            )
+        })
+        .collect()
+}
+
+fn grant_request_to_metadata(
+    request: &FolderKeyGrantRequest,
+    folder_id: &FolderId,
+    issuer_npub: &str,
+    access_change_event_json: Option<String>,
+) -> Result<FolderKeyGrantMetadata, ApiError> {
+    Ok(FolderKeyGrantMetadata {
+        id: request.id.clone(),
+        folder_id: folder_id.clone(),
+        key_version: request.key_version,
+        issuer_npub: UserId::new(issuer_npub.to_owned())?,
+        recipient_npub: UserId::new(request.recipient_npub.clone())?,
+        format: "NIP-59".to_owned(),
+        wrapped_event_json: request.wrapped_event_json.clone(),
+        access_change_event_json,
+        created_at: request
+            .created_at
+            .clone()
+            .unwrap_or_else(|| "2026-06-23T00:00:00.000Z".to_owned()),
+    })
+}
+
 fn expected_created_at(event: &Event) -> String {
     event.created_at.as_secs().to_string()
+}
+
+fn ensure_vault_admin(stored: &StoredVault, actor_npub: &str) -> Result<(), ApiError> {
+    let is_admin = stored
+        .vault
+        .admins
+        .iter()
+        .any(|admin| admin.as_str() == actor_npub);
+    if is_admin {
+        Ok(())
+    } else {
+        Err(ApiError::new(
+            StatusCode::FORBIDDEN,
+            "vault admin access required",
+        ))
+    }
+}
+
+fn folder_current_key_version(stored: &StoredVault, folder_id: &FolderId) -> Result<u32, ApiError> {
+    stored
+        .vault
+        .folders
+        .iter()
+        .find(|folder| folder.id == *folder_id)
+        .map(|folder| folder.current_key_version)
+        .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "folder not found"))
 }
 
 fn ensure_folder_key_version(
@@ -1742,6 +2346,237 @@ mod tests {
         assert_error(expired, StatusCode::GONE, "rebootstrap required").await;
     }
 
+    #[tokio::test]
+    async fn admin_routes_create_restricted_folder_and_rotate_access_removal() {
+        let admin_keys = Keys::generate();
+        let member_keys = Keys::generate();
+        let member_npub = npub(&member_keys);
+        let router = router_with_bootstrapped_org(&admin_keys).await;
+
+        let add_member_body = serde_json::json!({
+            "targetNpub": member_npub,
+            "accessChangeEvent": admin_event(
+                &admin_keys,
+                "acme",
+                "change_add_member",
+                AdminAccessAction::AddMember,
+                None,
+                Some(member_npub.as_str()),
+                None,
+            ),
+        })
+        .to_string();
+        let add_member = authed_request(
+            router.clone(),
+            &admin_keys,
+            "POST",
+            "/_admin/vaults/acme/members",
+            Some(add_member_body),
+            TEST_NOW,
+        )
+        .await;
+        assert_eq!(add_member.status(), StatusCode::OK);
+        let metadata: VaultMetadataResponse = read_json(add_member).await;
+        assert!(metadata.members.contains(&member_npub));
+
+        let create_folder_body = serde_json::json!({
+            "folderId": "strategy",
+            "name": "Strategy",
+            "role": "folder",
+            "access": "restricted",
+            "parentFolderId": "general",
+            "path": "general/Strategy",
+            "accessUserIds": [member_npub],
+            "grants": [
+                folder_key_grant_value("grant-strategy-admin-v1", 1, npub(&admin_keys).as_str()),
+                folder_key_grant_value("grant-strategy-member-v1", 1, member_npub.as_str())
+            ],
+            "accessChangeEvent": admin_event(
+                &admin_keys,
+                "acme",
+                "change_create_strategy",
+                AdminAccessAction::SetFolderAccessMode,
+                Some("strategy"),
+                None,
+                Some(1),
+            ),
+        })
+        .to_string();
+        let create_folder = authed_request(
+            router.clone(),
+            &admin_keys,
+            "POST",
+            "/_admin/vaults/acme/folders",
+            Some(create_folder_body),
+            TEST_NOW,
+        )
+        .await;
+        assert_eq!(create_folder.status(), StatusCode::OK);
+        let metadata: VaultMetadataResponse = read_json(create_folder).await;
+        let strategy = metadata
+            .folders
+            .iter()
+            .find(|folder| folder.id == "strategy")
+            .expect("strategy folder metadata");
+        assert_eq!(strategy.current_key_version, 1);
+        assert_eq!(strategy.access_user_ids, vec![member_npub.clone()]);
+
+        let object_path = "/_admin/vaults/acme/folders/strategy/objects/obj_000000000001";
+        let create_object_body = object_write_body(
+            &admin_keys,
+            RevisionFixture {
+                vault_id: "acme",
+                folder_id: "strategy",
+                object_id: "obj_000000000001",
+                operation: FolderObjectOperation::Create,
+                revision: 1,
+                base_revision: None,
+                key_version: 1,
+                content: "restricted page",
+                nonce: 12,
+                record_type: false,
+            },
+        );
+        let create_object = authed_request(
+            router.clone(),
+            &admin_keys,
+            "PUT",
+            object_path,
+            Some(create_object_body),
+            TEST_NOW,
+        )
+        .await;
+        assert_eq!(create_object.status(), StatusCode::OK);
+
+        let remove_access_body = serde_json::json!({
+            "newKeyVersion": 2,
+            "grants": [
+                folder_key_grant_value("grant-strategy-admin-v2", 2, npub(&admin_keys).as_str())
+            ],
+            "reencryptedRecords": [
+                rotation_object_value(
+                    &admin_keys,
+                    "acme",
+                    "strategy",
+                    "obj_000000000001",
+                    2,
+                    Some(1),
+                    2,
+                    "reencrypted restricted page",
+                    13,
+                )
+            ],
+            "accessChangeEvent": admin_event(
+                &admin_keys,
+                "acme",
+                "change_remove_strategy_access",
+                AdminAccessAction::RemoveFolderAccess,
+                Some("strategy"),
+                Some(member_npub.as_str()),
+                Some(2),
+            ),
+        })
+        .to_string();
+        let remove_access = authed_request(
+            router.clone(),
+            &admin_keys,
+            "DELETE",
+            &format!("/_admin/vaults/acme/folders/strategy/access/{member_npub}"),
+            Some(remove_access_body),
+            TEST_NOW,
+        )
+        .await;
+        assert_eq!(remove_access.status(), StatusCode::OK);
+        let metadata: VaultMetadataResponse = read_json(remove_access).await;
+        let strategy = metadata
+            .folders
+            .iter()
+            .find(|folder| folder.id == "strategy")
+            .expect("strategy folder metadata");
+        assert_eq!(strategy.current_key_version, 2);
+        assert!(strategy.access_user_ids.is_empty());
+
+        let bootstrap = authed_request(
+            router,
+            &admin_keys,
+            "GET",
+            "/_admin/vaults/acme/sync/bootstrap",
+            None,
+            TEST_NOW,
+        )
+        .await;
+        assert_eq!(bootstrap.status(), StatusCode::OK);
+        let bootstrap: SyncBootstrapResponse = read_json(bootstrap).await;
+        let object = bootstrap
+            .objects
+            .iter()
+            .find(|object| object.object_id == "obj_000000000001")
+            .expect("current object");
+        assert_eq!(object.revision, 2);
+    }
+
+    #[tokio::test]
+    async fn finish_setup_route_repairs_empty_setup_incomplete_folder() {
+        let admin_keys = Keys::generate();
+        let state = test_state();
+        let router = router_with_state(state.clone());
+        let create_vault = post_vault(
+            router.clone(),
+            &admin_keys,
+            &create_vault_body("acme", "organization"),
+            TEST_NOW,
+            None,
+            None,
+            None,
+        )
+        .await;
+        assert_eq!(create_vault.status(), StatusCode::OK);
+
+        {
+            let mut store = state.store.lock().unwrap();
+            store
+                .insert_setup_incomplete_folder_for_repair(
+                    &VaultId::new("acme").unwrap(),
+                    &test_strategy_folder(),
+                    &BTreeSet::new(),
+                )
+                .unwrap();
+        }
+
+        let body = serde_json::json!({
+            "grants": [
+                folder_key_grant_value("grant-strategy-admin-v1", 1, npub(&admin_keys).as_str())
+            ],
+            "accessChangeEvent": admin_event(
+                &admin_keys,
+                "acme",
+                "change_finish_strategy",
+                AdminAccessAction::SetFolderAccessMode,
+                Some("strategy"),
+                None,
+                Some(1),
+            ),
+        })
+        .to_string();
+        let finish = authed_request(
+            router,
+            &admin_keys,
+            "POST",
+            "/_admin/vaults/acme/folders/strategy/finish-setup",
+            Some(body),
+            TEST_NOW,
+        )
+        .await;
+        assert_eq!(finish.status(), StatusCode::OK);
+        let metadata: VaultMetadataResponse = read_json(finish).await;
+        let strategy = metadata
+            .folders
+            .iter()
+            .find(|folder| folder.id == "strategy")
+            .expect("strategy folder metadata");
+        assert!(!strategy.setup_incomplete);
+    }
+
     fn test_router() -> Router {
         router_with_state(test_state())
     }
@@ -2042,6 +2877,126 @@ mod tests {
             vec!["object".to_owned(), input.object_id.as_str().to_owned()],
             vec!["operation".to_owned(), "delete".to_owned()],
         ]
+    }
+
+    fn admin_event(
+        keys: &Keys,
+        vault_id: &str,
+        change_id: &str,
+        action: AdminAccessAction,
+        folder_id: Option<&str>,
+        target_npub: Option<&str>,
+        key_version: Option<u32>,
+    ) -> Event {
+        let expected = AdminAccessChangeValidation {
+            vault_id: VaultId::new(vault_id).unwrap(),
+            change_id: change_id.to_owned(),
+            action,
+            admin_npub: npub(keys),
+            folder_id: folder_id.map(FolderId::new).transpose().unwrap(),
+            target_npub: target_npub.map(ToOwned::to_owned),
+            key_version,
+            note: None,
+            created_at: TEST_NOW.to_string(),
+        };
+        let payload = AdminAccessChangePayload::new(&expected);
+        sign_app_event(
+            keys,
+            payload.canonical_json(),
+            admin_access_change_tags(&expected),
+        )
+    }
+
+    fn admin_access_change_tags(input: &AdminAccessChangeValidation) -> Vec<Vec<String>> {
+        let mut tags = vec![
+            vec![
+                "d".to_owned(),
+                format!(
+                    "finite-vault-admin-access-change:{}:{}",
+                    input.vault_id, input.change_id
+                ),
+            ],
+            vec!["vault".to_owned(), input.vault_id.to_string()],
+            vec!["action".to_owned(), input.action.as_str().to_owned()],
+        ];
+        if let Some(folder_id) = &input.folder_id {
+            tags.push(vec!["folder".to_owned(), folder_id.to_string()]);
+        }
+        if let Some(target_npub) = &input.target_npub {
+            tags.push(vec![
+                "p".to_owned(),
+                NostrPublicKey::parse(target_npub).unwrap().to_hex(),
+            ]);
+        }
+        if let Some(key_version) = input.key_version {
+            tags.push(vec!["keyVersion".to_owned(), key_version.to_string()]);
+        }
+        tags
+    }
+
+    fn folder_key_grant_value(
+        id: &str,
+        key_version: u32,
+        recipient_npub: &str,
+    ) -> serde_json::Value {
+        serde_json::json!({
+            "id": id,
+            "keyVersion": key_version,
+            "recipientNpub": recipient_npub,
+            "wrappedEventJson": "{\"kind\":1059}",
+            "createdAt": "2026-06-23T00:00:00.000Z",
+        })
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn rotation_object_value(
+        keys: &Keys,
+        vault_id: &str,
+        folder_id: &str,
+        object_id: &str,
+        revision: u64,
+        base_revision: Option<u64>,
+        key_version: u32,
+        content: &str,
+        nonce: u8,
+    ) -> serde_json::Value {
+        let envelope_json =
+            object_envelope_json(vault_id, folder_id, object_id, key_version, content, nonce);
+        let event = revision_event_for_author(
+            keys,
+            npub(keys),
+            RevisionEventFixture {
+                vault_id,
+                folder_id,
+                object_id,
+                operation: FolderObjectOperation::Update,
+                revision,
+                base_revision,
+                key_version,
+                envelope_json: envelope_json.clone(),
+            },
+        );
+        serde_json::json!({
+            "objectId": object_id,
+            "baseRevision": base_revision,
+            "keyVersion": key_version,
+            "cipher": "AES-256-GCM",
+            "ciphertext": envelope_json,
+            "revisionEvent": event,
+        })
+    }
+
+    fn test_strategy_folder() -> Folder {
+        Folder {
+            id: FolderId::new("strategy").unwrap(),
+            name: DisplayName::new("folder_name", "Strategy").unwrap(),
+            role: FolderRole::Folder,
+            access: FolderAccessMode::Restricted,
+            parent_folder_id: Some(FolderId::new("general").unwrap()),
+            path: SafeRelativePath::new("folder_path", "general/Strategy").unwrap(),
+            current_key_version: 1,
+            shared_folder_source: false,
+        }
     }
 
     fn sign_app_event(keys: &Keys, content: String, tags: Vec<Vec<String>>) -> Event {

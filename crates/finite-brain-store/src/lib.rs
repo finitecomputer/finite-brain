@@ -382,6 +382,71 @@ impl BrainStore {
         Ok(())
     }
 
+    /// Remove an organization Vault Admin while preserving at least one admin.
+    pub fn remove_admin(&mut self, vault_id: &VaultId, user_id: &UserId) -> Result<(), StoreError> {
+        let vault = self.load_core_vault(vault_id)?;
+        if vault.kind != VaultKind::Organization {
+            return Err(StoreError::BrokenInvariant {
+                reason: "member/admin mutation requires an organization vault".to_owned(),
+            });
+        }
+        if !vault.admins.contains(user_id) {
+            return Err(StoreError::BrokenInvariant {
+                reason: "vault admin does not exist".to_owned(),
+            });
+        }
+        if vault.admins.len() == 1 {
+            return Err(StoreError::BrokenInvariant {
+                reason: "organization vault must keep at least one admin".to_owned(),
+            });
+        }
+
+        self.conn.execute(
+            "DELETE FROM vault_admins WHERE vault_id = ?1 AND user_id = ?2",
+            params![vault_id.as_str(), user_id.as_str()],
+        )?;
+        Ok(())
+    }
+
+    /// Remove an organization Vault Member after admin and restricted access cleanup.
+    pub fn remove_member(
+        &mut self,
+        vault_id: &VaultId,
+        user_id: &UserId,
+    ) -> Result<(), StoreError> {
+        let vault = self.load_core_vault(vault_id)?;
+        if vault.kind != VaultKind::Organization {
+            return Err(StoreError::BrokenInvariant {
+                reason: "member/admin mutation requires an organization vault".to_owned(),
+            });
+        }
+        if vault.admins.contains(user_id) {
+            return Err(StoreError::BrokenInvariant {
+                reason: "remove admin role before removing member".to_owned(),
+            });
+        }
+        if !vault
+            .members
+            .iter()
+            .any(|member| &member.user_id == user_id)
+        {
+            return Err(StoreError::BrokenInvariant {
+                reason: "vault member does not exist".to_owned(),
+            });
+        }
+        if self.member_has_restricted_access(vault_id, user_id)? {
+            return Err(StoreError::BrokenInvariant {
+                reason: "remove restricted folder access before removing member".to_owned(),
+            });
+        }
+
+        self.conn.execute(
+            "DELETE FROM vault_members WHERE vault_id = ?1 AND user_id = ?2",
+            params![vault_id.as_str(), user_id.as_str()],
+        )?;
+        Ok(())
+    }
+
     /// Create a complete Folder and its current grants in one transaction.
     pub fn create_folder(
         &mut self,
@@ -450,6 +515,15 @@ impl BrainStore {
                 reason: "folder setup is already complete".to_owned(),
             });
         }
+        if self
+            .load_current_objects(vault_id)?
+            .iter()
+            .any(|object| object.folder_id == *folder_id)
+        {
+            return Err(StoreError::BrokenInvariant {
+                reason: "finish setup only supports empty folders".to_owned(),
+            });
+        }
 
         let access_user_ids = stored
             .folder_access
@@ -467,6 +541,147 @@ impl BrainStore {
             "UPDATE folders SET setup_incomplete = 0 WHERE vault_id = ?1 AND id = ?2",
             params![vault_id.as_str(), folder_id.as_str()],
         )?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Grant access to one organization member for a restricted Folder.
+    pub fn grant_folder_access(
+        &mut self,
+        vault_id: &VaultId,
+        folder_id: &FolderId,
+        user_id: &UserId,
+        grant: &FolderKeyGrantMetadata,
+    ) -> Result<(), StoreError> {
+        let stored = self.load_vault(vault_id)?;
+        let folder = stored
+            .vault
+            .folders
+            .iter()
+            .find(|folder| folder.id == *folder_id)
+            .ok_or_else(|| StoreError::MissingFolder {
+                folder_id: folder_id.to_string(),
+            })?;
+        if folder.access != FolderAccessMode::Restricted {
+            return Err(StoreError::BrokenInvariant {
+                reason: "folder access grants require a restricted folder".to_owned(),
+            });
+        }
+        let current_access = stored
+            .folder_access
+            .get(folder_id)
+            .cloned()
+            .unwrap_or_default();
+        if current_access.contains(user_id) {
+            return Err(StoreError::BrokenInvariant {
+                reason: "folder access is already granted".to_owned(),
+            });
+        }
+        validate_access_membership(&stored.vault, &BTreeSet::from([user_id.clone()]))?;
+        validate_grant_metadata(grant)?;
+        validate_grant_issuer(&stored.vault, grant)?;
+        if grant.folder_id != *folder_id {
+            return Err(StoreError::BrokenInvariant {
+                reason: "grant folder id must match folder metadata".to_owned(),
+            });
+        }
+        if grant.key_version != folder.current_key_version {
+            return Err(StoreError::BrokenInvariant {
+                reason: "grant key version must match folder current key version".to_owned(),
+            });
+        }
+        if grant.recipient_npub != *user_id {
+            return Err(StoreError::BrokenInvariant {
+                reason: "grant recipient must match folder access target".to_owned(),
+            });
+        }
+
+        let tx = self.conn.transaction()?;
+        tx.execute(
+            "INSERT INTO folder_access (vault_id, folder_id, user_id) VALUES (?1, ?2, ?3)",
+            params![vault_id.as_str(), folder_id.as_str(), user_id.as_str()],
+        )?;
+        insert_grant(&tx, vault_id, grant)?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Remove restricted Folder access by rotating the Folder Key and re-encrypting live objects.
+    pub fn rotate_folder_key_for_access_removal(
+        &mut self,
+        vault_id: &VaultId,
+        folder_id: &FolderId,
+        removed_user_id: &UserId,
+        new_key_version: u32,
+        grants: &[FolderKeyGrantMetadata],
+        reencrypted_records: &[FolderObjectRevisionSyncRecord],
+    ) -> Result<(), StoreError> {
+        let stored = self.load_vault(vault_id)?;
+        let folder = stored
+            .vault
+            .folders
+            .iter()
+            .find(|folder| folder.id == *folder_id)
+            .ok_or_else(|| StoreError::MissingFolder {
+                folder_id: folder_id.to_string(),
+            })?;
+        if folder.access != FolderAccessMode::Restricted {
+            return Err(StoreError::BrokenInvariant {
+                reason: "folder access removal requires a restricted folder".to_owned(),
+            });
+        }
+        if new_key_version != folder.current_key_version + 1 {
+            return Err(StoreError::BrokenInvariant {
+                reason: "folder access removal must rotate to the next key version".to_owned(),
+            });
+        }
+        let mut remaining_access = stored
+            .folder_access
+            .get(folder_id)
+            .cloned()
+            .unwrap_or_default();
+        if !remaining_access.remove(removed_user_id) {
+            return Err(StoreError::BrokenInvariant {
+                reason: "folder access target does not currently have access".to_owned(),
+            });
+        }
+
+        let mut rotated_folder = folder.clone();
+        rotated_folder.current_key_version = new_key_version;
+        let required = required_recipients(&stored.vault, &rotated_folder, &remaining_access)?;
+        validate_folder_grants(&stored.vault, &rotated_folder, &required, grants)?;
+
+        let live_objects = self
+            .load_current_objects(vault_id)?
+            .into_iter()
+            .filter(|object| object.folder_id == *folder_id && !object.deleted)
+            .collect::<Vec<_>>();
+        validate_rotation_records(&live_objects, reencrypted_records)?;
+
+        let tx = self.conn.transaction()?;
+        tx.execute(
+            "DELETE FROM folder_access WHERE vault_id = ?1 AND folder_id = ?2 AND user_id = ?3",
+            params![
+                vault_id.as_str(),
+                folder_id.as_str(),
+                removed_user_id.as_str()
+            ],
+        )?;
+        tx.execute(
+            "UPDATE folders SET current_key_version = ?3 WHERE vault_id = ?1 AND id = ?2",
+            params![vault_id.as_str(), folder_id.as_str(), new_key_version],
+        )?;
+        for grant in grants {
+            insert_grant(&tx, vault_id, grant)?;
+        }
+        for record in reencrypted_records {
+            let input = SyncRecordInput::FolderObjectRevision(record.clone());
+            validate_sync_input(&input)?;
+            validate_sync_conflict(&tx, vault_id, &input)?;
+            let sequence = next_sequence(&tx, vault_id)?;
+            insert_sync_record(&tx, vault_id, sequence, &input)?;
+            project_sync_record(&tx, vault_id, &input)?;
+        }
         tx.commit()?;
         Ok(())
     }
@@ -706,6 +921,19 @@ impl BrainStore {
     fn member_exists(&self, vault_id: &VaultId, user_id: &UserId) -> Result<bool, StoreError> {
         let exists = self.conn.query_row(
             "SELECT EXISTS(SELECT 1 FROM vault_members WHERE vault_id = ?1 AND user_id = ?2)",
+            params![vault_id.as_str(), user_id.as_str()],
+            |row| row.get::<_, bool>(0),
+        )?;
+        Ok(exists)
+    }
+
+    fn member_has_restricted_access(
+        &self,
+        vault_id: &VaultId,
+        user_id: &UserId,
+    ) -> Result<bool, StoreError> {
+        let exists = self.conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM folder_access WHERE vault_id = ?1 AND user_id = ?2)",
             params![vault_id.as_str(), user_id.as_str()],
             |row| row.get::<_, bool>(0),
         )?;
@@ -1939,6 +2167,47 @@ fn required_recipients(
     Ok(recipients)
 }
 
+fn validate_rotation_records(
+    live_objects: &[CurrentEncryptedObject],
+    reencrypted_records: &[FolderObjectRevisionSyncRecord],
+) -> Result<(), StoreError> {
+    let live_by_object_id = live_objects
+        .iter()
+        .map(|object| (object.object_id.clone(), object))
+        .collect::<BTreeMap<_, _>>();
+    let reencrypted_by_object_id = reencrypted_records
+        .iter()
+        .map(|record| (record.object_id.clone(), record))
+        .collect::<BTreeMap<_, _>>();
+
+    if live_by_object_id.len() != live_objects.len()
+        || reencrypted_by_object_id.len() != reencrypted_records.len()
+        || live_by_object_id.keys().collect::<Vec<_>>()
+            != reencrypted_by_object_id.keys().collect::<Vec<_>>()
+    {
+        return Err(StoreError::BrokenInvariant {
+            reason: "folder key rotation must re-encrypt every live object exactly once".to_owned(),
+        });
+    }
+
+    for (object_id, live_object) in live_by_object_id {
+        let record = reencrypted_by_object_id
+            .get(&object_id)
+            .expect("object id sets were already checked");
+        if record.folder_id != live_object.folder_id
+            || record.base_revision != Some(live_object.revision)
+            || record.revision != live_object.revision + 1
+        {
+            return Err(StoreError::BrokenInvariant {
+                reason: "folder key rotation records must advance each live object by one revision"
+                    .to_owned(),
+            });
+        }
+    }
+
+    Ok(())
+}
+
 fn insert_vault(tx: &Transaction<'_>, vault: &Vault) -> Result<(), StoreError> {
     tx.execute(
         r#"
@@ -2242,6 +2511,219 @@ mod tests {
     }
 
     #[test]
+    fn grants_restricted_folder_access_with_current_recipient_grant() {
+        let mut store = store_with_strategy_folder();
+        let vault_id = VaultId::new("acme").unwrap();
+        let member = UserId::new("npub-member").unwrap();
+        store.add_member(&vault_id, &member).unwrap();
+
+        store
+            .grant_folder_access(
+                &vault_id,
+                &FolderId::new("strategy").unwrap(),
+                &member,
+                &grant(
+                    "grant-strategy-member",
+                    "strategy",
+                    1,
+                    "npub-admin",
+                    member.as_str(),
+                ),
+            )
+            .unwrap();
+
+        let stored = store.load_vault(&vault_id).unwrap();
+        assert_eq!(
+            stored
+                .folder_access
+                .get(&FolderId::new("strategy").unwrap()),
+            Some(&BTreeSet::from([member.clone()]))
+        );
+        assert!(stored.grants.iter().any(|grant| {
+            grant.folder_id == FolderId::new("strategy").unwrap()
+                && grant.key_version == 1
+                && grant.recipient_npub == member
+        }));
+    }
+
+    #[test]
+    fn removing_restricted_folder_access_requires_rotation_and_reencrypts_live_objects() {
+        let mut store = store_with_strategy_folder();
+        let vault_id = VaultId::new("acme").unwrap();
+        let folder_id = FolderId::new("strategy").unwrap();
+        let member = UserId::new("npub-member").unwrap();
+        store.add_member(&vault_id, &member).unwrap();
+        store
+            .grant_folder_access(
+                &vault_id,
+                &folder_id,
+                &member,
+                &grant(
+                    "grant-strategy-member",
+                    "strategy",
+                    1,
+                    "npub-admin",
+                    member.as_str(),
+                ),
+            )
+            .unwrap();
+        store
+            .submit_sync_record(
+                &vault_id,
+                &revision_record("event-create-1", "obj_000000000001", 1, None, "create"),
+            )
+            .unwrap();
+
+        store
+            .rotate_folder_key_for_access_removal(
+                &vault_id,
+                &folder_id,
+                &member,
+                2,
+                &[grant(
+                    "grant-strategy-admin-v2",
+                    "strategy",
+                    2,
+                    "npub-admin",
+                    "npub-admin",
+                )],
+                &[revision_record_struct(
+                    "event-reencrypt-1",
+                    "obj_000000000001",
+                    2,
+                    Some(1),
+                    "reencrypted",
+                )],
+            )
+            .unwrap();
+
+        let stored = store.load_vault(&vault_id).unwrap();
+        let folder = stored
+            .vault
+            .folders
+            .iter()
+            .find(|folder| folder.id == folder_id)
+            .unwrap();
+        assert_eq!(folder.current_key_version, 2);
+        assert_eq!(
+            stored
+                .folder_access
+                .get(&folder_id)
+                .cloned()
+                .unwrap_or_default(),
+            BTreeSet::new()
+        );
+        assert!(stored.grants.iter().any(|grant| {
+            grant.folder_id == folder_id
+                && grant.key_version == 2
+                && grant.recipient_npub.as_str() == "npub-admin"
+        }));
+
+        let bootstrap = store.sync_bootstrap(&vault_id).unwrap();
+        assert_eq!(bootstrap.latest_sequence, 2);
+        assert_eq!(bootstrap.objects[0].revision, 2);
+        assert_eq!(
+            bootstrap.objects[0].payload_json,
+            "{\"body\":\"reencrypted\"}"
+        );
+    }
+
+    #[test]
+    fn access_removal_rotation_rolls_back_when_reencryption_or_grants_are_incomplete() {
+        let mut store = store_with_strategy_folder();
+        let vault_id = VaultId::new("acme").unwrap();
+        let folder_id = FolderId::new("strategy").unwrap();
+        let member = UserId::new("npub-member").unwrap();
+        store.add_member(&vault_id, &member).unwrap();
+        store
+            .grant_folder_access(
+                &vault_id,
+                &folder_id,
+                &member,
+                &grant(
+                    "grant-strategy-member",
+                    "strategy",
+                    1,
+                    "npub-admin",
+                    member.as_str(),
+                ),
+            )
+            .unwrap();
+        store
+            .submit_sync_record(
+                &vault_id,
+                &revision_record("event-create-1", "obj_000000000001", 1, None, "create"),
+            )
+            .unwrap();
+
+        assert_eq!(
+            store
+                .rotate_folder_key_for_access_removal(
+                    &vault_id,
+                    &folder_id,
+                    &member,
+                    2,
+                    &[grant(
+                        "grant-strategy-admin-v2",
+                        "strategy",
+                        2,
+                        "npub-admin",
+                        "npub-admin",
+                    )],
+                    &[],
+                )
+                .unwrap_err(),
+            StoreError::BrokenInvariant {
+                reason: "folder key rotation must re-encrypt every live object exactly once"
+                    .to_owned()
+            }
+        );
+
+        assert_eq!(
+            store
+                .rotate_folder_key_for_access_removal(
+                    &vault_id,
+                    &folder_id,
+                    &member,
+                    2,
+                    &[grant(
+                        "grant-strategy-admin",
+                        "strategy",
+                        2,
+                        "npub-admin",
+                        "npub-admin",
+                    )],
+                    &[revision_record_struct(
+                        "event-reencrypt-1",
+                        "obj_000000000001",
+                        2,
+                        Some(1),
+                        "reencrypted",
+                    )],
+                )
+                .unwrap_err(),
+            StoreError::DuplicateId {
+                field: "folder_key_grant_id",
+                value: "grant-strategy-admin".to_owned()
+            }
+        );
+
+        let stored = store.load_vault(&vault_id).unwrap();
+        let folder = stored
+            .vault
+            .folders
+            .iter()
+            .find(|folder| folder.id == folder_id)
+            .unwrap();
+        assert_eq!(folder.current_key_version, 1);
+        assert_eq!(
+            stored.folder_access.get(&folder_id),
+            Some(&BTreeSet::from([member]))
+        );
+        assert_eq!(store.sync_bootstrap(&vault_id).unwrap().latest_sequence, 1);
+    }
+
+    #[test]
     fn rejects_missing_required_grant_without_partial_folder() {
         let mut store = bootstrapped_org_store();
         let vault_id = VaultId::new("acme").unwrap();
@@ -2339,6 +2821,41 @@ mod tests {
         let stored = store.load_vault(&vault_id).unwrap();
         assert!(stored.setup_incomplete_folder_ids.is_empty());
         assert!(stored.grants.contains(&grants[0]));
+    }
+
+    #[test]
+    fn finish_setup_rejects_non_empty_setup_incomplete_folder() {
+        let mut store = bootstrapped_org_store();
+        let vault_id = VaultId::new("acme").unwrap();
+        let folder = strategy_folder();
+        store
+            .insert_setup_incomplete_folder_for_repair(&vault_id, &folder, &BTreeSet::new())
+            .unwrap();
+        store
+            .submit_sync_record(
+                &vault_id,
+                &revision_record("event-create-1", "obj_000000000001", 1, None, "create"),
+            )
+            .unwrap();
+
+        assert_eq!(
+            store
+                .finish_folder_setup(
+                    &vault_id,
+                    &folder.id,
+                    &[grant(
+                        "grant-strategy-admin",
+                        "strategy",
+                        1,
+                        "npub-admin",
+                        "npub-admin",
+                    )],
+                )
+                .unwrap_err(),
+            StoreError::BrokenInvariant {
+                reason: "finish setup only supports empty folders".to_owned()
+            }
+        );
     }
 
     #[test]
@@ -2458,6 +2975,72 @@ mod tests {
                 .unwrap_err(),
             StoreError::BrokenInvariant {
                 reason: "member/admin mutation requires an organization vault".to_owned()
+            }
+        );
+    }
+
+    #[test]
+    fn removes_members_and_admins_without_breaking_admin_invariant() {
+        let mut store = bootstrapped_org_store();
+        let vault_id = VaultId::new("acme").unwrap();
+        let member = UserId::new("npub-member").unwrap();
+        store.add_member(&vault_id, &member).unwrap();
+        store.add_admin(&vault_id, &member).unwrap();
+
+        store.remove_admin(&vault_id, &member).unwrap();
+        assert_eq!(
+            store
+                .remove_admin(&vault_id, &UserId::new("npub-admin").unwrap())
+                .unwrap_err(),
+            StoreError::BrokenInvariant {
+                reason: "organization vault must keep at least one admin".to_owned()
+            }
+        );
+
+        store.remove_member(&vault_id, &member).unwrap();
+        let stored = store.load_vault(&vault_id).unwrap();
+        assert!(
+            !stored
+                .vault
+                .members
+                .iter()
+                .any(|stored| stored.user_id == member)
+        );
+    }
+
+    #[test]
+    fn removing_member_requires_admin_and_restricted_access_cleanup_first() {
+        let mut store = store_with_strategy_folder();
+        let vault_id = VaultId::new("acme").unwrap();
+        let admin = UserId::new("npub-admin").unwrap();
+        assert_eq!(
+            store.remove_member(&vault_id, &admin).unwrap_err(),
+            StoreError::BrokenInvariant {
+                reason: "remove admin role before removing member".to_owned()
+            }
+        );
+
+        let member = UserId::new("npub-member").unwrap();
+        store.add_member(&vault_id, &member).unwrap();
+        store
+            .grant_folder_access(
+                &vault_id,
+                &FolderId::new("strategy").unwrap(),
+                &member,
+                &grant(
+                    "grant-strategy-member",
+                    "strategy",
+                    1,
+                    "npub-admin",
+                    member.as_str(),
+                ),
+            )
+            .unwrap();
+
+        assert_eq!(
+            store.remove_member(&vault_id, &member).unwrap_err(),
+            StoreError::BrokenInvariant {
+                reason: "remove restricted folder access before removing member".to_owned()
             }
         );
     }
@@ -2808,7 +3391,23 @@ mod tests {
         base_revision: Option<u64>,
         body: &str,
     ) -> SyncRecordInput {
-        SyncRecordInput::FolderObjectRevision(FolderObjectRevisionSyncRecord {
+        SyncRecordInput::FolderObjectRevision(revision_record_struct(
+            event_id,
+            object_id,
+            revision,
+            base_revision,
+            body,
+        ))
+    }
+
+    fn revision_record_struct(
+        event_id: &str,
+        object_id: &str,
+        revision: u64,
+        base_revision: Option<u64>,
+        body: &str,
+    ) -> FolderObjectRevisionSyncRecord {
+        FolderObjectRevisionSyncRecord {
             record_event_id: event_id.to_owned(),
             folder_id: FolderId::new("strategy").unwrap(),
             object_id: ObjectId::new(object_id).unwrap(),
@@ -2818,7 +3417,7 @@ mod tests {
             client_created_at: "2026-06-23T00:00:00.000Z".to_owned(),
             payload_json: format!("{{\"body\":\"{body}\"}}"),
             record_event_kind: APP_SPECIFIC_KIND,
-        })
+        }
     }
 
     fn tombstone_record(
