@@ -69,9 +69,9 @@ new `finite-nostr` Rust crate so other Finite repos can reuse it.
 | `finite-brain#3` | AFK | complete | Direct review gate in orchestrator | None | `cargo fmt --check`; `cargo test`; `cargo clippy --all-targets -- -D warnings`; `curl /smoke/bootstrap` |
 | `finite-brain#4` | AFK | complete | Direct review gate in orchestrator | Added random-nonce public encrypt helper and deterministic vector helper before commit | `cargo fmt --check`; `cargo test`; `cargo clippy --all-targets -- -D warnings`; `git diff --check` |
 | `finite-brain#5` | AFK | complete | Direct review gate in orchestrator | Tightened org-only member/admin mutation and grant issuer authorization before commit | `cargo fmt --check`; `cargo test`; `cargo clippy --all-targets -- -D warnings`; `git diff --check` |
-| `finite-brain#6` | AFK | ready | None | None | Not started |
+| `finite-brain#6` | AFK | complete | Direct review gate in orchestrator | Folded projection upsert parameters into a typed helper after clippy review | `cargo fmt --check`; `cargo test`; `cargo clippy --all-targets -- -D warnings`; `git diff --check` |
 | `finite-brain#7` | AFK | ready | None | None | Not started |
-| `finite-brain#8` | AFK | blocked by `finite-brain#6`, `finite-brain#7` | None | None | Not started |
+| `finite-brain#8` | AFK | blocked by `finite-brain#7` | None | None | Not started |
 | `finite-brain#9` | AFK | blocked by `finite-nostr#2`, `finite-brain#8` | None | None | Not started |
 | `finite-brain#10` | AFK | blocked by `finite-brain#9` | None | None | Not started |
 | `finite-brain#11` | AFK | blocked by `finite-brain#10` | None | None | Not started |
@@ -89,6 +89,7 @@ new `finite-nostr` Rust crate so other Finite repos can reuse it.
 
 | Issue | Fixed point | Worker session | Commit | Review result | Checks |
 | --- | --- | --- | --- | --- | --- |
+| `finite-brain#6` | `dd692059cc942a6104117692c65cfe9d3aa3e749` | Orchestrator direct implementation | `97c18af` | Standards/spec review passed | `cargo fmt --check`; `cargo test`; `cargo clippy --all-targets -- -D warnings`; `git diff --check` |
 | `finite-brain#5` | `bc4802a14942a71ca7127ee9abf35547bb95ad06` | Orchestrator direct implementation | `ac76671` | Standards/spec review passed | `cargo fmt --check`; `cargo test`; `cargo clippy --all-targets -- -D warnings`; `git diff --check` |
 | `finite-brain#4` | `48460ee442eac4b5d58c7ab6196e8e3ecbc5d0a5` | Orchestrator direct implementation | `ecc34fe` | Standards/spec review passed | `cargo fmt --check`; `cargo test`; `cargo clippy --all-targets -- -D warnings`; `git diff --check` |
 | `finite-brain#3` | `041377794c23ab338bd1dee47b4e209bc2c2ef83` | Orchestrator direct implementation | `c43308d` | Standards/spec review passed | `cargo fmt --check`; `cargo test`; `cargo clippy --all-targets -- -D warnings`; `curl /health`; `curl /smoke/bootstrap` |
