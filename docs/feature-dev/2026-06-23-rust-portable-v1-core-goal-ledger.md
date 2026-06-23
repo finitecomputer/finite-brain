@@ -66,9 +66,9 @@ new `finite-nostr` Rust crate so other Finite repos can reuse it.
 | `finite-nostr#1` | AFK | complete | Direct review gate in orchestrator | None | `cargo fmt --check`; `cargo test`; `cargo clippy --all-targets -- -D warnings` |
 | `finite-nostr#2` | AFK | complete | Direct review gate in orchestrator | None | `cargo fmt --check`; `cargo test`; `cargo clippy --all-targets -- -D warnings`; `git diff --check` |
 | `finite-brain#2` | AFK | complete | Direct review gate in orchestrator | Fixed README workspace docs and ledger command evidence | `cargo fmt --check`; `cargo test`; `cargo clippy --all-targets -- -D warnings`; `cargo build`; local `/health` curl |
-| `finite-brain#3` | AFK | blocked by `finite-brain#2` | None | None | Not started |
-| `finite-brain#4` | AFK | blocked by `finite-nostr#1`, `finite-brain#3` | None | None | Not started |
-| `finite-brain#5` | AFK | blocked by `finite-brain#3` | None | None | Not started |
+| `finite-brain#3` | AFK | complete | Direct review gate in orchestrator | None | `cargo fmt --check`; `cargo test`; `cargo clippy --all-targets -- -D warnings`; `curl /smoke/bootstrap` |
+| `finite-brain#4` | AFK | ready | None | None | Not started |
+| `finite-brain#5` | AFK | ready | None | None | Not started |
 | `finite-brain#6` | AFK | blocked by `finite-brain#4`, `finite-brain#5` | None | None | Not started |
 | `finite-brain#7` | AFK | blocked by `finite-nostr#1`, `finite-brain#5` | None | None | Not started |
 | `finite-brain#8` | AFK | blocked by `finite-brain#6`, `finite-brain#7` | None | None | Not started |
@@ -89,6 +89,7 @@ new `finite-nostr` Rust crate so other Finite repos can reuse it.
 
 | Issue | Fixed point | Worker session | Commit | Review result | Checks |
 | --- | --- | --- | --- | --- | --- |
+| `finite-brain#3` | `041377794c23ab338bd1dee47b4e209bc2c2ef83` | Orchestrator direct implementation | `c43308d` | Standards/spec review passed | `cargo fmt --check`; `cargo test`; `cargo clippy --all-targets -- -D warnings`; `curl /health`; `curl /smoke/bootstrap` |
 | `finite-nostr#2` | `f5c38f36f0377504d695d5509231fde332fa13d2` | Orchestrator direct implementation | `06cd71d` | Standards/spec review passed | `cargo fmt --check`; `cargo test`; `cargo clippy --all-targets -- -D warnings`; `git diff --check` |
 | `finite-nostr#1` | `c92aaec05eef9f181cf62855743564a13dd4bfd0` | Orchestrator direct implementation | `f5c38f3` | Standards/spec review passed | `cargo fmt --check`; `cargo test`; `cargo clippy --all-targets -- -D warnings` |
 | `finite-brain#2` | `9148111454140fa22568cc035b5ea71db6ad1cfd` | Orchestrator direct implementation | pending commit | Standards/spec review passed after README and ledger fixes | `cargo fmt --check`; `cargo test`; `cargo clippy --all-targets -- -D warnings`; `cargo build`; `curl /health` |
