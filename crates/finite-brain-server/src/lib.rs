@@ -1,6 +1,7 @@
 //! FiniteBrain HTTP server and API surface.
 
-use axum::{Json, Router, routing::get};
+use axum::{Json, Router, http::StatusCode, routing::get};
+use finite_brain_core::BootstrapSmokeSummary;
 
 /// Development status returned by the first smoke path.
 #[derive(Debug, Clone, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
@@ -26,6 +27,7 @@ pub fn router() -> Router {
     Router::new()
         .route("/", get(root_handler))
         .route("/health", get(health_handler))
+        .route("/smoke/bootstrap", get(bootstrap_smoke_handler))
 }
 
 async fn root_handler() -> &'static str {
@@ -34,6 +36,12 @@ async fn root_handler() -> &'static str {
 
 async fn health_handler() -> Json<HealthStatus> {
     Json(health_status())
+}
+
+async fn bootstrap_smoke_handler() -> Result<Json<BootstrapSmokeSummary>, (StatusCode, String)> {
+    finite_brain_core::smoke_bootstrap_summary()
+        .map(Json)
+        .map_err(|error| (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))
 }
 
 #[cfg(test)]
@@ -76,5 +84,30 @@ mod tests {
         let status: HealthStatus = serde_json::from_slice(&body).expect("health json");
 
         assert_eq!(status, health_status());
+    }
+
+    #[tokio::test]
+    async fn smoke_bootstrap_route_returns_core_summary() {
+        let response = router()
+            .oneshot(
+                Request::builder()
+                    .uri("/smoke/bootstrap")
+                    .body(Body::empty())
+                    .expect("valid request"),
+            )
+            .await
+            .expect("bootstrap route response");
+
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body = to_bytes(response.into_body(), 4096)
+            .await
+            .expect("bootstrap body");
+        let summary: BootstrapSmokeSummary = serde_json::from_slice(&body).expect("bootstrap json");
+
+        assert_eq!(
+            summary,
+            finite_brain_core::smoke_bootstrap_summary().expect("smoke bootstrap summary")
+        );
     }
 }

@@ -9,6 +9,9 @@ description = "FiniteBrain Portable v1 core domain and validation logic."
 [lib]
 path = "src/lib.rs"
 
+[dependencies]
+serde = { version = "1.0.228", features = ["derive"] }
+unicode-normalization = "0.1.25"
+
 [lints]
 workspace = true
-
