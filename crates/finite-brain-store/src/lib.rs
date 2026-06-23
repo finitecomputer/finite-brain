@@ -7,12 +7,15 @@ use std::path::Path;
 
 use finite_brain_core::{
     BootstrapOutput, CoreError, DisplayName, Folder, FolderAccessMode, FolderId, FolderRole,
-    RequiredFolderKeyGrant, SafeRelativePath, UserId, Vault, VaultId, VaultKind, VaultMember,
+    ObjectId, RequiredFolderKeyGrant, SafeRelativePath, UserId, Vault, VaultId, VaultKind,
+    VaultMember,
 };
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 
-const MIGRATION_VERSION: i64 = 1;
 const GRANT_FORMAT_NIP59: &str = "NIP-59";
+const MAX_PULL_LIMIT: u64 = 1_000;
+const APP_SPECIFIC_KIND: u16 = 30_078;
+const ACCEPTED_AT: &str = "2026-06-23T00:00:00.000Z";
 
 /// Returns the crate name used in workspace status surfaces.
 pub fn crate_name() -> &'static str {
@@ -36,6 +39,15 @@ pub enum StoreError {
     MissingRequiredGrant { recipient_user_id: String },
     /// Stored state would violate Vault, member, admin, access, or grant rules.
     BrokenInvariant { reason: String },
+    /// A sync record is malformed or violates request semantics.
+    InvalidRecord { reason: String },
+    /// A sync record lost optimistic concurrency.
+    Conflict {
+        reason: String,
+        current_revision: Option<u64>,
+    },
+    /// The client cursor is older than the retained floor.
+    RebootstrapRequired { retention_floor: u64 },
 }
 
 impl fmt::Display for StoreError {
@@ -52,6 +64,20 @@ impl fmt::Display for StoreError {
                 write!(f, "missing required grant for {recipient_user_id}")
             }
             Self::BrokenInvariant { reason } => write!(f, "broken invariant: {reason}"),
+            Self::InvalidRecord { reason } => write!(f, "invalid record: {reason}"),
+            Self::Conflict {
+                reason,
+                current_revision,
+            } => write!(
+                f,
+                "sync conflict: {reason}; current revision: {current_revision:?}"
+            ),
+            Self::RebootstrapRequired { retention_floor } => {
+                write!(
+                    f,
+                    "rebootstrap required from retention floor {retention_floor}"
+                )
+            }
         }
     }
 }
@@ -106,6 +132,182 @@ pub struct StoredVault {
     pub grants: Vec<FolderKeyGrantMetadata>,
     /// Folders that still need current grants.
     pub setup_incomplete_folder_ids: BTreeSet<FolderId>,
+}
+
+/// Accepted sync record type.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum SyncRecordType {
+    /// Encrypted Folder Object create/update/move.
+    FolderObjectRevision,
+    /// Encrypted Folder Object tombstone/delete.
+    FolderObjectTombstone,
+    /// Folder Key Grant control record.
+    FolderKeyGrant,
+    /// Vault admin access-change control record.
+    VaultAdminAccessChange,
+}
+
+/// Folder Object revision sync submission after crypto/signature validation.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct FolderObjectRevisionSyncRecord {
+    /// Signed event id.
+    pub record_event_id: String,
+    /// Folder id.
+    pub folder_id: FolderId,
+    /// Object id.
+    pub object_id: ObjectId,
+    /// New revision.
+    pub revision: u64,
+    /// Client-observed base revision.
+    pub base_revision: Option<u64>,
+    /// Actor npub.
+    pub actor_npub: UserId,
+    /// Client payload timestamp.
+    pub client_created_at: String,
+    /// Exact encrypted request payload JSON.
+    pub payload_json: String,
+    /// Signed event kind.
+    pub record_event_kind: u16,
+}
+
+/// Folder Object tombstone sync submission after crypto/signature validation.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct FolderObjectTombstoneSyncRecord {
+    /// Signed event id.
+    pub record_event_id: String,
+    /// Folder id.
+    pub folder_id: FolderId,
+    /// Object id.
+    pub object_id: ObjectId,
+    /// New tombstone revision.
+    pub revision: u64,
+    /// Client-observed base revision.
+    pub base_revision: u64,
+    /// Actor npub.
+    pub actor_npub: UserId,
+    /// Client payload timestamp.
+    pub client_created_at: String,
+    /// Exact encrypted tombstone request payload JSON.
+    pub payload_json: String,
+    /// Signed event kind.
+    pub record_event_kind: u16,
+}
+
+/// Non-object control record sync submission.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct ControlSyncRecord {
+    /// Signed event id.
+    pub record_event_id: String,
+    /// Control record type.
+    pub record_type: SyncRecordType,
+    /// Optional Folder id.
+    pub folder_id: Option<FolderId>,
+    /// Actor npub.
+    pub actor_npub: UserId,
+    /// Client payload timestamp.
+    pub client_created_at: String,
+    /// Exact control payload JSON.
+    pub payload_json: String,
+    /// Signed event kind.
+    pub record_event_kind: u16,
+}
+
+/// Sync record submission.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub enum SyncRecordInput {
+    /// Folder Object revision.
+    FolderObjectRevision(FolderObjectRevisionSyncRecord),
+    /// Folder Object tombstone.
+    FolderObjectTombstone(FolderObjectTombstoneSyncRecord),
+    /// Control record.
+    Control(ControlSyncRecord),
+}
+
+/// Result of accepting or retrying a sync record.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct SubmitRecordOutcome {
+    /// Vault-scoped sequence.
+    pub sequence: u64,
+    /// True when this event id was already accepted.
+    pub duplicate: bool,
+}
+
+/// Stored accepted sync record.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct StoredSyncRecord {
+    /// Vault-scoped sequence.
+    pub sequence: u64,
+    /// Signed event id.
+    pub record_event_id: String,
+    /// Record type.
+    pub record_type: SyncRecordType,
+    /// Optional Folder id.
+    pub folder_id: Option<FolderId>,
+    /// Optional object id.
+    pub object_id: Option<ObjectId>,
+    /// Optional object revision.
+    pub revision: Option<u64>,
+    /// Actor npub.
+    pub actor_npub: UserId,
+    /// Client payload timestamp.
+    pub client_created_at: String,
+    /// Exact submitted payload JSON.
+    pub payload_json: String,
+    /// Server accepted timestamp.
+    pub accepted_at: String,
+    /// Signed event kind.
+    pub record_event_kind: u16,
+}
+
+/// Current encrypted object projection.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct CurrentEncryptedObject {
+    /// Folder id.
+    pub folder_id: FolderId,
+    /// Object id.
+    pub object_id: ObjectId,
+    /// Current encrypted payload JSON.
+    pub payload_json: String,
+    /// Current revision.
+    pub revision: u64,
+    /// Projection update timestamp.
+    pub updated_at: String,
+    /// Whether the current projection is deleted.
+    pub deleted: bool,
+}
+
+/// Bootstrap response data for rebuilding current encrypted state.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct SyncBootstrap {
+    /// Vault id.
+    pub vault_id: VaultId,
+    /// Latest accepted sequence.
+    pub latest_sequence: u64,
+    /// Current encrypted objects.
+    pub objects: Vec<CurrentEncryptedObject>,
+    /// Object count.
+    pub object_count: usize,
+    /// Current state kind string.
+    pub current_state_kind: &'static str,
+}
+
+/// Incremental sync pull result.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct SyncPull {
+    /// Vault id.
+    pub vault_id: VaultId,
+    /// Requested cursor.
+    pub after_sequence: u64,
+    /// Latest sequence at read time.
+    pub latest_sequence: u64,
+    /// Returned records.
+    pub records: Vec<StoredSyncRecord>,
+    /// Returned count.
+    pub count: usize,
+    /// Whether more records are available after `next_sequence`.
+    pub has_more: bool,
+    /// Cursor to use for the next pull.
+    pub next_sequence: u64,
 }
 
 /// Narrow SQLite-backed authoritative store.
@@ -314,6 +516,139 @@ impl BrainStore {
         Ok(exists)
     }
 
+    /// Accept a validated sync record, assign a Vault-scoped sequence, and update projections.
+    pub fn submit_sync_record(
+        &mut self,
+        vault_id: &VaultId,
+        input: &SyncRecordInput,
+    ) -> Result<SubmitRecordOutcome, StoreError> {
+        self.load_core_vault(vault_id)?;
+        validate_sync_input(input)?;
+
+        let tx = self.conn.transaction()?;
+        if let Some(sequence) = existing_sequence(&tx, vault_id, input.record_event_id())? {
+            tx.commit()?;
+            return Ok(SubmitRecordOutcome {
+                sequence,
+                duplicate: true,
+            });
+        }
+
+        validate_sync_conflict(&tx, vault_id, input)?;
+        let sequence = next_sequence(&tx, vault_id)?;
+        insert_sync_record(&tx, vault_id, sequence, input)?;
+        project_sync_record(&tx, vault_id, input)?;
+        tx.commit()?;
+
+        Ok(SubmitRecordOutcome {
+            sequence,
+            duplicate: false,
+        })
+    }
+
+    /// Return the current encrypted state for rebootstrap.
+    pub fn sync_bootstrap(&self, vault_id: &VaultId) -> Result<SyncBootstrap, StoreError> {
+        self.require_vault_exists(vault_id)?;
+        let objects = self.load_current_objects(vault_id)?;
+        Ok(SyncBootstrap {
+            vault_id: vault_id.clone(),
+            latest_sequence: self.latest_sequence(vault_id)?,
+            object_count: objects.len(),
+            objects,
+            current_state_kind: "current_encrypted_vault_state",
+        })
+    }
+
+    /// Pull accepted records after a cursor with bounded pagination.
+    pub fn pull_sync_records(
+        &self,
+        vault_id: &VaultId,
+        after_sequence: u64,
+        limit: u64,
+    ) -> Result<SyncPull, StoreError> {
+        self.require_vault_exists(vault_id)?;
+        let retention_floor = self.retention_floor(vault_id)?;
+        if after_sequence < retention_floor {
+            return Err(StoreError::RebootstrapRequired { retention_floor });
+        }
+
+        let latest_sequence = self.latest_sequence(vault_id)?;
+        let limit = limit.clamp(1, MAX_PULL_LIMIT);
+        let fetch_limit = limit + 1;
+        let mut stmt = self.conn.prepare(
+            r#"
+            SELECT sequence, record_event_id, record_type, folder_id, object_id, revision,
+                   actor_npub, client_created_at, payload_json, accepted_at, record_event_kind
+            FROM vault_record_index
+            WHERE vault_id = ?1 AND sequence > ?2
+            ORDER BY sequence
+            LIMIT ?3
+            "#,
+        )?;
+        let rows = stmt.query_map(
+            params![vault_id.as_str(), after_sequence, fetch_limit],
+            stored_sync_record_from_row,
+        )?;
+
+        let mut records = Vec::new();
+        for row in rows {
+            records.push(row?);
+        }
+        let has_more = records.len() as u64 > limit;
+        if has_more {
+            records.truncate(limit as usize);
+        }
+        let next_sequence = records
+            .last()
+            .map_or(latest_sequence, |record| record.sequence);
+
+        Ok(SyncPull {
+            vault_id: vault_id.clone(),
+            after_sequence,
+            latest_sequence,
+            count: records.len(),
+            records,
+            has_more,
+            next_sequence,
+        })
+    }
+
+    /// Set the retained cursor floor for a Vault.
+    pub fn set_retention_floor(
+        &mut self,
+        vault_id: &VaultId,
+        retention_floor: u64,
+    ) -> Result<(), StoreError> {
+        self.require_vault_exists(vault_id)?;
+        self.conn.execute(
+            r#"
+            INSERT INTO vault_sync_retention (vault_id, retention_floor)
+            VALUES (?1, ?2)
+            ON CONFLICT(vault_id) DO UPDATE SET retention_floor = excluded.retention_floor
+            "#,
+            params![vault_id.as_str(), retention_floor],
+        )?;
+        Ok(())
+    }
+
+    /// Rebuild current encrypted object projection from the accepted append log.
+    pub fn rebuild_current_projection(&mut self, vault_id: &VaultId) -> Result<(), StoreError> {
+        self.require_vault_exists(vault_id)?;
+        let tx = self.conn.transaction()?;
+        tx.execute(
+            "DELETE FROM current_encrypted_vault_objects WHERE vault_id = ?1",
+            params![vault_id.as_str()],
+        )?;
+
+        let records = load_sync_records_tx(&tx, vault_id)?;
+        for record in &records {
+            project_stored_record(&tx, vault_id, record)?;
+        }
+
+        tx.commit()?;
+        Ok(())
+    }
+
     fn apply_migrations(&mut self) -> Result<(), StoreError> {
         let tx = self.conn.transaction()?;
         tx.execute_batch(
@@ -325,25 +660,37 @@ impl BrainStore {
             "#,
         )?;
 
-        let applied = tx
-            .query_row(
-                "SELECT 1 FROM schema_migrations WHERE version = ?1",
-                params![MIGRATION_VERSION],
-                |_| Ok(()),
-            )
-            .optional()?
-            .is_some();
-
-        if !applied {
+        if !migration_applied(&tx, 1)? {
             tx.execute_batch(SCHEMA_V1)?;
             tx.execute(
                 "INSERT INTO schema_migrations (version, applied_at) VALUES (?1, ?2)",
-                params![MIGRATION_VERSION, "2026-06-23T00:00:00.000Z"],
+                params![1, ACCEPTED_AT],
+            )?;
+        }
+
+        if !migration_applied(&tx, 2)? {
+            tx.execute_batch(SCHEMA_V2)?;
+            tx.execute(
+                "INSERT INTO schema_migrations (version, applied_at) VALUES (?1, ?2)",
+                params![2, ACCEPTED_AT],
             )?;
         }
 
         tx.commit()?;
         Ok(())
+    }
+
+    fn require_vault_exists(&self, vault_id: &VaultId) -> Result<(), StoreError> {
+        self.conn
+            .query_row(
+                "SELECT 1 FROM vaults WHERE id = ?1",
+                params![vault_id.as_str()],
+                |_| Ok(()),
+            )
+            .optional()?
+            .ok_or_else(|| StoreError::MissingVault {
+                vault_id: vault_id.to_string(),
+            })
     }
 
     fn require_organization_vault(&self, vault_id: &VaultId) -> Result<(), StoreError> {
@@ -553,6 +900,58 @@ impl BrainStore {
         }
         Ok(ids)
     }
+
+    fn latest_sequence(&self, vault_id: &VaultId) -> Result<u64, StoreError> {
+        let latest = self.conn.query_row(
+            "SELECT COALESCE(MAX(sequence), 0) FROM vault_record_index WHERE vault_id = ?1",
+            params![vault_id.as_str()],
+            |row| row.get::<_, u64>(0),
+        )?;
+        Ok(latest)
+    }
+
+    fn retention_floor(&self, vault_id: &VaultId) -> Result<u64, StoreError> {
+        let floor = self
+            .conn
+            .query_row(
+                "SELECT retention_floor FROM vault_sync_retention WHERE vault_id = ?1",
+                params![vault_id.as_str()],
+                |row| row.get::<_, u64>(0),
+            )
+            .optional()?
+            .unwrap_or(0);
+        Ok(floor)
+    }
+
+    fn load_current_objects(
+        &self,
+        vault_id: &VaultId,
+    ) -> Result<Vec<CurrentEncryptedObject>, StoreError> {
+        let mut stmt = self.conn.prepare(
+            r#"
+            SELECT folder_id, object_id, payload_json, revision, updated_at, deleted
+            FROM current_encrypted_vault_objects
+            WHERE vault_id = ?1
+            ORDER BY folder_id, object_id
+            "#,
+        )?;
+        let rows = stmt.query_map(params![vault_id.as_str()], |row| {
+            Ok(CurrentObjectRow {
+                folder_id: row.get(0)?,
+                object_id: row.get(1)?,
+                payload_json: row.get(2)?,
+                revision: row.get(3)?,
+                updated_at: row.get(4)?,
+                deleted: row.get(5)?,
+            })
+        })?;
+
+        let mut objects = Vec::new();
+        for row in rows {
+            objects.push(row?.try_into_current_object()?);
+        }
+        Ok(objects)
+    }
 }
 
 const SCHEMA_V1: &str = r#"
@@ -631,6 +1030,181 @@ CREATE TABLE folder_key_grants (
 );
 "#;
 
+const SCHEMA_V2: &str = r#"
+CREATE TABLE vault_record_index (
+    vault_id TEXT NOT NULL,
+    sequence INTEGER NOT NULL CHECK (sequence > 0),
+    record_event_id TEXT NOT NULL,
+    record_type TEXT NOT NULL CHECK (
+        record_type IN (
+            'folder_object_revision',
+            'folder_object_tombstone',
+            'folder_key_grant',
+            'vault_admin_access_change'
+        )
+    ),
+    folder_id TEXT,
+    object_id TEXT,
+    revision INTEGER,
+    actor_npub TEXT NOT NULL,
+    client_created_at TEXT NOT NULL,
+    payload_json TEXT NOT NULL,
+    accepted_at TEXT NOT NULL,
+    record_event_kind INTEGER NOT NULL,
+    PRIMARY KEY (vault_id, sequence),
+    UNIQUE (vault_id, record_event_id),
+    FOREIGN KEY (vault_id) REFERENCES vaults(id) ON DELETE CASCADE,
+    FOREIGN KEY (vault_id, folder_id) REFERENCES folders(vault_id, id)
+        ON DELETE RESTRICT
+);
+
+CREATE INDEX vault_record_index_by_event
+    ON vault_record_index(vault_id, record_event_id);
+
+CREATE TABLE current_encrypted_vault_objects (
+    vault_id TEXT NOT NULL,
+    folder_id TEXT NOT NULL,
+    object_id TEXT NOT NULL,
+    payload_json TEXT NOT NULL,
+    revision INTEGER NOT NULL CHECK (revision > 0),
+    updated_at TEXT NOT NULL,
+    deleted INTEGER NOT NULL CHECK (deleted IN (0, 1)),
+    PRIMARY KEY (vault_id, folder_id, object_id),
+    FOREIGN KEY (vault_id, folder_id) REFERENCES folders(vault_id, id)
+        ON DELETE CASCADE
+);
+
+CREATE TABLE vault_sync_retention (
+    vault_id TEXT PRIMARY KEY NOT NULL,
+    retention_floor INTEGER NOT NULL CHECK (retention_floor >= 0),
+    FOREIGN KEY (vault_id) REFERENCES vaults(id) ON DELETE CASCADE
+);
+"#;
+
+impl SyncRecordType {
+    fn as_str(&self) -> &'static str {
+        match self {
+            Self::FolderObjectRevision => "folder_object_revision",
+            Self::FolderObjectTombstone => "folder_object_tombstone",
+            Self::FolderKeyGrant => "folder_key_grant",
+            Self::VaultAdminAccessChange => "vault_admin_access_change",
+        }
+    }
+}
+
+impl TryFrom<&str> for SyncRecordType {
+    type Error = StoreError;
+
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        match value {
+            "folder_object_revision" => Ok(Self::FolderObjectRevision),
+            "folder_object_tombstone" => Ok(Self::FolderObjectTombstone),
+            "folder_key_grant" => Ok(Self::FolderKeyGrant),
+            "vault_admin_access_change" => Ok(Self::VaultAdminAccessChange),
+            _ => Err(StoreError::BrokenInvariant {
+                reason: format!("unknown sync record type: {value}"),
+            }),
+        }
+    }
+}
+
+impl SyncRecordInput {
+    fn record_event_id(&self) -> &str {
+        match self {
+            Self::FolderObjectRevision(record) => &record.record_event_id,
+            Self::FolderObjectTombstone(record) => &record.record_event_id,
+            Self::Control(record) => &record.record_event_id,
+        }
+    }
+
+    fn record_type(&self) -> SyncRecordType {
+        match self {
+            Self::FolderObjectRevision(_) => SyncRecordType::FolderObjectRevision,
+            Self::FolderObjectTombstone(_) => SyncRecordType::FolderObjectTombstone,
+            Self::Control(record) => record.record_type,
+        }
+    }
+
+    fn folder_id(&self) -> Option<&FolderId> {
+        match self {
+            Self::FolderObjectRevision(record) => Some(&record.folder_id),
+            Self::FolderObjectTombstone(record) => Some(&record.folder_id),
+            Self::Control(record) => record.folder_id.as_ref(),
+        }
+    }
+
+    fn object_id(&self) -> Option<&ObjectId> {
+        match self {
+            Self::FolderObjectRevision(record) => Some(&record.object_id),
+            Self::FolderObjectTombstone(record) => Some(&record.object_id),
+            Self::Control(_) => None,
+        }
+    }
+
+    fn revision(&self) -> Option<u64> {
+        match self {
+            Self::FolderObjectRevision(record) => Some(record.revision),
+            Self::FolderObjectTombstone(record) => Some(record.revision),
+            Self::Control(_) => None,
+        }
+    }
+
+    fn actor_npub(&self) -> &UserId {
+        match self {
+            Self::FolderObjectRevision(record) => &record.actor_npub,
+            Self::FolderObjectTombstone(record) => &record.actor_npub,
+            Self::Control(record) => &record.actor_npub,
+        }
+    }
+
+    fn client_created_at(&self) -> &str {
+        match self {
+            Self::FolderObjectRevision(record) => &record.client_created_at,
+            Self::FolderObjectTombstone(record) => &record.client_created_at,
+            Self::Control(record) => &record.client_created_at,
+        }
+    }
+
+    fn payload_json(&self) -> &str {
+        match self {
+            Self::FolderObjectRevision(record) => &record.payload_json,
+            Self::FolderObjectTombstone(record) => &record.payload_json,
+            Self::Control(record) => &record.payload_json,
+        }
+    }
+
+    fn record_event_kind(&self) -> u16 {
+        match self {
+            Self::FolderObjectRevision(record) => record.record_event_kind,
+            Self::FolderObjectTombstone(record) => record.record_event_kind,
+            Self::Control(record) => record.record_event_kind,
+        }
+    }
+}
+
+#[derive(Debug)]
+struct CurrentObjectRow {
+    folder_id: String,
+    object_id: String,
+    payload_json: String,
+    revision: u64,
+    updated_at: String,
+    deleted: bool,
+}
+
+impl CurrentObjectRow {
+    fn try_into_current_object(self) -> Result<CurrentEncryptedObject, StoreError> {
+        Ok(CurrentEncryptedObject {
+            folder_id: FolderId::new(self.folder_id)?,
+            object_id: ObjectId::new(self.object_id)?,
+            payload_json: self.payload_json,
+            revision: self.revision,
+            updated_at: self.updated_at,
+            deleted: self.deleted,
+        })
+    }
+}
+
 #[derive(Debug)]
 struct StoredFolderRow {
     id: String,
@@ -685,6 +1259,413 @@ impl StoredGrantRow {
             created_at: self.created_at,
         })
     }
+}
+
+fn migration_applied(tx: &Transaction<'_>, version: i64) -> Result<bool, StoreError> {
+    let applied = tx
+        .query_row(
+            "SELECT 1 FROM schema_migrations WHERE version = ?1",
+            params![version],
+            |_| Ok(()),
+        )
+        .optional()?
+        .is_some();
+    Ok(applied)
+}
+
+fn validate_sync_input(input: &SyncRecordInput) -> Result<(), StoreError> {
+    if input.record_event_id().trim().is_empty() {
+        return Err(StoreError::InvalidRecord {
+            reason: "record event id is required".to_owned(),
+        });
+    }
+    if input.payload_json().trim().is_empty() {
+        return Err(StoreError::InvalidRecord {
+            reason: "payload JSON is required".to_owned(),
+        });
+    }
+    if input.record_event_kind() != APP_SPECIFIC_KIND {
+        return Err(StoreError::InvalidRecord {
+            reason: format!(
+                "expected event kind {APP_SPECIFIC_KIND}, got {}",
+                input.record_event_kind()
+            ),
+        });
+    }
+
+    if let SyncRecordInput::Control(record) = input
+        && matches!(
+            record.record_type,
+            SyncRecordType::FolderObjectRevision | SyncRecordType::FolderObjectTombstone
+        )
+    {
+        return Err(StoreError::InvalidRecord {
+            reason: "object sync types must use object record inputs".to_owned(),
+        });
+    }
+
+    Ok(())
+}
+
+fn existing_sequence(
+    tx: &Transaction<'_>,
+    vault_id: &VaultId,
+    event_id: &str,
+) -> Result<Option<u64>, StoreError> {
+    tx.query_row(
+        "SELECT sequence FROM vault_record_index WHERE vault_id = ?1 AND record_event_id = ?2",
+        params![vault_id.as_str(), event_id],
+        |row| row.get::<_, u64>(0),
+    )
+    .optional()
+    .map_err(StoreError::from)
+}
+
+fn next_sequence(tx: &Transaction<'_>, vault_id: &VaultId) -> Result<u64, StoreError> {
+    let next = tx.query_row(
+        "SELECT COALESCE(MAX(sequence), 0) + 1 FROM vault_record_index WHERE vault_id = ?1",
+        params![vault_id.as_str()],
+        |row| row.get::<_, u64>(0),
+    )?;
+    Ok(next)
+}
+
+fn validate_sync_conflict(
+    tx: &Transaction<'_>,
+    vault_id: &VaultId,
+    input: &SyncRecordInput,
+) -> Result<(), StoreError> {
+    if let Some(folder_id) = input.folder_id() {
+        ensure_folder_exists_tx(tx, vault_id, folder_id)?;
+    }
+
+    match input {
+        SyncRecordInput::FolderObjectRevision(record) => {
+            let current = current_object_tx(tx, vault_id, &record.folder_id, &record.object_id)?;
+            if record.base_revision.is_none() {
+                if record.revision != 1 {
+                    return Err(StoreError::InvalidRecord {
+                        reason: "create revision must be 1".to_owned(),
+                    });
+                }
+                if current.is_some() {
+                    return Err(StoreError::Conflict {
+                        reason: "object already exists".to_owned(),
+                        current_revision: current.map(|object| object.revision),
+                    });
+                }
+                return Ok(());
+            }
+
+            let base_revision = record
+                .base_revision
+                .ok_or_else(|| StoreError::InvalidRecord {
+                    reason: "update and move require baseRevision".to_owned(),
+                })?;
+            let current = current.ok_or_else(|| StoreError::Conflict {
+                reason: "object does not exist".to_owned(),
+                current_revision: None,
+            })?;
+            if current.deleted {
+                return Err(StoreError::Conflict {
+                    reason: "object is deleted".to_owned(),
+                    current_revision: Some(current.revision),
+                });
+            }
+            if base_revision != current.revision {
+                return Err(StoreError::Conflict {
+                    reason: "baseRevision does not match current folder object revision".to_owned(),
+                    current_revision: Some(current.revision),
+                });
+            }
+            if record.revision != base_revision + 1 {
+                return Err(StoreError::InvalidRecord {
+                    reason: "revision must advance baseRevision by one".to_owned(),
+                });
+            }
+        }
+        SyncRecordInput::FolderObjectTombstone(record) => {
+            let current = current_object_tx(tx, vault_id, &record.folder_id, &record.object_id)?
+                .ok_or_else(|| StoreError::Conflict {
+                    reason: "object does not exist".to_owned(),
+                    current_revision: None,
+                })?;
+            if current.deleted {
+                return Err(StoreError::Conflict {
+                    reason: "object is already deleted".to_owned(),
+                    current_revision: Some(current.revision),
+                });
+            }
+            if record.base_revision != current.revision {
+                return Err(StoreError::Conflict {
+                    reason: "baseRevision does not match current folder object revision".to_owned(),
+                    current_revision: Some(current.revision),
+                });
+            }
+            if record.revision != record.base_revision + 1 {
+                return Err(StoreError::InvalidRecord {
+                    reason: "tombstone revision must advance baseRevision by one".to_owned(),
+                });
+            }
+        }
+        SyncRecordInput::Control(_) => {}
+    }
+    Ok(())
+}
+
+fn ensure_folder_exists_tx(
+    tx: &Transaction<'_>,
+    vault_id: &VaultId,
+    folder_id: &FolderId,
+) -> Result<(), StoreError> {
+    let exists = tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM folders WHERE vault_id = ?1 AND id = ?2)",
+        params![vault_id.as_str(), folder_id.as_str()],
+        |row| row.get::<_, bool>(0),
+    )?;
+    if exists {
+        Ok(())
+    } else {
+        Err(StoreError::MissingFolder {
+            folder_id: folder_id.to_string(),
+        })
+    }
+}
+
+fn current_object_tx(
+    tx: &Transaction<'_>,
+    vault_id: &VaultId,
+    folder_id: &FolderId,
+    object_id: &ObjectId,
+) -> Result<Option<CurrentEncryptedObject>, StoreError> {
+    tx.query_row(
+        r#"
+        SELECT folder_id, object_id, payload_json, revision, updated_at, deleted
+        FROM current_encrypted_vault_objects
+        WHERE vault_id = ?1 AND folder_id = ?2 AND object_id = ?3
+        "#,
+        params![vault_id.as_str(), folder_id.as_str(), object_id.as_str()],
+        |row| {
+            Ok(CurrentObjectRow {
+                folder_id: row.get(0)?,
+                object_id: row.get(1)?,
+                payload_json: row.get(2)?,
+                revision: row.get(3)?,
+                updated_at: row.get(4)?,
+                deleted: row.get(5)?,
+            })
+        },
+    )
+    .optional()?
+    .map(CurrentObjectRow::try_into_current_object)
+    .transpose()
+}
+
+fn insert_sync_record(
+    tx: &Transaction<'_>,
+    vault_id: &VaultId,
+    sequence: u64,
+    input: &SyncRecordInput,
+) -> Result<(), StoreError> {
+    tx.execute(
+        r#"
+        INSERT INTO vault_record_index (
+            vault_id, sequence, record_event_id, record_type, folder_id, object_id, revision,
+            actor_npub, client_created_at, payload_json, accepted_at, record_event_kind
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+        "#,
+        params![
+            vault_id.as_str(),
+            sequence,
+            input.record_event_id(),
+            input.record_type().as_str(),
+            input.folder_id().map(FolderId::as_str),
+            input.object_id().map(ObjectId::as_str),
+            input.revision(),
+            input.actor_npub().as_str(),
+            input.client_created_at(),
+            input.payload_json(),
+            ACCEPTED_AT,
+            input.record_event_kind()
+        ],
+    )?;
+    Ok(())
+}
+
+fn project_sync_record(
+    tx: &Transaction<'_>,
+    vault_id: &VaultId,
+    input: &SyncRecordInput,
+) -> Result<(), StoreError> {
+    match input {
+        SyncRecordInput::FolderObjectRevision(record) => upsert_current_object(
+            tx,
+            vault_id,
+            ProjectionUpdate {
+                folder_id: &record.folder_id,
+                object_id: &record.object_id,
+                payload_json: &record.payload_json,
+                revision: record.revision,
+                updated_at: &record.client_created_at,
+                deleted: false,
+            },
+        ),
+        SyncRecordInput::FolderObjectTombstone(record) => upsert_current_object(
+            tx,
+            vault_id,
+            ProjectionUpdate {
+                folder_id: &record.folder_id,
+                object_id: &record.object_id,
+                payload_json: &record.payload_json,
+                revision: record.revision,
+                updated_at: &record.client_created_at,
+                deleted: true,
+            },
+        ),
+        SyncRecordInput::Control(_) => Ok(()),
+    }
+}
+
+fn project_stored_record(
+    tx: &Transaction<'_>,
+    vault_id: &VaultId,
+    record: &StoredSyncRecord,
+) -> Result<(), StoreError> {
+    match record.record_type {
+        SyncRecordType::FolderObjectRevision | SyncRecordType::FolderObjectTombstone => {
+            let folder_id =
+                record
+                    .folder_id
+                    .as_ref()
+                    .ok_or_else(|| StoreError::BrokenInvariant {
+                        reason: "object sync record is missing folder id".to_owned(),
+                    })?;
+            let object_id =
+                record
+                    .object_id
+                    .as_ref()
+                    .ok_or_else(|| StoreError::BrokenInvariant {
+                        reason: "object sync record is missing object id".to_owned(),
+                    })?;
+            let revision = record.revision.ok_or_else(|| StoreError::BrokenInvariant {
+                reason: "object sync record is missing revision".to_owned(),
+            })?;
+            upsert_current_object(
+                tx,
+                vault_id,
+                ProjectionUpdate {
+                    folder_id,
+                    object_id,
+                    payload_json: &record.payload_json,
+                    revision,
+                    updated_at: &record.client_created_at,
+                    deleted: record.record_type == SyncRecordType::FolderObjectTombstone,
+                },
+            )
+        }
+        SyncRecordType::FolderKeyGrant | SyncRecordType::VaultAdminAccessChange => Ok(()),
+    }
+}
+
+struct ProjectionUpdate<'a> {
+    folder_id: &'a FolderId,
+    object_id: &'a ObjectId,
+    payload_json: &'a str,
+    revision: u64,
+    updated_at: &'a str,
+    deleted: bool,
+}
+
+fn upsert_current_object(
+    tx: &Transaction<'_>,
+    vault_id: &VaultId,
+    update: ProjectionUpdate<'_>,
+) -> Result<(), StoreError> {
+    tx.execute(
+        r#"
+        INSERT INTO current_encrypted_vault_objects (
+            vault_id, folder_id, object_id, payload_json, revision, updated_at, deleted
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+        ON CONFLICT(vault_id, folder_id, object_id) DO UPDATE SET
+            payload_json = excluded.payload_json,
+            revision = excluded.revision,
+            updated_at = excluded.updated_at,
+            deleted = excluded.deleted
+        "#,
+        params![
+            vault_id.as_str(),
+            update.folder_id.as_str(),
+            update.object_id.as_str(),
+            update.payload_json,
+            update.revision,
+            update.updated_at,
+            update.deleted
+        ],
+    )?;
+    Ok(())
+}
+
+fn load_sync_records_tx(
+    tx: &Transaction<'_>,
+    vault_id: &VaultId,
+) -> Result<Vec<StoredSyncRecord>, StoreError> {
+    let mut stmt = tx.prepare(
+        r#"
+        SELECT sequence, record_event_id, record_type, folder_id, object_id, revision,
+               actor_npub, client_created_at, payload_json, accepted_at, record_event_kind
+        FROM vault_record_index
+        WHERE vault_id = ?1
+        ORDER BY sequence
+        "#,
+    )?;
+    let rows = stmt.query_map(params![vault_id.as_str()], stored_sync_record_from_row)?;
+
+    let mut records = Vec::new();
+    for row in rows {
+        records.push(row?);
+    }
+    Ok(records)
+}
+
+fn stored_sync_record_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredSyncRecord> {
+    let record_type = row.get::<_, String>(2)?;
+    let folder_id = row.get::<_, Option<String>>(3)?;
+    let object_id = row.get::<_, Option<String>>(4)?;
+    Ok(StoredSyncRecord {
+        sequence: row.get(0)?,
+        record_event_id: row.get(1)?,
+        record_type: SyncRecordType::try_from(record_type.as_str()).map_err(|error| {
+            rusqlite::Error::FromSqlConversionFailure(
+                2,
+                rusqlite::types::Type::Text,
+                Box::new(error),
+            )
+        })?,
+        folder_id: folder_id
+            .map(FolderId::new)
+            .transpose()
+            .map_err(to_from_sql_error(3, rusqlite::types::Type::Text))?,
+        object_id: object_id
+            .map(ObjectId::new)
+            .transpose()
+            .map_err(to_from_sql_error(4, rusqlite::types::Type::Text))?,
+        revision: row.get(5)?,
+        actor_npub: UserId::new(row.get::<_, String>(6)?)
+            .map_err(to_from_sql_error(6, rusqlite::types::Type::Text))?,
+        client_created_at: row.get(7)?,
+        payload_json: row.get(8)?,
+        accepted_at: row.get(9)?,
+        record_event_kind: row.get(10)?,
+    })
+}
+
+fn to_from_sql_error(
+    column: usize,
+    value_type: rusqlite::types::Type,
+) -> impl FnOnce(CoreError) -> rusqlite::Error {
+    move |error| rusqlite::Error::FromSqlConversionFailure(column, value_type, Box::new(error))
 }
 
 fn validate_bootstrap_output(output: &BootstrapOutput) -> Result<(), StoreError> {
@@ -1481,12 +2462,281 @@ mod tests {
         );
     }
 
+    #[test]
+    fn sync_create_update_and_delete_updates_current_projection() {
+        let mut store = store_with_strategy_folder();
+        let vault_id = VaultId::new("acme").unwrap();
+        let object_id = "obj_000000000001";
+
+        assert_eq!(
+            store
+                .submit_sync_record(
+                    &vault_id,
+                    &revision_record("event-create-1", object_id, 1, None, "create")
+                )
+                .unwrap(),
+            SubmitRecordOutcome {
+                sequence: 1,
+                duplicate: false
+            }
+        );
+        assert_eq!(
+            store
+                .submit_sync_record(
+                    &vault_id,
+                    &revision_record("event-update-1", object_id, 2, Some(1), "update")
+                )
+                .unwrap()
+                .sequence,
+            2
+        );
+        assert_eq!(
+            store
+                .submit_sync_record(
+                    &vault_id,
+                    &tombstone_record("event-delete-1", object_id, 3, 2)
+                )
+                .unwrap()
+                .sequence,
+            3
+        );
+
+        let bootstrap = store.sync_bootstrap(&vault_id).unwrap();
+        assert_eq!(bootstrap.latest_sequence, 3);
+        assert_eq!(bootstrap.object_count, 1);
+        assert_eq!(bootstrap.objects[0].revision, 3);
+        assert!(bootstrap.objects[0].deleted);
+        assert_eq!(bootstrap.objects[0].payload_json, "{\"body\":\"delete\"}");
+    }
+
+    #[test]
+    fn sync_duplicate_event_returns_existing_sequence() {
+        let mut store = store_with_strategy_folder();
+        let vault_id = VaultId::new("acme").unwrap();
+        let record = revision_record("event-create-duplicate", "obj_000000000001", 1, None, "one");
+
+        assert_eq!(
+            store.submit_sync_record(&vault_id, &record).unwrap(),
+            SubmitRecordOutcome {
+                sequence: 1,
+                duplicate: false
+            }
+        );
+        assert_eq!(
+            store.submit_sync_record(&vault_id, &record).unwrap(),
+            SubmitRecordOutcome {
+                sequence: 1,
+                duplicate: true
+            }
+        );
+
+        let pull = store.pull_sync_records(&vault_id, 0, 10).unwrap();
+        assert_eq!(pull.count, 1);
+        assert_eq!(pull.latest_sequence, 1);
+    }
+
+    #[test]
+    fn sync_rejects_stale_base_revision_and_existing_create() {
+        let mut store = store_with_strategy_folder();
+        let vault_id = VaultId::new("acme").unwrap();
+        let object_id = "obj_000000000001";
+
+        store
+            .submit_sync_record(
+                &vault_id,
+                &revision_record("event-create-1", object_id, 1, None, "create"),
+            )
+            .unwrap();
+        store
+            .submit_sync_record(
+                &vault_id,
+                &revision_record("event-update-wins", object_id, 2, Some(1), "winner"),
+            )
+            .unwrap();
+
+        assert_eq!(
+            store
+                .submit_sync_record(
+                    &vault_id,
+                    &revision_record("event-update-loses", object_id, 2, Some(1), "loser"),
+                )
+                .unwrap_err(),
+            StoreError::Conflict {
+                reason: "baseRevision does not match current folder object revision".to_owned(),
+                current_revision: Some(2)
+            }
+        );
+        assert_eq!(
+            store
+                .submit_sync_record(
+                    &vault_id,
+                    &revision_record("event-create-again", object_id, 1, None, "again"),
+                )
+                .unwrap_err(),
+            StoreError::Conflict {
+                reason: "object already exists".to_owned(),
+                current_revision: Some(2)
+            }
+        );
+        assert_eq!(store.sync_bootstrap(&vault_id).unwrap().latest_sequence, 2);
+    }
+
+    #[test]
+    fn sync_rejects_non_monotonic_revision() {
+        let mut store = store_with_strategy_folder();
+        let vault_id = VaultId::new("acme").unwrap();
+        let object_id = "obj_000000000001";
+
+        store
+            .submit_sync_record(
+                &vault_id,
+                &revision_record("event-create-1", object_id, 1, None, "create"),
+            )
+            .unwrap();
+
+        assert_eq!(
+            store
+                .submit_sync_record(
+                    &vault_id,
+                    &revision_record("event-update-bad", object_id, 3, Some(1), "bad"),
+                )
+                .unwrap_err(),
+            StoreError::InvalidRecord {
+                reason: "revision must advance baseRevision by one".to_owned()
+            }
+        );
+    }
+
+    #[test]
+    fn sync_pull_paginates_with_next_sequence() {
+        let mut store = store_with_strategy_folder();
+        let vault_id = VaultId::new("acme").unwrap();
+
+        for (index, object_id) in ["obj_000000000001", "obj_000000000002", "obj_000000000003"]
+            .into_iter()
+            .enumerate()
+        {
+            store
+                .submit_sync_record(
+                    &vault_id,
+                    &revision_record(
+                        &format!("event-create-page-{index}"),
+                        object_id,
+                        1,
+                        None,
+                        object_id,
+                    ),
+                )
+                .unwrap();
+        }
+
+        let first = store.pull_sync_records(&vault_id, 0, 2).unwrap();
+        assert_eq!(first.count, 2);
+        assert!(first.has_more);
+        assert_eq!(first.next_sequence, 2);
+        assert_eq!(first.latest_sequence, 3);
+
+        let second = store
+            .pull_sync_records(&vault_id, first.next_sequence, 2)
+            .unwrap();
+        assert_eq!(second.count, 1);
+        assert!(!second.has_more);
+        assert_eq!(second.next_sequence, 3);
+        assert_eq!(second.records[0].sequence, 3);
+    }
+
+    #[test]
+    fn sync_cursor_expiry_requires_rebootstrap() {
+        let mut store = store_with_strategy_folder();
+        let vault_id = VaultId::new("acme").unwrap();
+        store
+            .submit_sync_record(
+                &vault_id,
+                &revision_record("event-create-1", "obj_000000000001", 1, None, "create"),
+            )
+            .unwrap();
+        store.set_retention_floor(&vault_id, 1).unwrap();
+
+        assert_eq!(
+            store.pull_sync_records(&vault_id, 0, 10).unwrap_err(),
+            StoreError::RebootstrapRequired { retention_floor: 1 }
+        );
+        assert_eq!(store.pull_sync_records(&vault_id, 1, 10).unwrap().count, 0);
+    }
+
+    #[test]
+    fn sync_projection_survives_restart_and_can_rebuild() {
+        let temp = TempDir::new().unwrap();
+        let db = temp.path().join("vault-sync.sqlite3");
+        let vault_id = VaultId::new("acme").unwrap();
+
+        {
+            let mut store = BrainStore::open(&db).unwrap();
+            bootstrap_org_and_strategy_folder(&mut store);
+            store
+                .submit_sync_record(
+                    &vault_id,
+                    &revision_record("event-create-1", "obj_000000000001", 1, None, "create"),
+                )
+                .unwrap();
+        }
+
+        {
+            let mut store = BrainStore::open(&db).unwrap();
+            assert_eq!(store.sync_bootstrap(&vault_id).unwrap().object_count, 1);
+            store
+                .conn
+                .execute(
+                    "DELETE FROM current_encrypted_vault_objects WHERE vault_id = ?1",
+                    params![vault_id.as_str()],
+                )
+                .unwrap();
+            assert_eq!(store.sync_bootstrap(&vault_id).unwrap().object_count, 0);
+
+            store.rebuild_current_projection(&vault_id).unwrap();
+            let bootstrap = store.sync_bootstrap(&vault_id).unwrap();
+            assert_eq!(bootstrap.latest_sequence, 1);
+            assert_eq!(bootstrap.object_count, 1);
+            assert_eq!(bootstrap.objects[0].revision, 1);
+            assert!(!bootstrap.objects[0].deleted);
+        }
+    }
+
     fn bootstrapped_org_store() -> BrainStore {
         let mut store = BrainStore::open_in_memory().unwrap();
+        bootstrap_org(&mut store);
+        store
+    }
+
+    fn store_with_strategy_folder() -> BrainStore {
+        let mut store = BrainStore::open_in_memory().unwrap();
+        bootstrap_org_and_strategy_folder(&mut store);
+        store
+    }
+
+    fn bootstrap_org_and_strategy_folder(store: &mut BrainStore) {
+        bootstrap_org(store);
+        let vault_id = VaultId::new("acme").unwrap();
+        store
+            .create_folder(
+                &vault_id,
+                &strategy_folder(),
+                &BTreeSet::new(),
+                &[grant(
+                    "grant-strategy-admin",
+                    "strategy",
+                    1,
+                    "npub-admin",
+                    "npub-admin",
+                )],
+            )
+            .unwrap();
+    }
+
+    fn bootstrap_org(store: &mut BrainStore) {
         let output = bootstrap_organization_vault("acme", "Acme", "npub-admin").unwrap();
         let grants = grants_for_required(&output.required_key_grants, "npub-admin");
         store.create_vault_bootstrap(&output, &grants).unwrap();
-        store
     }
 
     fn strategy_folder() -> Folder {
@@ -1549,5 +2799,44 @@ mod tests {
             access_change_event_json: Some("{\"kind\":30078}".to_owned()),
             created_at: "2026-06-23T00:00:00.000Z".to_owned(),
         }
+    }
+
+    fn revision_record(
+        event_id: &str,
+        object_id: &str,
+        revision: u64,
+        base_revision: Option<u64>,
+        body: &str,
+    ) -> SyncRecordInput {
+        SyncRecordInput::FolderObjectRevision(FolderObjectRevisionSyncRecord {
+            record_event_id: event_id.to_owned(),
+            folder_id: FolderId::new("strategy").unwrap(),
+            object_id: ObjectId::new(object_id).unwrap(),
+            revision,
+            base_revision,
+            actor_npub: UserId::new("npub-admin").unwrap(),
+            client_created_at: "2026-06-23T00:00:00.000Z".to_owned(),
+            payload_json: format!("{{\"body\":\"{body}\"}}"),
+            record_event_kind: APP_SPECIFIC_KIND,
+        })
+    }
+
+    fn tombstone_record(
+        event_id: &str,
+        object_id: &str,
+        revision: u64,
+        base_revision: u64,
+    ) -> SyncRecordInput {
+        SyncRecordInput::FolderObjectTombstone(FolderObjectTombstoneSyncRecord {
+            record_event_id: event_id.to_owned(),
+            folder_id: FolderId::new("strategy").unwrap(),
+            object_id: ObjectId::new(object_id).unwrap(),
+            revision,
+            base_revision,
+            actor_npub: UserId::new("npub-admin").unwrap(),
+            client_created_at: "2026-06-23T00:00:01.000Z".to_owned(),
+            payload_json: "{\"body\":\"delete\"}".to_owned(),
+            record_event_kind: APP_SPECIFIC_KIND,
+        })
     }
 }
