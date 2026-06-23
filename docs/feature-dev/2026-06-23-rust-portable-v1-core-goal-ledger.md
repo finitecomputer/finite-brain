@@ -26,8 +26,23 @@ new `finite-nostr` Rust crate so other Finite repos can reuse it.
 - ADRs: `docs/adr/0001-adopt-rust-workspace-and-finite-nostr.md`,
   `docs/adr/0002-use-sqlite-from-day-one.md`,
   `docs/adr/0003-keep-folder-object-crypto-in-finite-brain-core.md`
-- PRD issue: pending
-- Slice issues: pending
+- PRD issue: `finitecomputer/finite-brain#1`
+- Slice issues:
+  - `finitecomputer/finite-nostr#1` reusable Nostr identity, event, and HTTP auth primitives
+  - `finitecomputer/finite-nostr#2` reusable NIP-44 and NIP-59 wrapping primitives
+  - `finitecomputer/finite-brain#2` Rust workspace and health smoke path
+  - `finitecomputer/finite-brain#3` core domain model, path rules, and Vault bootstrap
+  - `finitecomputer/finite-brain#4` Folder Object encryption, canonical hashes, and signed record validation
+  - `finitecomputer/finite-brain#5` SQLite store for Vaults, Folders, access, and grants
+  - `finitecomputer/finite-brain#6` sync append log, current projection, and conflict handling
+  - `finitecomputer/finite-brain#7` Nostr-authenticated server shell and Vault metadata APIs
+  - `finitecomputer/finite-brain#8` secure object routes and sync APIs
+  - `finitecomputer/finite-brain#9` Folder Access, grant, Finish Setup, and rotation flows
+  - `finitecomputer/finite-brain#10` singleton Vault Invitations and Share Links
+  - `finitecomputer/finite-brain#11` Shared Folder Connections and mounted Folder projection
+  - `finitecomputer/finite-brain#12` Encrypted Export, OKF Import/Export, and LLM Wiki privacy rules
+  - `finitecomputer/finite-brain#13` development-only Smoke UI
+  - `finitecomputer/finite-brain#14` Portable v1 hardening, compatibility, and end-to-end readiness
 - Issue sessions: pending
 - Agent briefs: pending
 - Review packets: pending
@@ -48,7 +63,21 @@ new `finite-nostr` Rust crate so other Finite repos can reuse it.
 
 | Issue | Type | Status | Review thread | Fixes needed | Verified |
 | --- | --- | --- | --- | --- | --- |
-| pending | pending | pending | pending | pending | pending |
+| `finite-nostr#1` | AFK | ready | None | None | Not started |
+| `finite-nostr#2` | AFK | blocked by `finite-nostr#1` | None | None | Not started |
+| `finite-brain#2` | AFK | ready | None | None | Not started |
+| `finite-brain#3` | AFK | blocked by `finite-brain#2` | None | None | Not started |
+| `finite-brain#4` | AFK | blocked by `finite-nostr#1`, `finite-brain#3` | None | None | Not started |
+| `finite-brain#5` | AFK | blocked by `finite-brain#3` | None | None | Not started |
+| `finite-brain#6` | AFK | blocked by `finite-brain#4`, `finite-brain#5` | None | None | Not started |
+| `finite-brain#7` | AFK | blocked by `finite-nostr#1`, `finite-brain#5` | None | None | Not started |
+| `finite-brain#8` | AFK | blocked by `finite-brain#6`, `finite-brain#7` | None | None | Not started |
+| `finite-brain#9` | AFK | blocked by `finite-nostr#2`, `finite-brain#8` | None | None | Not started |
+| `finite-brain#10` | AFK | blocked by `finite-brain#9` | None | None | Not started |
+| `finite-brain#11` | AFK | blocked by `finite-brain#10` | None | None | Not started |
+| `finite-brain#12` | AFK | blocked by `finite-brain#8`, `finite-brain#11` | None | None | Not started |
+| `finite-brain#13` | AFK | blocked by `finite-brain#8`, `finite-brain#10`, `finite-brain#11`, `finite-brain#12` | None | None | Not started |
+| `finite-brain#14` | AFK | blocked by `finite-nostr#2`, `finite-brain#13` | None | None | Not started |
 
 ## Parked HITL Slices
 
