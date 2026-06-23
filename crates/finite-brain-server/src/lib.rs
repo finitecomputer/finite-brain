@@ -26,12 +26,15 @@ use finite_brain_core::{
 };
 use finite_brain_store::{
     BrainStore, ControlSyncRecord, FolderKeyGrantMetadata, FolderObjectRevisionSyncRecord,
-    FolderObjectTombstoneSyncRecord, StoreError, StoredSyncRecord, StoredVault, SyncRecordInput,
-    SyncRecordType,
+    FolderObjectTombstoneSyncRecord, LinkStatus, StoreError, StoredShareLink, StoredSyncRecord,
+    StoredVault, StoredVaultInvitation, SyncRecordInput, SyncRecordType,
 };
 use finite_nostr::{HttpAuthValidation, NostrPrimitiveError, NostrPublicKey};
 use nostr::Event;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+use time::OffsetDateTime;
+use time::format_description::well_known::Rfc3339;
 
 const DEFAULT_PUBLIC_BASE_URL: &str = "http://127.0.0.1:3015";
 const DEFAULT_MAX_AUTH_SKEW_SECONDS: u64 = 300;
@@ -124,6 +127,9 @@ impl From<StoreError> for ApiError {
             }
             StoreError::RebootstrapRequired { .. } => {
                 Self::new(StatusCode::GONE, value.to_string())
+            }
+            StoreError::UnavailableLink { .. } => {
+                Self::new(StatusCode::NOT_FOUND, value.to_string())
             }
             StoreError::Database { .. } => {
                 Self::new(StatusCode::INTERNAL_SERVER_ERROR, value.to_string())
@@ -359,6 +365,65 @@ pub struct RemoveFolderAccessRequest {
     pub access_change_event: serde_json::Value,
 }
 
+/// Create Vault Invitation request.
+#[derive(Debug, Clone, Eq, PartialEq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateVaultInvitationRequest {
+    pub target_npub: String,
+    pub initial_folder_access: Vec<String>,
+    pub expires_at: String,
+}
+
+/// Vault Invitation response.
+#[derive(Debug, Clone, Eq, PartialEq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VaultInvitationResponse {
+    pub id: String,
+    pub vault_id: String,
+    pub user_id: String,
+    pub status: String,
+    pub invite_code: String,
+    pub accept_path: String,
+    pub initial_folder_access: Vec<String>,
+    pub expires_at: String,
+    pub created_at: String,
+    pub updated_at: String,
+    pub accepted_at: Option<String>,
+    pub duplicate_accept: bool,
+}
+
+/// Create Share Link request.
+#[derive(Debug, Clone, Eq, PartialEq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateShareLinkRequest {
+    pub recipient_npub: String,
+    pub grant: FolderKeyGrantRequest,
+    pub access_change_event: serde_json::Value,
+    pub expires_at: String,
+    pub create_personal_mount: Option<bool>,
+}
+
+/// Share Link response.
+#[derive(Debug, Clone, Eq, PartialEq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ShareLinkResponse {
+    pub id: String,
+    pub vault_id: String,
+    pub folder_id: String,
+    pub recipient_npub: String,
+    pub created_by_npub: String,
+    pub status: String,
+    pub accept_path: String,
+    pub expires_at: String,
+    pub created_at: String,
+    pub updated_at: String,
+    pub accepted_at: Option<String>,
+    pub grant_id: String,
+    pub create_personal_mount: bool,
+    pub personal_mount_id: Option<String>,
+    pub duplicate_accept: bool,
+}
+
 /// Returns the current process health status.
 pub fn health_status() -> HealthStatus {
     HealthStatus {
@@ -411,6 +476,26 @@ pub fn router_with_state(state: ServerState) -> Router {
             axum::routing::delete(remove_admin_handler),
         )
         .route(
+            "/_admin/vaults/{vault_id}/invitations",
+            post(create_vault_invitation_handler),
+        )
+        .route(
+            "/_admin/vaults/{vault_id}/invitations/{invitation_id}",
+            axum::routing::delete(revoke_vault_invitation_handler),
+        )
+        .route(
+            "/_admin/vaults/{vault_id}/invitations/{invitation_id}/accept",
+            post(accept_vault_invitation_handler),
+        )
+        .route(
+            "/_admin/vault-invitation-links/{invite_code}",
+            get(get_vault_invitation_link_handler),
+        )
+        .route(
+            "/_admin/vault-invitation-links/{invite_code}/accept",
+            post(accept_vault_invitation_link_handler),
+        )
+        .route(
             "/_admin/vaults/{vault_id}/folders",
             post(create_folder_handler),
         )
@@ -425,6 +510,18 @@ pub fn router_with_state(state: ServerState) -> Router {
         .route(
             "/_admin/vaults/{vault_id}/folders/{folder_id}/access/{target_npub}",
             axum::routing::delete(remove_folder_access_handler),
+        )
+        .route(
+            "/_admin/vaults/{vault_id}/folders/{folder_id}/share-links",
+            post(create_share_link_handler),
+        )
+        .route(
+            "/_admin/share-links/{share_link_id}",
+            get(get_share_link_handler).delete(revoke_share_link_handler),
+        )
+        .route(
+            "/_admin/share-links/{share_link_id}/accept",
+            post(accept_share_link_handler),
         )
         .route(
             "/_admin/vaults/{vault_id}/folders/{folder_id}/objects/{object_id}",
@@ -633,6 +730,158 @@ async fn remove_admin_handler(
     .map(Json)
 }
 
+async fn create_vault_invitation_handler(
+    State(state): State<ServerState>,
+    headers: HeaderMap,
+    method: Method,
+    OriginalUri(uri): OriginalUri,
+    AxumPath(vault_id): AxumPath<String>,
+    body: Bytes,
+) -> Result<Json<VaultInvitationResponse>, ApiError> {
+    let actor = validate_request_auth(&state, &headers, &method, &uri, Some(&body))?
+        .to_npub()
+        .map_err(auth_error)?;
+    let request: CreateVaultInvitationRequest = serde_json::from_slice(&body)
+        .map_err(|_| ApiError::new(StatusCode::BAD_REQUEST, "invalid JSON request body"))?;
+    let vault_id = VaultId::new(vault_id)?;
+    let target = UserId::new(request.target_npub.clone())?;
+    let initial_folder_access = request
+        .initial_folder_access
+        .into_iter()
+        .map(FolderId::new)
+        .collect::<Result<Vec<_>, _>>()?;
+    let actor_user_id = UserId::new(actor.clone())?;
+    let created_at = server_timestamp(&state);
+    let id = generated_link_id(
+        "invitation",
+        &[
+            vault_id.as_str(),
+            target.as_str(),
+            actor_user_id.as_str(),
+            request.expires_at.as_str(),
+            created_at.as_str(),
+        ],
+        16,
+    );
+    let invite_code = generated_link_id(
+        "invite",
+        &[
+            vault_id.as_str(),
+            target.as_str(),
+            actor_user_id.as_str(),
+            request.expires_at.as_str(),
+            created_at.as_str(),
+            "code",
+        ],
+        16,
+    );
+    let accept_path = format!("/_admin/vault-invitation-links/{invite_code}/accept");
+
+    let invitation = {
+        let mut store = state.store.lock().map_err(lock_error)?;
+        let stored = store.load_vault(&vault_id)?;
+        ensure_vault_admin(&stored, &actor)?;
+        store.create_vault_invitation(
+            &vault_id,
+            &id,
+            &target,
+            &invite_code,
+            &accept_path,
+            &initial_folder_access,
+            &actor_user_id,
+            &request.expires_at,
+            &created_at,
+        )?
+    };
+
+    Ok(Json(vault_invitation_response(invitation)))
+}
+
+async fn revoke_vault_invitation_handler(
+    State(state): State<ServerState>,
+    headers: HeaderMap,
+    method: Method,
+    OriginalUri(uri): OriginalUri,
+    AxumPath((vault_id, invitation_id)): AxumPath<(String, String)>,
+) -> Result<Json<VaultInvitationResponse>, ApiError> {
+    let actor = validate_request_auth(&state, &headers, &method, &uri, None)?
+        .to_npub()
+        .map_err(auth_error)?;
+    let vault_id = VaultId::new(vault_id)?;
+    let actor_user_id = UserId::new(actor)?;
+    let updated_at = server_timestamp(&state);
+    let invitation = {
+        let mut store = state.store.lock().map_err(lock_error)?;
+        store.revoke_vault_invitation(&vault_id, &invitation_id, &actor_user_id, &updated_at)?
+    };
+    Ok(Json(vault_invitation_response(invitation)))
+}
+
+async fn accept_vault_invitation_handler(
+    State(state): State<ServerState>,
+    headers: HeaderMap,
+    method: Method,
+    OriginalUri(uri): OriginalUri,
+    AxumPath((vault_id, invitation_id)): AxumPath<(String, String)>,
+) -> Result<Json<VaultInvitationResponse>, ApiError> {
+    let actor = validate_request_auth(&state, &headers, &method, &uri, None)?
+        .to_npub()
+        .map_err(auth_error)?;
+    let actor = UserId::new(actor)?;
+    let vault_id = VaultId::new(vault_id)?;
+    let now = server_timestamp(&state);
+    let invitation = {
+        let mut store = state.store.lock().map_err(lock_error)?;
+        let invitation = store.load_vault_invitation(&invitation_id)?;
+        if invitation.vault_id != vault_id {
+            return Err(StoreError::UnavailableLink {
+                kind: "vault invitation",
+            }
+            .into());
+        }
+        store.accept_vault_invitation_by_code(&invitation.invite_code, &actor, &now)?
+    };
+    Ok(Json(vault_invitation_response(invitation)))
+}
+
+async fn get_vault_invitation_link_handler(
+    State(state): State<ServerState>,
+    headers: HeaderMap,
+    method: Method,
+    OriginalUri(uri): OriginalUri,
+    AxumPath(invite_code): AxumPath<String>,
+) -> Result<Json<VaultInvitationResponse>, ApiError> {
+    let actor = validate_request_auth(&state, &headers, &method, &uri, None)?
+        .to_npub()
+        .map_err(auth_error)?;
+    let actor = UserId::new(actor)?;
+    let now = server_timestamp(&state);
+    let invitation = {
+        let store = state.store.lock().map_err(lock_error)?;
+        store.load_available_vault_invitation_by_code(&invite_code, &actor, &now)?
+    };
+    Ok(Json(vault_invitation_response(invitation)))
+}
+
+async fn accept_vault_invitation_link_handler(
+    State(state): State<ServerState>,
+    headers: HeaderMap,
+    method: Method,
+    OriginalUri(uri): OriginalUri,
+    AxumPath(invite_code): AxumPath<String>,
+) -> Result<Json<VaultInvitationResponse>, ApiError> {
+    let actor = validate_request_auth(&state, &headers, &method, &uri, None)?
+        .to_npub()
+        .map_err(auth_error)?;
+    let actor = UserId::new(actor)?;
+    let now = server_timestamp(&state);
+    let invitation = {
+        let mut store = state.store.lock().map_err(lock_error)?;
+        store.accept_vault_invitation_by_code(&invite_code, &actor, &now)?
+    };
+    Ok(Json(vault_invitation_response(invitation)))
+}
+
 async fn create_folder_handler(
     State(state): State<ServerState>,
     headers: HeaderMap,
@@ -825,6 +1074,130 @@ async fn remove_folder_access_handler(
         )
     })
     .map(Json)
+}
+
+async fn create_share_link_handler(
+    State(state): State<ServerState>,
+    headers: HeaderMap,
+    method: Method,
+    OriginalUri(uri): OriginalUri,
+    AxumPath((vault_id, folder_id)): AxumPath<(String, String)>,
+    body: Bytes,
+) -> Result<Json<ShareLinkResponse>, ApiError> {
+    let actor = validate_request_auth(&state, &headers, &method, &uri, Some(&body))?
+        .to_npub()
+        .map_err(auth_error)?;
+    let request: CreateShareLinkRequest = serde_json::from_slice(&body)
+        .map_err(|_| ApiError::new(StatusCode::BAD_REQUEST, "invalid JSON request body"))?;
+    let vault_id = VaultId::new(vault_id)?;
+    let folder_id = FolderId::new(folder_id)?;
+    let recipient = UserId::new(request.recipient_npub.clone())?;
+    let current_key_version = {
+        let store = state.store.lock().map_err(lock_error)?;
+        let stored = store.load_vault(&vault_id)?;
+        ensure_vault_admin(&stored, &actor)?;
+        folder_current_key_version(&stored, &folder_id)?
+    };
+    let (event, _) = validate_admin_access_change_value(
+        request.access_change_event,
+        &vault_id,
+        &actor,
+        AdminAccessAction::GrantFolderAccess,
+        Some(&folder_id),
+        Some(request.recipient_npub.as_str()),
+        Some(current_key_version),
+    )?;
+    let grant =
+        grant_request_to_metadata(&request.grant, &folder_id, &actor, Some(event.as_json()))?;
+    let actor_user_id = UserId::new(actor.clone())?;
+    let created_at = server_timestamp(&state);
+    let id = generated_link_id(
+        "share-link",
+        &[
+            vault_id.as_str(),
+            folder_id.as_str(),
+            recipient.as_str(),
+            actor_user_id.as_str(),
+            request.expires_at.as_str(),
+            created_at.as_str(),
+        ],
+        16,
+    );
+    let accept_path = format!("/_admin/share-links/{id}/accept");
+
+    let share_link = {
+        let mut store = state.store.lock().map_err(lock_error)?;
+        store.create_share_link(
+            &vault_id,
+            &folder_id,
+            &id,
+            &recipient,
+            &actor_user_id,
+            &request.expires_at,
+            &accept_path,
+            &grant,
+            request.create_personal_mount.unwrap_or(false),
+            &created_at,
+        )?
+    };
+    Ok(Json(share_link_response(share_link)))
+}
+
+async fn get_share_link_handler(
+    State(state): State<ServerState>,
+    headers: HeaderMap,
+    method: Method,
+    OriginalUri(uri): OriginalUri,
+    AxumPath(share_link_id): AxumPath<String>,
+) -> Result<Json<ShareLinkResponse>, ApiError> {
+    let actor = validate_request_auth(&state, &headers, &method, &uri, None)?
+        .to_npub()
+        .map_err(auth_error)?;
+    let actor = UserId::new(actor)?;
+    let now = server_timestamp(&state);
+    let share_link = {
+        let store = state.store.lock().map_err(lock_error)?;
+        store.load_available_share_link(&share_link_id, &actor, &now)?
+    };
+    Ok(Json(share_link_response(share_link)))
+}
+
+async fn accept_share_link_handler(
+    State(state): State<ServerState>,
+    headers: HeaderMap,
+    method: Method,
+    OriginalUri(uri): OriginalUri,
+    AxumPath(share_link_id): AxumPath<String>,
+) -> Result<Json<ShareLinkResponse>, ApiError> {
+    let actor = validate_request_auth(&state, &headers, &method, &uri, None)?
+        .to_npub()
+        .map_err(auth_error)?;
+    let actor = UserId::new(actor)?;
+    let now = server_timestamp(&state);
+    let share_link = {
+        let mut store = state.store.lock().map_err(lock_error)?;
+        store.accept_share_link(&share_link_id, &actor, &now)?
+    };
+    Ok(Json(share_link_response(share_link)))
+}
+
+async fn revoke_share_link_handler(
+    State(state): State<ServerState>,
+    headers: HeaderMap,
+    method: Method,
+    OriginalUri(uri): OriginalUri,
+    AxumPath(share_link_id): AxumPath<String>,
+) -> Result<Json<ShareLinkResponse>, ApiError> {
+    let actor = validate_request_auth(&state, &headers, &method, &uri, None)?
+        .to_npub()
+        .map_err(auth_error)?;
+    let actor = UserId::new(actor)?;
+    let now = server_timestamp(&state);
+    let share_link = {
+        let mut store = state.store.lock().map_err(lock_error)?;
+        store.revoke_share_link(&share_link_id, &actor, &now)?
+    };
+    Ok(Json(share_link_response(share_link)))
 }
 
 async fn put_object_handler(
@@ -1620,6 +1993,55 @@ fn metadata_response(stored: StoredVault) -> VaultMetadataResponse {
     }
 }
 
+fn vault_invitation_response(invitation: StoredVaultInvitation) -> VaultInvitationResponse {
+    VaultInvitationResponse {
+        id: invitation.id,
+        vault_id: invitation.vault_id.to_string(),
+        user_id: invitation.user_id.to_string(),
+        status: link_status_str(invitation.status).to_owned(),
+        invite_code: invitation.invite_code,
+        accept_path: invitation.accept_path,
+        initial_folder_access: invitation
+            .initial_folder_access
+            .into_iter()
+            .map(|folder_id| folder_id.to_string())
+            .collect(),
+        expires_at: invitation.expires_at,
+        created_at: invitation.created_at,
+        updated_at: invitation.updated_at,
+        accepted_at: invitation.accepted_at,
+        duplicate_accept: invitation.duplicate_accept,
+    }
+}
+
+fn share_link_response(share_link: StoredShareLink) -> ShareLinkResponse {
+    ShareLinkResponse {
+        id: share_link.id,
+        vault_id: share_link.vault_id.to_string(),
+        folder_id: share_link.folder_id.to_string(),
+        recipient_npub: share_link.recipient_npub.to_string(),
+        created_by_npub: share_link.created_by_npub.to_string(),
+        status: link_status_str(share_link.status).to_owned(),
+        accept_path: share_link.accept_path,
+        expires_at: share_link.expires_at,
+        created_at: share_link.created_at,
+        updated_at: share_link.updated_at,
+        accepted_at: share_link.accepted_at,
+        grant_id: share_link.folder_key_grant.id,
+        create_personal_mount: share_link.create_personal_mount,
+        personal_mount_id: share_link.personal_mount_id,
+        duplicate_accept: share_link.duplicate_accept,
+    }
+}
+
+fn link_status_str(status: LinkStatus) -> &'static str {
+    match status {
+        LinkStatus::Pending => "pending",
+        LinkStatus::Accepted => "accepted",
+        LinkStatus::Revoked => "revoked",
+    }
+}
+
 fn ensure_metadata_visible(stored: &StoredVault, actor_npub: &str) -> Result<(), ApiError> {
     match stored.vault.kind {
         VaultKind::Personal => {
@@ -1659,6 +2081,31 @@ fn current_unix_seconds() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |duration| duration.as_secs())
+}
+
+fn server_timestamp(state: &ServerState) -> String {
+    OffsetDateTime::from_unix_timestamp(state.auth_now_unix_seconds as i64)
+        .unwrap_or(OffsetDateTime::UNIX_EPOCH)
+        .format(&Rfc3339)
+        .unwrap_or_else(|_| "1970-01-01T00:00:00Z".to_owned())
+}
+
+fn generated_link_id(prefix: &str, parts: &[&str], hash_bytes: usize) -> String {
+    let mut hasher = Sha256::new();
+    for part in parts {
+        hasher.update(part.as_bytes());
+        hasher.update(b"\n");
+    }
+    let hash = hasher.finalize();
+    format!("{prefix}-{}", hex_prefix(&hash, hash_bytes))
+}
+
+fn hex_prefix(bytes: &[u8], len: usize) -> String {
+    bytes
+        .iter()
+        .take(len)
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
 }
 
 #[cfg(test)]
@@ -2575,6 +3022,262 @@ mod tests {
             .find(|folder| folder.id == "strategy")
             .expect("strategy folder metadata");
         assert!(!strategy.setup_incomplete);
+    }
+
+    #[tokio::test]
+    async fn vault_invitation_routes_are_npub_bound_single_use_and_retry_safe() {
+        let admin_keys = Keys::generate();
+        let target_keys = Keys::generate();
+        let wrong_keys = Keys::generate();
+        let target_npub = npub(&target_keys);
+        let router = router_with_bootstrapped_org(&admin_keys).await;
+
+        let create_body = serde_json::json!({
+            "targetNpub": target_npub,
+            "initialFolderAccess": ["general"],
+            "expiresAt": "2026-06-30T00:00:00.000Z",
+        })
+        .to_string();
+        let create = authed_request(
+            router.clone(),
+            &admin_keys,
+            "POST",
+            "/_admin/vaults/acme/invitations",
+            Some(create_body),
+            TEST_NOW,
+        )
+        .await;
+        assert_eq!(create.status(), StatusCode::OK);
+        let invitation: VaultInvitationResponse = read_json(create).await;
+        assert_eq!(invitation.status, "pending");
+        assert_eq!(invitation.user_id, target_npub);
+        assert_eq!(invitation.initial_folder_access, vec!["general".to_owned()]);
+
+        let link_path = format!("/_admin/vault-invitation-links/{}", invitation.invite_code);
+        let wrong_view = authed_request(
+            router.clone(),
+            &wrong_keys,
+            "GET",
+            &link_path,
+            None,
+            TEST_NOW,
+        )
+        .await;
+        assert_error(
+            wrong_view,
+            StatusCode::NOT_FOUND,
+            "vault invitation unavailable",
+        )
+        .await;
+
+        let view = authed_request(
+            router.clone(),
+            &target_keys,
+            "GET",
+            &link_path,
+            None,
+            TEST_NOW,
+        )
+        .await;
+        assert_eq!(view.status(), StatusCode::OK);
+        let viewed: VaultInvitationResponse = read_json(view).await;
+        assert_eq!(viewed.id, invitation.id);
+
+        let accept_path = format!("{link_path}/accept");
+        let accept = authed_request(
+            router.clone(),
+            &target_keys,
+            "POST",
+            &accept_path,
+            None,
+            TEST_NOW,
+        )
+        .await;
+        assert_eq!(accept.status(), StatusCode::OK);
+        let accepted: VaultInvitationResponse = read_json(accept).await;
+        assert_eq!(accepted.status, "accepted");
+        assert!(!accepted.duplicate_accept);
+
+        let retry = authed_request(
+            router.clone(),
+            &target_keys,
+            "POST",
+            &accept_path,
+            None,
+            TEST_NOW,
+        )
+        .await;
+        assert_eq!(retry.status(), StatusCode::OK);
+        let retry: VaultInvitationResponse = read_json(retry).await;
+        assert!(retry.duplicate_accept);
+
+        let id_accept_path = format!("/_admin/vaults/acme/invitations/{}/accept", invitation.id);
+        let id_retry = authed_request(
+            router.clone(),
+            &target_keys,
+            "POST",
+            &id_accept_path,
+            None,
+            TEST_NOW,
+        )
+        .await;
+        assert_eq!(id_retry.status(), StatusCode::OK);
+        let id_retry: VaultInvitationResponse = read_json(id_retry).await;
+        assert!(id_retry.duplicate_accept);
+
+        let metadata = get_metadata(router.clone(), &target_keys, "acme", TEST_NOW).await;
+        assert_eq!(metadata.status(), StatusCode::OK);
+        let metadata: VaultMetadataResponse = read_json(metadata).await;
+        assert!(metadata.members.contains(&target_npub));
+
+        let revoke_path = format!("/_admin/vaults/acme/invitations/{}", invitation.id);
+        let revoke =
+            authed_request(router, &admin_keys, "DELETE", &revoke_path, None, TEST_NOW).await;
+        assert_eq!(revoke.status(), StatusCode::OK);
+        let revoked: VaultInvitationResponse = read_json(revoke).await;
+        assert_eq!(revoked.status, "revoked");
+    }
+
+    #[tokio::test]
+    async fn share_link_routes_create_access_and_optional_mount_on_accept() {
+        let admin_keys = Keys::generate();
+        let recipient_keys = Keys::generate();
+        let wrong_keys = Keys::generate();
+        let recipient_npub = npub(&recipient_keys);
+        let router = router_with_bootstrapped_org(&admin_keys).await;
+
+        let create_folder_body = serde_json::json!({
+            "folderId": "strategy",
+            "name": "Strategy",
+            "role": "folder",
+            "access": "restricted",
+            "parentFolderId": "general",
+            "path": "general/Strategy",
+            "accessUserIds": [],
+            "grants": [
+                folder_key_grant_value("grant-strategy-admin-v1", 1, npub(&admin_keys).as_str())
+            ],
+            "accessChangeEvent": admin_event(
+                &admin_keys,
+                "acme",
+                "change_create_strategy_share",
+                AdminAccessAction::SetFolderAccessMode,
+                Some("strategy"),
+                None,
+                Some(1),
+            ),
+        })
+        .to_string();
+        let create_folder = authed_request(
+            router.clone(),
+            &admin_keys,
+            "POST",
+            "/_admin/vaults/acme/folders",
+            Some(create_folder_body),
+            TEST_NOW,
+        )
+        .await;
+        assert_eq!(create_folder.status(), StatusCode::OK);
+
+        let create_share_body = serde_json::json!({
+            "recipientNpub": recipient_npub,
+            "grant": folder_key_grant_value("grant-strategy-recipient-v1", 1, recipient_npub.as_str()),
+            "accessChangeEvent": admin_event(
+                &admin_keys,
+                "acme",
+                "change_share_strategy",
+                AdminAccessAction::GrantFolderAccess,
+                Some("strategy"),
+                Some(recipient_npub.as_str()),
+                Some(1),
+            ),
+            "expiresAt": "2026-06-30T00:00:00.000Z",
+            "createPersonalMount": true,
+        })
+        .to_string();
+        let create_share = authed_request(
+            router.clone(),
+            &admin_keys,
+            "POST",
+            "/_admin/vaults/acme/folders/strategy/share-links",
+            Some(create_share_body),
+            TEST_NOW,
+        )
+        .await;
+        assert_eq!(create_share.status(), StatusCode::OK);
+        let share_link: ShareLinkResponse = read_json(create_share).await;
+        assert_eq!(share_link.status, "pending");
+        assert_eq!(share_link.recipient_npub, recipient_npub);
+
+        let share_path = format!("/_admin/share-links/{}", share_link.id);
+        let wrong_view = authed_request(
+            router.clone(),
+            &wrong_keys,
+            "GET",
+            &share_path,
+            None,
+            TEST_NOW,
+        )
+        .await;
+        assert_error(wrong_view, StatusCode::NOT_FOUND, "share link unavailable").await;
+
+        let view = authed_request(
+            router.clone(),
+            &recipient_keys,
+            "GET",
+            &share_path,
+            None,
+            TEST_NOW,
+        )
+        .await;
+        assert_eq!(view.status(), StatusCode::OK);
+
+        let accept_path = format!("{share_path}/accept");
+        let accept = authed_request(
+            router.clone(),
+            &recipient_keys,
+            "POST",
+            &accept_path,
+            None,
+            TEST_NOW,
+        )
+        .await;
+        assert_eq!(accept.status(), StatusCode::OK);
+        let accepted: ShareLinkResponse = read_json(accept).await;
+        assert_eq!(accepted.status, "accepted");
+        assert!(accepted.personal_mount_id.is_some());
+        assert!(!accepted.duplicate_accept);
+
+        let retry = authed_request(
+            router.clone(),
+            &recipient_keys,
+            "POST",
+            &accept_path,
+            None,
+            TEST_NOW,
+        )
+        .await;
+        assert_eq!(retry.status(), StatusCode::OK);
+        let retry: ShareLinkResponse = read_json(retry).await;
+        assert!(retry.duplicate_accept);
+
+        let metadata = get_metadata(router.clone(), &recipient_keys, "acme", TEST_NOW).await;
+        assert_eq!(metadata.status(), StatusCode::OK);
+        let metadata: VaultMetadataResponse = read_json(metadata).await;
+        assert!(metadata.members.contains(&recipient_npub));
+        let strategy = metadata
+            .folders
+            .iter()
+            .find(|folder| folder.id == "strategy")
+            .expect("strategy folder metadata");
+        assert_eq!(strategy.access_user_ids, vec![recipient_npub]);
+        assert_eq!(metadata.grant_count, 4);
+
+        let revoke =
+            authed_request(router, &admin_keys, "DELETE", &share_path, None, TEST_NOW).await;
+        assert_eq!(revoke.status(), StatusCode::OK);
+        let revoked: ShareLinkResponse = read_json(revoke).await;
+        assert_eq!(revoked.status, "revoked");
     }
 
     fn test_router() -> Router {

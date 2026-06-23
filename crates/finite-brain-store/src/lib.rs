@@ -11,6 +11,7 @@ use finite_brain_core::{
     VaultMember,
 };
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
+use sha2::{Digest, Sha256};
 
 const GRANT_FORMAT_NIP59: &str = "NIP-59";
 const MAX_PULL_LIMIT: u64 = 1_000;
@@ -48,6 +49,8 @@ pub enum StoreError {
     },
     /// The client cursor is older than the retained floor.
     RebootstrapRequired { retention_floor: u64 },
+    /// A singleton invitation or share link is unavailable to this actor.
+    UnavailableLink { kind: &'static str },
 }
 
 impl fmt::Display for StoreError {
@@ -78,6 +81,7 @@ impl fmt::Display for StoreError {
                     "rebootstrap required from retention floor {retention_floor}"
                 )
             }
+            Self::UnavailableLink { kind } => write!(f, "{kind} unavailable"),
         }
     }
 }
@@ -274,6 +278,83 @@ pub struct CurrentEncryptedObject {
     pub updated_at: String,
     /// Whether the current projection is deleted.
     pub deleted: bool,
+}
+
+/// Current lifecycle state for Vault Invitations and Share Links.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum LinkStatus {
+    /// Link can still be accepted.
+    Pending,
+    /// Link was consumed by the target recipient.
+    Accepted,
+    /// Link delivery was revoked by an admin.
+    Revoked,
+}
+
+/// Stored npub-bound singleton Vault Invitation.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct StoredVaultInvitation {
+    /// Stable invitation id.
+    pub id: String,
+    /// Vault id.
+    pub vault_id: VaultId,
+    /// Target user npub.
+    pub user_id: UserId,
+    /// Lifecycle state.
+    pub status: LinkStatus,
+    /// Opaque singleton invite code.
+    pub invite_code: String,
+    /// User-facing accept path.
+    pub accept_path: String,
+    /// Initial Folder Access metadata only.
+    pub initial_folder_access: Vec<FolderId>,
+    /// Admin who created the invitation.
+    pub created_by_npub: UserId,
+    /// Expiry timestamp.
+    pub expires_at: String,
+    /// Creation timestamp.
+    pub created_at: String,
+    /// Last update timestamp.
+    pub updated_at: String,
+    /// Acceptance timestamp when consumed.
+    pub accepted_at: Option<String>,
+    /// True when accept returned an already-consumed result for the same target.
+    pub duplicate_accept: bool,
+}
+
+/// Stored npub-bound singleton Folder Share Link.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct StoredShareLink {
+    /// Stable share link id.
+    pub id: String,
+    /// Source Vault id.
+    pub vault_id: VaultId,
+    /// Source Folder id.
+    pub folder_id: FolderId,
+    /// Target user npub.
+    pub recipient_npub: UserId,
+    /// Admin who created the share link.
+    pub created_by_npub: UserId,
+    /// Lifecycle state.
+    pub status: LinkStatus,
+    /// User-facing accept path.
+    pub accept_path: String,
+    /// Expiry timestamp.
+    pub expires_at: String,
+    /// Creation timestamp.
+    pub created_at: String,
+    /// Last update timestamp.
+    pub updated_at: String,
+    /// Acceptance timestamp when consumed.
+    pub accepted_at: Option<String>,
+    /// Folder Key Grant material to insert at accept time.
+    pub folder_key_grant: FolderKeyGrantMetadata,
+    /// Whether accept should create personal mount state.
+    pub create_personal_mount: bool,
+    /// Created personal mount id, if requested and accepted.
+    pub personal_mount_id: Option<String>,
+    /// True when accept returned an already-consumed result for the same target.
+    pub duplicate_accept: bool,
 }
 
 /// Bootstrap response data for rebuilding current encrypted state.
@@ -686,6 +767,432 @@ impl BrainStore {
         Ok(())
     }
 
+    /// Create one npub-bound singleton Vault Invitation.
+    #[allow(clippy::too_many_arguments)]
+    pub fn create_vault_invitation(
+        &mut self,
+        vault_id: &VaultId,
+        id: &str,
+        user_id: &UserId,
+        invite_code: &str,
+        accept_path: &str,
+        initial_folder_access: &[FolderId],
+        created_by_npub: &UserId,
+        expires_at: &str,
+        created_at: &str,
+    ) -> Result<StoredVaultInvitation, StoreError> {
+        let vault = self.load_core_vault(vault_id)?;
+        if vault.kind != VaultKind::Organization {
+            return Err(StoreError::BrokenInvariant {
+                reason: "vault invitations require an organization vault".to_owned(),
+            });
+        }
+        if !vault.admins.contains(created_by_npub) {
+            return Err(StoreError::BrokenInvariant {
+                reason: "vault invitations must be created by a vault admin".to_owned(),
+            });
+        }
+        validate_link_id("vault_invitation_id", id)?;
+        validate_link_id("invite_code", invite_code)?;
+        validate_link_timestamp("expiresAt", expires_at)?;
+        for folder_id in initial_folder_access {
+            ensure_folder_exists(&self.conn, vault_id, folder_id)?;
+        }
+        let initial_folder_access_json = folder_id_vec_json(initial_folder_access);
+
+        self.conn
+            .execute(
+                r#"
+                INSERT INTO vault_invitations (
+                    id, vault_id, user_id, status, invite_code, accept_path,
+                    initial_folder_access_json, created_by_npub, expires_at,
+                    created_at, updated_at
+                )
+                VALUES (?1, ?2, ?3, 'pending', ?4, ?5, ?6, ?7, ?8, ?9, ?9)
+                "#,
+                params![
+                    id,
+                    vault_id.as_str(),
+                    user_id.as_str(),
+                    invite_code,
+                    accept_path,
+                    initial_folder_access_json,
+                    created_by_npub.as_str(),
+                    expires_at,
+                    created_at
+                ],
+            )
+            .map_err(map_insert_error("vault_invitation_id", id))?;
+
+        self.load_vault_invitation(id)
+    }
+
+    /// Load one Vault Invitation by id.
+    pub fn load_vault_invitation(
+        &self,
+        invitation_id: &str,
+    ) -> Result<StoredVaultInvitation, StoreError> {
+        self.conn
+            .query_row(
+                r#"
+                SELECT id, vault_id, user_id, status, invite_code, accept_path,
+                       initial_folder_access_json, created_by_npub, expires_at,
+                       created_at, updated_at, accepted_at
+                FROM vault_invitations
+                WHERE id = ?1
+                "#,
+                params![invitation_id],
+                vault_invitation_from_row,
+            )
+            .optional()?
+            .ok_or(StoreError::UnavailableLink {
+                kind: "vault invitation",
+            })
+    }
+
+    /// Load a pending Vault Invitation by invite code for its target user only.
+    pub fn load_available_vault_invitation_by_code(
+        &self,
+        invite_code: &str,
+        user_id: &UserId,
+        now: &str,
+    ) -> Result<StoredVaultInvitation, StoreError> {
+        let invitation = self
+            .conn
+            .query_row(
+                r#"
+                SELECT id, vault_id, user_id, status, invite_code, accept_path,
+                       initial_folder_access_json, created_by_npub, expires_at,
+                       created_at, updated_at, accepted_at
+                FROM vault_invitations
+                WHERE invite_code = ?1
+                "#,
+                params![invite_code],
+                vault_invitation_from_row,
+            )
+            .optional()?
+            .ok_or(StoreError::UnavailableLink {
+                kind: "vault invitation",
+            })?;
+        ensure_invitation_available(&invitation, user_id, now)?;
+        Ok(invitation)
+    }
+
+    /// Revoke a Vault Invitation delivery handle. Accepted membership is unchanged.
+    pub fn revoke_vault_invitation(
+        &mut self,
+        vault_id: &VaultId,
+        invitation_id: &str,
+        actor_npub: &UserId,
+        updated_at: &str,
+    ) -> Result<StoredVaultInvitation, StoreError> {
+        let vault = self.load_core_vault(vault_id)?;
+        if !vault.admins.contains(actor_npub) {
+            return Err(StoreError::BrokenInvariant {
+                reason: "vault invitation revocation requires a vault admin".to_owned(),
+            });
+        }
+        let invitation = self.load_vault_invitation(invitation_id)?;
+        if invitation.vault_id != *vault_id {
+            return Err(StoreError::UnavailableLink {
+                kind: "vault invitation",
+            });
+        }
+        self.conn.execute(
+            "UPDATE vault_invitations SET status = 'revoked', updated_at = ?3 WHERE vault_id = ?1 AND id = ?2",
+            params![vault_id.as_str(), invitation_id, updated_at],
+        )?;
+        self.load_vault_invitation(invitation_id)
+    }
+
+    /// Accept a pending Vault Invitation, adding the target as a member exactly once.
+    pub fn accept_vault_invitation_by_code(
+        &mut self,
+        invite_code: &str,
+        user_id: &UserId,
+        now: &str,
+    ) -> Result<StoredVaultInvitation, StoreError> {
+        let mut invitation = self
+            .conn
+            .query_row(
+                r#"
+                SELECT id, vault_id, user_id, status, invite_code, accept_path,
+                       initial_folder_access_json, created_by_npub, expires_at,
+                       created_at, updated_at, accepted_at
+                FROM vault_invitations
+                WHERE invite_code = ?1
+                "#,
+                params![invite_code],
+                vault_invitation_from_row,
+            )
+            .optional()?
+            .ok_or(StoreError::UnavailableLink {
+                kind: "vault invitation",
+            })?;
+
+        if invitation.user_id != *user_id {
+            return Err(StoreError::UnavailableLink {
+                kind: "vault invitation",
+            });
+        }
+        if invitation.status == LinkStatus::Accepted {
+            invitation.duplicate_accept = true;
+            return Ok(invitation);
+        }
+        ensure_invitation_available(&invitation, user_id, now)?;
+
+        let tx = self.conn.transaction()?;
+        insert_member_if_missing(&tx, &invitation.vault_id, user_id)?;
+        tx.execute(
+            r#"
+            UPDATE vault_invitations
+            SET status = 'accepted', updated_at = ?3, accepted_at = ?3
+            WHERE vault_id = ?1 AND id = ?2 AND status = 'pending'
+            "#,
+            params![invitation.vault_id.as_str(), invitation.id, now],
+        )?;
+        tx.commit()?;
+
+        self.load_vault_invitation(&invitation.id)
+    }
+
+    /// Create one npub-bound singleton Share Link for a restricted Folder.
+    #[allow(clippy::too_many_arguments)]
+    pub fn create_share_link(
+        &mut self,
+        vault_id: &VaultId,
+        folder_id: &FolderId,
+        id: &str,
+        recipient_npub: &UserId,
+        created_by_npub: &UserId,
+        expires_at: &str,
+        accept_path: &str,
+        grant: &FolderKeyGrantMetadata,
+        create_personal_mount: bool,
+        created_at: &str,
+    ) -> Result<StoredShareLink, StoreError> {
+        let stored = self.load_vault(vault_id)?;
+        if stored.vault.kind != VaultKind::Organization {
+            return Err(StoreError::BrokenInvariant {
+                reason: "share links require an organization source vault".to_owned(),
+            });
+        }
+        if !stored.vault.admins.contains(created_by_npub) {
+            return Err(StoreError::BrokenInvariant {
+                reason: "share links must be created by a vault admin".to_owned(),
+            });
+        }
+        let folder = stored
+            .vault
+            .folders
+            .iter()
+            .find(|folder| folder.id == *folder_id)
+            .ok_or_else(|| StoreError::MissingFolder {
+                folder_id: folder_id.to_string(),
+            })?;
+        if folder.access != FolderAccessMode::Restricted {
+            return Err(StoreError::BrokenInvariant {
+                reason: "share links require a restricted folder".to_owned(),
+            });
+        }
+        validate_link_id("share_link_id", id)?;
+        validate_link_timestamp("expiresAt", expires_at)?;
+        validate_grant_metadata(grant)?;
+        validate_grant_issuer(&stored.vault, grant)?;
+        if grant.folder_id != *folder_id
+            || grant.key_version != folder.current_key_version
+            || grant.recipient_npub != *recipient_npub
+            || grant.issuer_npub != *created_by_npub
+        {
+            return Err(StoreError::BrokenInvariant {
+                reason:
+                    "share link grant must match folder, current key version, issuer, and recipient"
+                        .to_owned(),
+            });
+        }
+        let access_change_event_json =
+            grant
+                .access_change_event_json
+                .clone()
+                .ok_or_else(|| StoreError::BrokenInvariant {
+                    reason: "share link requires an access-change event".to_owned(),
+                })?;
+
+        self.conn
+            .execute(
+                r#"
+                INSERT INTO share_links (
+                    id, vault_id, folder_id, recipient_npub, created_by_npub, status,
+                    accept_path, expires_at, created_at, updated_at, grant_id,
+                    grant_key_version, grant_wrapped_event_json, access_change_event_json,
+                    create_personal_mount
+                )
+                VALUES (?1, ?2, ?3, ?4, ?5, 'pending', ?6, ?7, ?8, ?8, ?9, ?10, ?11, ?12, ?13)
+                "#,
+                params![
+                    id,
+                    vault_id.as_str(),
+                    folder_id.as_str(),
+                    recipient_npub.as_str(),
+                    created_by_npub.as_str(),
+                    accept_path,
+                    expires_at,
+                    created_at,
+                    grant.id,
+                    grant.key_version,
+                    grant.wrapped_event_json,
+                    access_change_event_json,
+                    create_personal_mount
+                ],
+            )
+            .map_err(map_insert_error("share_link_id", id))?;
+
+        self.load_share_link(id)
+    }
+
+    /// Load one Share Link by id.
+    pub fn load_share_link(&self, share_link_id: &str) -> Result<StoredShareLink, StoreError> {
+        self.conn
+            .query_row(
+                r#"
+                SELECT id, vault_id, folder_id, recipient_npub, created_by_npub, status,
+                       accept_path, expires_at, created_at, updated_at, accepted_at,
+                       grant_id, grant_key_version, grant_wrapped_event_json,
+                       access_change_event_json, create_personal_mount, personal_mount_id
+                FROM share_links
+                WHERE id = ?1
+                "#,
+                params![share_link_id],
+                share_link_from_row,
+            )
+            .optional()?
+            .ok_or(StoreError::UnavailableLink { kind: "share link" })
+    }
+
+    /// Load a pending Share Link for its recipient only.
+    pub fn load_available_share_link(
+        &self,
+        share_link_id: &str,
+        recipient_npub: &UserId,
+        now: &str,
+    ) -> Result<StoredShareLink, StoreError> {
+        let share_link = self.load_share_link(share_link_id)?;
+        ensure_share_link_available(&share_link, recipient_npub, now)?;
+        Ok(share_link)
+    }
+
+    /// Revoke a Share Link delivery handle. Accepted access is unchanged.
+    pub fn revoke_share_link(
+        &mut self,
+        share_link_id: &str,
+        actor_npub: &UserId,
+        updated_at: &str,
+    ) -> Result<StoredShareLink, StoreError> {
+        let share_link = self.load_share_link(share_link_id)?;
+        let vault = self.load_core_vault(&share_link.vault_id)?;
+        if !vault.admins.contains(actor_npub) {
+            return Err(StoreError::BrokenInvariant {
+                reason: "share link revocation requires a vault admin".to_owned(),
+            });
+        }
+        self.conn.execute(
+            "UPDATE share_links SET status = 'revoked', updated_at = ?2 WHERE id = ?1",
+            params![share_link_id, updated_at],
+        )?;
+        self.load_share_link(share_link_id)
+    }
+
+    /// Accept a pending Share Link, creating membership, restricted access, grant, and optional mount state.
+    pub fn accept_share_link(
+        &mut self,
+        share_link_id: &str,
+        recipient_npub: &UserId,
+        now: &str,
+    ) -> Result<StoredShareLink, StoreError> {
+        let mut share_link = self.load_share_link(share_link_id)?;
+        if share_link.recipient_npub != *recipient_npub {
+            return Err(StoreError::UnavailableLink { kind: "share link" });
+        }
+        if share_link.status == LinkStatus::Accepted {
+            share_link.duplicate_accept = true;
+            return Ok(share_link);
+        }
+        ensure_share_link_available(&share_link, recipient_npub, now)?;
+
+        let stored = self.load_vault(&share_link.vault_id)?;
+        let folder = stored
+            .vault
+            .folders
+            .iter()
+            .find(|folder| folder.id == share_link.folder_id)
+            .ok_or_else(|| StoreError::MissingFolder {
+                folder_id: share_link.folder_id.to_string(),
+            })?;
+        if folder.access != FolderAccessMode::Restricted {
+            return Err(StoreError::BrokenInvariant {
+                reason: "share links require a restricted folder".to_owned(),
+            });
+        }
+        validate_grant_metadata(&share_link.folder_key_grant)?;
+        validate_grant_issuer(&stored.vault, &share_link.folder_key_grant)?;
+        if share_link.folder_key_grant.key_version != folder.current_key_version {
+            return Err(StoreError::BrokenInvariant {
+                reason: "share link grant key version must match folder current key version"
+                    .to_owned(),
+            });
+        }
+
+        let tx = self.conn.transaction()?;
+        insert_member_if_missing(&tx, &share_link.vault_id, recipient_npub)?;
+        tx.execute(
+            "INSERT INTO folder_access (vault_id, folder_id, user_id) VALUES (?1, ?2, ?3)",
+            params![
+                share_link.vault_id.as_str(),
+                share_link.folder_id.as_str(),
+                recipient_npub.as_str()
+            ],
+        )?;
+        insert_grant(&tx, &share_link.vault_id, &share_link.folder_key_grant)?;
+
+        let personal_mount_id = if share_link.create_personal_mount {
+            let mount_id =
+                personal_mount_id(recipient_npub, &share_link.vault_id, &share_link.folder_id);
+            tx.execute(
+                r#"
+                INSERT INTO personal_folder_mounts (
+                    id, owner_npub, source_vault_id, source_folder_id, display_name,
+                    display_parent_folder_id, created_at, updated_at
+                )
+                VALUES (?1, ?2, ?3, ?4, ?5, NULL, ?6, ?6)
+                ON CONFLICT(owner_npub, source_vault_id, source_folder_id) DO UPDATE SET
+                    updated_at = excluded.updated_at
+                "#,
+                params![
+                    mount_id,
+                    recipient_npub.as_str(),
+                    share_link.vault_id.as_str(),
+                    share_link.folder_id.as_str(),
+                    folder.name.as_str(),
+                    now
+                ],
+            )?;
+            Some(mount_id)
+        } else {
+            None
+        };
+        tx.execute(
+            r#"
+            UPDATE share_links
+            SET status = 'accepted', updated_at = ?2, accepted_at = ?2, personal_mount_id = ?3
+            WHERE id = ?1 AND status = 'pending'
+            "#,
+            params![share_link_id, now, personal_mount_id],
+        )?;
+        tx.commit()?;
+
+        self.load_share_link(share_link_id)
+    }
+
     /// Reload a Vault and all current access/grant metadata.
     pub fn load_vault(&self, vault_id: &VaultId) -> Result<StoredVault, StoreError> {
         let mut vault = self.load_core_vault(vault_id)?;
@@ -888,6 +1395,14 @@ impl BrainStore {
             tx.execute(
                 "INSERT INTO schema_migrations (version, applied_at) VALUES (?1, ?2)",
                 params![2, ACCEPTED_AT],
+            )?;
+        }
+
+        if !migration_applied(&tx, 3)? {
+            tx.execute_batch(SCHEMA_V3)?;
+            tx.execute(
+                "INSERT INTO schema_migrations (version, applied_at) VALUES (?1, ?2)",
+                params![3, ACCEPTED_AT],
             )?;
         }
 
@@ -1309,6 +1824,68 @@ CREATE TABLE vault_sync_retention (
 );
 "#;
 
+const SCHEMA_V3: &str = r#"
+CREATE TABLE vault_invitations (
+    id TEXT PRIMARY KEY NOT NULL,
+    vault_id TEXT NOT NULL,
+    user_id TEXT NOT NULL,
+    status TEXT NOT NULL CHECK (status IN ('pending', 'accepted', 'revoked')),
+    invite_code TEXT NOT NULL UNIQUE,
+    accept_path TEXT NOT NULL,
+    initial_folder_access_json TEXT NOT NULL,
+    created_by_npub TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    accepted_at TEXT,
+    FOREIGN KEY (vault_id) REFERENCES vaults(id) ON DELETE CASCADE
+);
+
+CREATE UNIQUE INDEX vault_invitations_pending_target
+    ON vault_invitations(vault_id, user_id)
+    WHERE status = 'pending';
+
+CREATE TABLE share_links (
+    id TEXT PRIMARY KEY NOT NULL,
+    vault_id TEXT NOT NULL,
+    folder_id TEXT NOT NULL,
+    recipient_npub TEXT NOT NULL,
+    created_by_npub TEXT NOT NULL,
+    status TEXT NOT NULL CHECK (status IN ('pending', 'accepted', 'revoked')),
+    accept_path TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    accepted_at TEXT,
+    grant_id TEXT NOT NULL,
+    grant_key_version INTEGER NOT NULL CHECK (grant_key_version > 0),
+    grant_wrapped_event_json TEXT NOT NULL,
+    access_change_event_json TEXT NOT NULL,
+    create_personal_mount INTEGER NOT NULL CHECK (create_personal_mount IN (0, 1)),
+    personal_mount_id TEXT,
+    FOREIGN KEY (vault_id, folder_id) REFERENCES folders(vault_id, id)
+        ON DELETE CASCADE
+);
+
+CREATE UNIQUE INDEX share_links_pending_target
+    ON share_links(vault_id, folder_id, recipient_npub)
+    WHERE status = 'pending';
+
+CREATE TABLE personal_folder_mounts (
+    id TEXT PRIMARY KEY NOT NULL,
+    owner_npub TEXT NOT NULL,
+    source_vault_id TEXT NOT NULL,
+    source_folder_id TEXT NOT NULL,
+    display_name TEXT NOT NULL,
+    display_parent_folder_id TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE (owner_npub, source_vault_id, source_folder_id),
+    FOREIGN KEY (source_vault_id, source_folder_id)
+        REFERENCES folders(vault_id, id) ON DELETE CASCADE
+);
+"#;
+
 impl SyncRecordType {
     fn as_str(&self) -> &'static str {
         match self {
@@ -1316,6 +1893,21 @@ impl SyncRecordType {
             Self::FolderObjectTombstone => "folder_object_tombstone",
             Self::FolderKeyGrant => "folder_key_grant",
             Self::VaultAdminAccessChange => "vault_admin_access_change",
+        }
+    }
+}
+
+impl TryFrom<&str> for LinkStatus {
+    type Error = StoreError;
+
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        match value {
+            "pending" => Ok(Self::Pending),
+            "accepted" => Ok(Self::Accepted),
+            "revoked" => Ok(Self::Revoked),
+            _ => Err(StoreError::BrokenInvariant {
+                reason: format!("unknown link status: {value}"),
+            }),
         }
     }
 }
@@ -1689,6 +2281,196 @@ fn current_object_tx(
     .transpose()
 }
 
+fn vault_invitation_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredVaultInvitation> {
+    let status = row.get::<_, String>(3)?;
+    let initial_folder_access_json = row.get::<_, String>(6)?;
+    Ok(StoredVaultInvitation {
+        id: row.get(0)?,
+        vault_id: VaultId::new(row.get::<_, String>(1)?)
+            .map_err(to_from_sql_error(1, rusqlite::types::Type::Text))?,
+        user_id: UserId::new(row.get::<_, String>(2)?)
+            .map_err(to_from_sql_error(2, rusqlite::types::Type::Text))?,
+        status: LinkStatus::try_from(status.as_str())
+            .map_err(to_store_from_sql_error(3, rusqlite::types::Type::Text))?,
+        invite_code: row.get(4)?,
+        accept_path: row.get(5)?,
+        initial_folder_access: folder_id_vec_from_json(&initial_folder_access_json)
+            .map_err(to_from_sql_error(6, rusqlite::types::Type::Text))?,
+        created_by_npub: UserId::new(row.get::<_, String>(7)?)
+            .map_err(to_from_sql_error(7, rusqlite::types::Type::Text))?,
+        expires_at: row.get(8)?,
+        created_at: row.get(9)?,
+        updated_at: row.get(10)?,
+        accepted_at: row.get(11)?,
+        duplicate_accept: false,
+    })
+}
+
+fn share_link_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredShareLink> {
+    let status = row.get::<_, String>(5)?;
+    let vault_id = VaultId::new(row.get::<_, String>(1)?)
+        .map_err(to_from_sql_error(1, rusqlite::types::Type::Text))?;
+    let folder_id = FolderId::new(row.get::<_, String>(2)?)
+        .map_err(to_from_sql_error(2, rusqlite::types::Type::Text))?;
+    let recipient_npub = UserId::new(row.get::<_, String>(3)?)
+        .map_err(to_from_sql_error(3, rusqlite::types::Type::Text))?;
+    let created_by_npub = UserId::new(row.get::<_, String>(4)?)
+        .map_err(to_from_sql_error(4, rusqlite::types::Type::Text))?;
+    Ok(StoredShareLink {
+        id: row.get(0)?,
+        vault_id: vault_id.clone(),
+        folder_id: folder_id.clone(),
+        recipient_npub: recipient_npub.clone(),
+        created_by_npub: created_by_npub.clone(),
+        status: LinkStatus::try_from(status.as_str())
+            .map_err(to_store_from_sql_error(5, rusqlite::types::Type::Text))?,
+        accept_path: row.get(6)?,
+        expires_at: row.get(7)?,
+        created_at: row.get(8)?,
+        updated_at: row.get(9)?,
+        accepted_at: row.get(10)?,
+        folder_key_grant: FolderKeyGrantMetadata {
+            id: row.get(11)?,
+            folder_id,
+            key_version: row.get(12)?,
+            issuer_npub: created_by_npub,
+            recipient_npub,
+            format: GRANT_FORMAT_NIP59.to_owned(),
+            wrapped_event_json: row.get(13)?,
+            access_change_event_json: Some(row.get(14)?),
+            created_at: row.get(8)?,
+        },
+        create_personal_mount: row.get(15)?,
+        personal_mount_id: row.get(16)?,
+        duplicate_accept: false,
+    })
+}
+
+fn ensure_invitation_available(
+    invitation: &StoredVaultInvitation,
+    user_id: &UserId,
+    now: &str,
+) -> Result<(), StoreError> {
+    if invitation.user_id != *user_id
+        || invitation.status != LinkStatus::Pending
+        || timestamp_expired(&invitation.expires_at, now)
+    {
+        return Err(StoreError::UnavailableLink {
+            kind: "vault invitation",
+        });
+    }
+    Ok(())
+}
+
+fn ensure_share_link_available(
+    share_link: &StoredShareLink,
+    recipient_npub: &UserId,
+    now: &str,
+) -> Result<(), StoreError> {
+    if share_link.recipient_npub != *recipient_npub
+        || share_link.status != LinkStatus::Pending
+        || timestamp_expired(&share_link.expires_at, now)
+    {
+        return Err(StoreError::UnavailableLink { kind: "share link" });
+    }
+    Ok(())
+}
+
+fn timestamp_expired(expires_at: &str, now: &str) -> bool {
+    !expires_at.is_empty() && expires_at <= now
+}
+
+fn validate_link_id(field: &'static str, value: &str) -> Result<(), StoreError> {
+    if value.trim().is_empty() || value.chars().any(|c| c == '\0' || c.is_control()) {
+        return Err(StoreError::BrokenInvariant {
+            reason: format!("{field} must be non-empty and printable"),
+        });
+    }
+    Ok(())
+}
+
+fn validate_link_timestamp(field: &'static str, value: &str) -> Result<(), StoreError> {
+    if value.trim().is_empty() || value.chars().any(|c| c == '\0' || c.is_control()) {
+        return Err(StoreError::BrokenInvariant {
+            reason: format!("{field} must be non-empty and printable"),
+        });
+    }
+    Ok(())
+}
+
+fn folder_id_vec_json(folder_ids: &[FolderId]) -> String {
+    let values = folder_ids
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>();
+    serde_json::to_string(&values).expect("folder id vector serializes")
+}
+
+fn folder_id_vec_from_json(value: &str) -> Result<Vec<FolderId>, CoreError> {
+    serde_json::from_str::<Vec<String>>(value)
+        .map_err(|_| CoreError::InvalidId {
+            field: "initial_folder_access",
+            value: value.to_owned(),
+        })?
+        .into_iter()
+        .map(FolderId::new)
+        .collect()
+}
+
+fn ensure_folder_exists(
+    conn: &Connection,
+    vault_id: &VaultId,
+    folder_id: &FolderId,
+) -> Result<(), StoreError> {
+    let exists = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM folders WHERE vault_id = ?1 AND id = ?2)",
+        params![vault_id.as_str(), folder_id.as_str()],
+        |row| row.get::<_, bool>(0),
+    )?;
+    if exists {
+        Ok(())
+    } else {
+        Err(StoreError::MissingFolder {
+            folder_id: folder_id.to_string(),
+        })
+    }
+}
+
+fn insert_member_if_missing(
+    tx: &Transaction<'_>,
+    vault_id: &VaultId,
+    user_id: &UserId,
+) -> Result<(), StoreError> {
+    tx.execute(
+        "INSERT OR IGNORE INTO vault_members (vault_id, user_id) VALUES (?1, ?2)",
+        params![vault_id.as_str(), user_id.as_str()],
+    )?;
+    Ok(())
+}
+
+fn personal_mount_id(
+    owner_npub: &UserId,
+    source_vault_id: &VaultId,
+    source_folder_id: &FolderId,
+) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(owner_npub.as_str());
+    hasher.update(b"\n");
+    hasher.update(source_vault_id.as_str());
+    hasher.update(b"\n");
+    hasher.update(source_folder_id.as_str());
+    let hash = hasher.finalize();
+    format!("personal-mount-{}", hex_prefix(&hash, 8))
+}
+
+fn hex_prefix(bytes: &[u8], len: usize) -> String {
+    bytes
+        .iter()
+        .take(len)
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
 fn insert_sync_record(
     tx: &Transaction<'_>,
     vault_id: &VaultId,
@@ -1893,6 +2675,13 @@ fn to_from_sql_error(
     column: usize,
     value_type: rusqlite::types::Type,
 ) -> impl FnOnce(CoreError) -> rusqlite::Error {
+    move |error| rusqlite::Error::FromSqlConversionFailure(column, value_type, Box::new(error))
+}
+
+fn to_store_from_sql_error(
+    column: usize,
+    value_type: rusqlite::types::Type,
+) -> impl FnOnce(StoreError) -> rusqlite::Error {
     move |error| rusqlite::Error::FromSqlConversionFailure(column, value_type, Box::new(error))
 }
 
@@ -2544,6 +3333,280 @@ mod tests {
                 && grant.key_version == 1
                 && grant.recipient_npub == member
         }));
+    }
+
+    #[test]
+    fn vault_invitation_is_single_user_single_use_and_retry_safe() {
+        let mut store = bootstrapped_org_store();
+        let vault_id = VaultId::new("acme").unwrap();
+        let target = UserId::new("npub-target").unwrap();
+        let wrong_user = UserId::new("npub-wrong").unwrap();
+        let admin = UserId::new("npub-admin").unwrap();
+        let now = "2026-06-23T00:00:00.000Z";
+
+        let invitation = store
+            .create_vault_invitation(
+                &vault_id,
+                "invitation-target",
+                &target,
+                "invite-0123456789abcdef0123456789abcdef",
+                "/_admin/vault-invitation-links/invite-0123456789abcdef0123456789abcdef/accept",
+                &[FolderId::new("general").unwrap()],
+                &admin,
+                "2026-06-30T00:00:00.000Z",
+                now,
+            )
+            .unwrap();
+        assert_eq!(invitation.status, LinkStatus::Pending);
+        assert_eq!(
+            invitation.initial_folder_access,
+            vec![FolderId::new("general").unwrap()]
+        );
+
+        assert_eq!(
+            store
+                .load_available_vault_invitation_by_code(
+                    "invite-0123456789abcdef0123456789abcdef",
+                    &wrong_user,
+                    now,
+                )
+                .unwrap_err(),
+            StoreError::UnavailableLink {
+                kind: "vault invitation"
+            }
+        );
+        assert_eq!(
+            store
+                .load_available_vault_invitation_by_code(
+                    "invite-0123456789abcdef0123456789abcdef",
+                    &target,
+                    "2026-07-01T00:00:00.000Z",
+                )
+                .unwrap_err(),
+            StoreError::UnavailableLink {
+                kind: "vault invitation"
+            }
+        );
+
+        let accepted = store
+            .accept_vault_invitation_by_code(
+                "invite-0123456789abcdef0123456789abcdef",
+                &target,
+                now,
+            )
+            .unwrap();
+        assert_eq!(accepted.status, LinkStatus::Accepted);
+        assert_eq!(accepted.accepted_at.as_deref(), Some(now));
+        assert!(!accepted.duplicate_accept);
+        let stored = store.load_vault(&vault_id).unwrap();
+        assert!(
+            stored
+                .vault
+                .members
+                .iter()
+                .any(|member| member.user_id == target)
+        );
+
+        let retry = store
+            .accept_vault_invitation_by_code(
+                "invite-0123456789abcdef0123456789abcdef",
+                &target,
+                now,
+            )
+            .unwrap();
+        assert_eq!(retry.status, LinkStatus::Accepted);
+        assert!(retry.duplicate_accept);
+
+        let revoked = store
+            .revoke_vault_invitation(&vault_id, "invitation-target", &admin, now)
+            .unwrap();
+        assert_eq!(revoked.status, LinkStatus::Revoked);
+        let stored = store.load_vault(&vault_id).unwrap();
+        assert!(
+            stored
+                .vault
+                .members
+                .iter()
+                .any(|member| member.user_id == target)
+        );
+    }
+
+    #[test]
+    fn share_link_accept_creates_member_access_grant_and_optional_mount_once() {
+        let mut store = store_with_strategy_folder();
+        let vault_id = VaultId::new("acme").unwrap();
+        let folder_id = FolderId::new("strategy").unwrap();
+        let recipient = UserId::new("npub-recipient").unwrap();
+        let wrong_user = UserId::new("npub-wrong").unwrap();
+        let admin = UserId::new("npub-admin").unwrap();
+        let now = "2026-06-23T00:00:00.000Z";
+        let grant = grant(
+            "grant-strategy-recipient",
+            "strategy",
+            1,
+            "npub-admin",
+            recipient.as_str(),
+        );
+
+        let share_link = store
+            .create_share_link(
+                &vault_id,
+                &folder_id,
+                "share-link-recipient",
+                &recipient,
+                &admin,
+                "2026-06-30T00:00:00.000Z",
+                "/_admin/share-links/share-link-recipient/accept",
+                &grant,
+                true,
+                now,
+            )
+            .unwrap();
+        assert_eq!(share_link.status, LinkStatus::Pending);
+        assert_eq!(share_link.folder_key_grant, grant);
+
+        assert_eq!(
+            store
+                .load_available_share_link("share-link-recipient", &wrong_user, now)
+                .unwrap_err(),
+            StoreError::UnavailableLink { kind: "share link" }
+        );
+
+        let accepted = store
+            .accept_share_link("share-link-recipient", &recipient, now)
+            .unwrap();
+        assert_eq!(accepted.status, LinkStatus::Accepted);
+        assert_eq!(accepted.accepted_at.as_deref(), Some(now));
+        assert!(accepted.personal_mount_id.is_some());
+        assert!(!accepted.duplicate_accept);
+
+        let stored = store.load_vault(&vault_id).unwrap();
+        assert!(
+            stored
+                .vault
+                .members
+                .iter()
+                .any(|member| member.user_id == recipient)
+        );
+        assert_eq!(
+            stored.folder_access.get(&folder_id),
+            Some(&BTreeSet::from([recipient.clone()]))
+        );
+        assert!(stored.grants.iter().any(|stored_grant| {
+            stored_grant.id == "grant-strategy-recipient"
+                && stored_grant.recipient_npub == recipient
+        }));
+
+        let retry = store
+            .accept_share_link("share-link-recipient", &recipient, now)
+            .unwrap();
+        assert!(retry.duplicate_accept);
+
+        let revoked = store
+            .revoke_share_link("share-link-recipient", &admin, now)
+            .unwrap();
+        assert_eq!(revoked.status, LinkStatus::Revoked);
+        let stored = store.load_vault(&vault_id).unwrap();
+        assert_eq!(
+            stored.folder_access.get(&folder_id),
+            Some(&BTreeSet::from([recipient]))
+        );
+    }
+
+    #[test]
+    fn pending_revoked_and_expired_links_cannot_be_accepted() {
+        let mut store = store_with_strategy_folder();
+        let vault_id = VaultId::new("acme").unwrap();
+        let folder_id = FolderId::new("strategy").unwrap();
+        let admin = UserId::new("npub-admin").unwrap();
+        let now = "2026-06-23T00:00:00.000Z";
+        let invite_target = UserId::new("npub-invite-target").unwrap();
+        store
+            .create_vault_invitation(
+                &vault_id,
+                "invitation-revoked",
+                &invite_target,
+                "invite-revoked0123456789abcdef012345",
+                "/_admin/vault-invitation-links/invite-revoked0123456789abcdef012345/accept",
+                &[],
+                &admin,
+                "2026-06-30T00:00:00.000Z",
+                now,
+            )
+            .unwrap();
+        store
+            .revoke_vault_invitation(&vault_id, "invitation-revoked", &admin, now)
+            .unwrap();
+        assert_eq!(
+            store
+                .accept_vault_invitation_by_code(
+                    "invite-revoked0123456789abcdef012345",
+                    &invite_target,
+                    now,
+                )
+                .unwrap_err(),
+            StoreError::UnavailableLink {
+                kind: "vault invitation"
+            }
+        );
+
+        let expired_target = UserId::new("npub-expired-target").unwrap();
+        store
+            .create_vault_invitation(
+                &vault_id,
+                "invitation-expired",
+                &expired_target,
+                "invite-expired0123456789abcdef012345",
+                "/_admin/vault-invitation-links/invite-expired0123456789abcdef012345/accept",
+                &[],
+                &admin,
+                "2026-01-01T00:00:00.000Z",
+                now,
+            )
+            .unwrap();
+        assert_eq!(
+            store
+                .accept_vault_invitation_by_code(
+                    "invite-expired0123456789abcdef012345",
+                    &expired_target,
+                    now,
+                )
+                .unwrap_err(),
+            StoreError::UnavailableLink {
+                kind: "vault invitation"
+            }
+        );
+
+        let share_recipient = UserId::new("npub-share-revoked").unwrap();
+        store
+            .create_share_link(
+                &vault_id,
+                &folder_id,
+                "share-link-revoked",
+                &share_recipient,
+                &admin,
+                "2026-06-30T00:00:00.000Z",
+                "/_admin/share-links/share-link-revoked/accept",
+                &grant(
+                    "grant-share-revoked",
+                    "strategy",
+                    1,
+                    "npub-admin",
+                    share_recipient.as_str(),
+                ),
+                false,
+                now,
+            )
+            .unwrap();
+        store
+            .revoke_share_link("share-link-revoked", &admin, now)
+            .unwrap();
+        assert_eq!(
+            store
+                .accept_share_link("share-link-revoked", &share_recipient, now)
+                .unwrap_err(),
+            StoreError::UnavailableLink { kind: "share link" }
+        );
     }
 
     #[test]
