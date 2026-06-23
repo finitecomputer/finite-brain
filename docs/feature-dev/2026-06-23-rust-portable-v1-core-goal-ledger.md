@@ -72,8 +72,8 @@ new `finite-nostr` Rust crate so other Finite repos can reuse it.
 | `finite-brain#6` | AFK | complete | Direct review gate in orchestrator | Folded projection upsert parameters into a typed helper after clippy review | `cargo fmt --check`; `cargo test`; `cargo clippy --all-targets -- -D warnings`; `git diff --check` |
 | `finite-brain#7` | AFK | complete | Direct review gate in orchestrator | Added SQLite-backed app router and NIP-98 auth route coverage | `cargo fmt --check`; `cargo test`; `cargo clippy --all-targets -- -D warnings`; `git diff --check` |
 | `finite-brain#8` | AFK | complete | Direct review gate in orchestrator | Bumped `finite-nostr` HTTP auth parsing to support authenticated `DELETE` and added route coverage | `cargo fmt --check`; `cargo test`; `cargo clippy --all-targets -- -D warnings`; `git diff --check` |
-| `finite-brain#9` | AFK | ready | None | None | Not started |
-| `finite-brain#10` | AFK | blocked by `finite-brain#9` | None | None | Not started |
+| `finite-brain#9` | AFK | complete | Direct review gate in orchestrator | Added kind/key-version hardening before commit | `cargo fmt --check`; `cargo test`; `cargo clippy --all-targets -- -D warnings`; `git diff --check` |
+| `finite-brain#10` | AFK | ready | None | None | Not started |
 | `finite-brain#11` | AFK | blocked by `finite-brain#10` | None | None | Not started |
 | `finite-brain#12` | AFK | blocked by `finite-brain#11` | None | None | Not started |
 | `finite-brain#13` | AFK | blocked by `finite-brain#10`, `finite-brain#11`, `finite-brain#12` | None | None | Not started |
@@ -89,6 +89,7 @@ new `finite-nostr` Rust crate so other Finite repos can reuse it.
 
 | Issue | Fixed point | Worker session | Commit | Review result | Checks |
 | --- | --- | --- | --- | --- | --- |
+| `finite-brain#9` | `0bd2b718c1452cfefabaa12a3e3b356f06af5b46` | Orchestrator direct implementation | `e7c24ea` | Standards/spec review passed after admin event kind and rotation key-version hardening | `cargo fmt --check`; `cargo test`; `cargo clippy --all-targets -- -D warnings`; `git diff --check` |
 | `finite-brain#8` | `90877e65c07dfe860c322167a12e370c0600195c` | Orchestrator direct implementation | `e5cf5b1` | Standards/spec review passed; `finite-nostr#621bb34` consumed for generic HTTP auth method parsing | `cargo fmt --check`; `cargo test`; `cargo clippy --all-targets -- -D warnings`; `git diff --check` |
 | `finite-brain#7` | `968895863bd266f27adea2b153003389c30eaf8e` | Orchestrator direct implementation | `704e10b` | Standards/spec review passed | `cargo fmt --check`; `cargo test`; `cargo clippy --all-targets -- -D warnings`; `git diff --check` |
 | `finite-brain#6` | `dd692059cc942a6104117692c65cfe9d3aa3e749` | Orchestrator direct implementation | `97c18af` | Standards/spec review passed | `cargo fmt --check`; `cargo test`; `cargo clippy --all-targets -- -D warnings`; `git diff --check` |
