@@ -26,8 +26,10 @@ use finite_brain_core::{
 };
 use finite_brain_store::{
     BrainStore, ControlSyncRecord, FolderKeyGrantMetadata, FolderObjectRevisionSyncRecord,
-    FolderObjectTombstoneSyncRecord, LinkStatus, StoreError, StoredShareLink, StoredSyncRecord,
-    StoredVault, StoredVaultInvitation, SyncRecordInput, SyncRecordType,
+    FolderObjectTombstoneSyncRecord, LinkStatus, MountedFolderProjection, MountedFolderState,
+    SharedFolderConnectionStatus, StoreError, StoredShareLink, StoredSharedFolderConnection,
+    StoredSharedFolderInvitation, StoredSyncRecord, StoredVault, StoredVaultInvitation,
+    SyncRecordInput, SyncRecordType,
 };
 use finite_nostr::{HttpAuthValidation, NostrPrimitiveError, NostrPublicKey};
 use nostr::Event;
@@ -178,6 +180,7 @@ pub struct VaultMetadataResponse {
     pub members: Vec<String>,
     pub admins: Vec<String>,
     pub folders: Vec<FolderMetadataResponse>,
+    pub mounted_folders: Vec<MountedFolderResponse>,
     pub grant_count: usize,
 }
 
@@ -195,6 +198,20 @@ pub struct FolderMetadataResponse {
     pub access_user_ids: Vec<String>,
     pub current_key_version: u32,
     pub setup_incomplete: bool,
+}
+
+/// Client-visible mounted Folder metadata response.
+#[derive(Debug, Clone, Eq, PartialEq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MountedFolderResponse {
+    pub mount_id: String,
+    pub organization_vault_id: String,
+    pub source_vault_id: String,
+    pub source_folder_id: String,
+    pub connection_id: String,
+    pub display_name: String,
+    pub display_parent_folder_id: Option<String>,
+    pub state: String,
 }
 
 /// Encrypted object write request.
@@ -424,6 +441,79 @@ pub struct ShareLinkResponse {
     pub duplicate_accept: bool,
 }
 
+/// Mark Shared Folder Source request.
+#[derive(Debug, Clone, Eq, PartialEq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MarkSharedFolderSourceRequest {
+    pub access_change_event: serde_json::Value,
+}
+
+/// Create Shared Folder Invitation request.
+#[derive(Debug, Clone, Eq, PartialEq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateSharedFolderInvitationRequest {
+    pub destination_vault_id: String,
+    pub destination_admin_npub: String,
+    pub grant: FolderKeyGrantRequest,
+    pub access_change_event: serde_json::Value,
+}
+
+/// Shared Folder Invitation response.
+#[derive(Debug, Clone, Eq, PartialEq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SharedFolderInvitationResponse {
+    pub id: String,
+    pub source_vault_id: String,
+    pub source_folder_id: String,
+    pub destination_vault_id: String,
+    pub destination_admin_npub: String,
+    pub created_by_npub: String,
+    pub status: String,
+    pub current_key_version: u32,
+    pub accept_path: String,
+    pub created_at: String,
+    pub updated_at: String,
+    pub accepted_at: Option<String>,
+    pub grant_id: String,
+    pub duplicate_accept: bool,
+}
+
+/// Shared Folder Connection response.
+#[derive(Debug, Clone, Eq, PartialEq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SharedFolderConnectionResponse {
+    pub id: String,
+    pub source_vault_id: String,
+    pub source_folder_id: String,
+    pub destination_vault_id: String,
+    pub destination_admin_npub: String,
+    pub status: String,
+    pub created_at: String,
+    pub updated_at: String,
+    pub member_npubs: Vec<String>,
+}
+
+/// Update Shared Folder Connection members request.
+#[derive(Debug, Clone, Eq, PartialEq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateSharedFolderConnectionMembersRequest {
+    pub action: String,
+    pub target_npub: String,
+    pub grant: Option<FolderKeyGrantRequest>,
+    pub new_key_version: Option<u32>,
+    pub grants: Vec<FolderKeyGrantRequest>,
+    pub reencrypted_records: Vec<RotationObjectRequest>,
+}
+
+/// Revoke Shared Folder Connection request.
+#[derive(Debug, Clone, Eq, PartialEq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RevokeSharedFolderConnectionRequest {
+    pub new_key_version: u32,
+    pub grants: Vec<FolderKeyGrantRequest>,
+    pub reencrypted_records: Vec<RotationObjectRequest>,
+}
+
 /// Returns the current process health status.
 pub fn health_status() -> HealthStatus {
     HealthStatus {
@@ -516,12 +606,41 @@ pub fn router_with_state(state: ServerState) -> Router {
             post(create_share_link_handler),
         )
         .route(
+            "/_admin/vaults/{vault_id}/folders/{folder_id}/share-source",
+            post(mark_shared_folder_source_handler),
+        )
+        .route(
+            "/_admin/vaults/{vault_id}/folders/{folder_id}/shared-folder-invitations",
+            post(create_shared_folder_invitation_handler),
+        )
+        .route(
             "/_admin/share-links/{share_link_id}",
             get(get_share_link_handler).delete(revoke_share_link_handler),
         )
         .route(
             "/_admin/share-links/{share_link_id}/accept",
             post(accept_share_link_handler),
+        )
+        .route(
+            "/_admin/shared-folder-invitations/{invitation_id}",
+            get(get_shared_folder_invitation_handler)
+                .delete(revoke_shared_folder_invitation_handler),
+        )
+        .route(
+            "/_admin/shared-folder-invitations/{invitation_id}/accept",
+            post(accept_shared_folder_invitation_handler),
+        )
+        .route(
+            "/_admin/shared-folder-connections/{connection_id}/members",
+            axum::routing::patch(update_shared_folder_connection_members_handler),
+        )
+        .route(
+            "/_admin/shared-folder-connections/{connection_id}",
+            axum::routing::delete(revoke_shared_folder_connection_handler),
+        )
+        .route(
+            "/_admin/vaults/{vault_id}/organization-folder-mounts",
+            get(organization_folder_mounts_handler),
         )
         .route(
             "/_admin/vaults/{vault_id}/folders/{folder_id}/objects/{object_id}",
@@ -606,8 +725,12 @@ async fn vault_metadata_handler(
         store.load_vault(&vault_id)?
     };
     ensure_metadata_visible(&stored, &actor_npub)?;
+    let mounted_folders = {
+        let store = state.store.lock().map_err(lock_error)?;
+        store.mounted_folder_projection(&vault_id, &UserId::new(actor_npub.clone())?)?
+    };
 
-    Ok(Json(metadata_response(stored)))
+    Ok(Json(metadata_response_with_mounts(stored, mounted_folders)))
 }
 
 async fn add_member_handler(
@@ -1200,6 +1323,332 @@ async fn revoke_share_link_handler(
     Ok(Json(share_link_response(share_link)))
 }
 
+async fn mark_shared_folder_source_handler(
+    State(state): State<ServerState>,
+    headers: HeaderMap,
+    method: Method,
+    OriginalUri(uri): OriginalUri,
+    AxumPath((vault_id, folder_id)): AxumPath<(String, String)>,
+    body: Bytes,
+) -> Result<Json<VaultMetadataResponse>, ApiError> {
+    let actor = validate_request_auth(&state, &headers, &method, &uri, Some(&body))?
+        .to_npub()
+        .map_err(auth_error)?;
+    let request: MarkSharedFolderSourceRequest = serde_json::from_slice(&body)
+        .map_err(|_| ApiError::new(StatusCode::BAD_REQUEST, "invalid JSON request body"))?;
+    let vault_id = VaultId::new(vault_id)?;
+    let folder_id = FolderId::new(folder_id)?;
+    let current_key_version = {
+        let store = state.store.lock().map_err(lock_error)?;
+        let stored = store.load_vault(&vault_id)?;
+        ensure_vault_admin(&stored, &actor)?;
+        folder_current_key_version(&stored, &folder_id)?
+    };
+    let (event, payload) = validate_admin_access_change_value(
+        request.access_change_event,
+        &vault_id,
+        &actor,
+        AdminAccessAction::SetFolderAccessMode,
+        Some(&folder_id),
+        None,
+        Some(current_key_version),
+    )?;
+    mutate_as_admin(state, vault_id, actor, event, payload, |store, vault_id| {
+        store.mark_shared_folder_source(vault_id, &folder_id)
+    })
+    .map(Json)
+}
+
+async fn create_shared_folder_invitation_handler(
+    State(state): State<ServerState>,
+    headers: HeaderMap,
+    method: Method,
+    OriginalUri(uri): OriginalUri,
+    AxumPath((source_vault_id, source_folder_id)): AxumPath<(String, String)>,
+    body: Bytes,
+) -> Result<Json<SharedFolderInvitationResponse>, ApiError> {
+    let actor = validate_request_auth(&state, &headers, &method, &uri, Some(&body))?
+        .to_npub()
+        .map_err(auth_error)?;
+    let request: CreateSharedFolderInvitationRequest = serde_json::from_slice(&body)
+        .map_err(|_| ApiError::new(StatusCode::BAD_REQUEST, "invalid JSON request body"))?;
+    let source_vault_id = VaultId::new(source_vault_id)?;
+    let source_folder_id = FolderId::new(source_folder_id)?;
+    let destination_vault_id = VaultId::new(request.destination_vault_id)?;
+    let destination_admin = UserId::new(request.destination_admin_npub.clone())?;
+    let current_key_version = {
+        let store = state.store.lock().map_err(lock_error)?;
+        let stored = store.load_vault(&source_vault_id)?;
+        ensure_vault_admin(&stored, &actor)?;
+        folder_current_key_version(&stored, &source_folder_id)?
+    };
+    let (event, _) = validate_admin_access_change_value(
+        request.access_change_event,
+        &source_vault_id,
+        &actor,
+        AdminAccessAction::GrantFolderAccess,
+        Some(&source_folder_id),
+        Some(destination_admin.as_str()),
+        Some(current_key_version),
+    )?;
+    let grant = grant_request_to_metadata(
+        &request.grant,
+        &source_folder_id,
+        &actor,
+        Some(event.as_json()),
+    )?;
+    let actor_user_id = UserId::new(actor)?;
+    let created_at = server_timestamp(&state);
+    let id = generated_link_id(
+        "shared-folder-invitation",
+        &[
+            source_vault_id.as_str(),
+            source_folder_id.as_str(),
+            destination_vault_id.as_str(),
+            destination_admin.as_str(),
+            created_at.as_str(),
+        ],
+        16,
+    );
+    let accept_path = format!("/_admin/shared-folder-invitations/{id}/accept");
+    let invitation = {
+        let mut store = state.store.lock().map_err(lock_error)?;
+        store.create_shared_folder_invitation(
+            &source_vault_id,
+            &source_folder_id,
+            &destination_vault_id,
+            &id,
+            &destination_admin,
+            &actor_user_id,
+            &accept_path,
+            &grant,
+            &created_at,
+        )?
+    };
+    Ok(Json(shared_folder_invitation_response(invitation)))
+}
+
+async fn get_shared_folder_invitation_handler(
+    State(state): State<ServerState>,
+    headers: HeaderMap,
+    method: Method,
+    OriginalUri(uri): OriginalUri,
+    AxumPath(invitation_id): AxumPath<String>,
+) -> Result<Json<SharedFolderInvitationResponse>, ApiError> {
+    let actor = validate_request_auth(&state, &headers, &method, &uri, None)?
+        .to_npub()
+        .map_err(auth_error)?;
+    let invitation = {
+        let store = state.store.lock().map_err(lock_error)?;
+        let invitation = store.load_shared_folder_invitation(&invitation_id)?;
+        if invitation.destination_admin_npub.as_str() != actor {
+            return Err(StoreError::UnavailableLink {
+                kind: "shared folder invitation",
+            }
+            .into());
+        }
+        invitation
+    };
+    Ok(Json(shared_folder_invitation_response(invitation)))
+}
+
+async fn accept_shared_folder_invitation_handler(
+    State(state): State<ServerState>,
+    headers: HeaderMap,
+    method: Method,
+    OriginalUri(uri): OriginalUri,
+    AxumPath(invitation_id): AxumPath<String>,
+) -> Result<Json<SharedFolderInvitationResponse>, ApiError> {
+    let actor = validate_request_auth(&state, &headers, &method, &uri, None)?
+        .to_npub()
+        .map_err(auth_error)?;
+    let actor = UserId::new(actor)?;
+    let now = server_timestamp(&state);
+    let invitation = {
+        let mut store = state.store.lock().map_err(lock_error)?;
+        let invitation = store.load_shared_folder_invitation(&invitation_id)?;
+        let connection_id = shared_folder_connection_id(
+            &invitation.source_vault_id,
+            &invitation.source_folder_id,
+            &invitation.destination_vault_id,
+        );
+        let mount_id = organization_mount_id(
+            &invitation.destination_vault_id,
+            &invitation.source_vault_id,
+            &invitation.source_folder_id,
+        );
+        store.accept_shared_folder_invitation(
+            &invitation_id,
+            &actor,
+            &connection_id,
+            &mount_id,
+            &now,
+        )?
+    };
+    Ok(Json(shared_folder_invitation_response(invitation)))
+}
+
+async fn revoke_shared_folder_invitation_handler(
+    State(state): State<ServerState>,
+    headers: HeaderMap,
+    method: Method,
+    OriginalUri(uri): OriginalUri,
+    AxumPath(invitation_id): AxumPath<String>,
+) -> Result<Json<SharedFolderInvitationResponse>, ApiError> {
+    let actor = validate_request_auth(&state, &headers, &method, &uri, None)?
+        .to_npub()
+        .map_err(auth_error)?;
+    let actor = UserId::new(actor)?;
+    let now = server_timestamp(&state);
+    let invitation = {
+        let mut store = state.store.lock().map_err(lock_error)?;
+        store.revoke_shared_folder_invitation(&invitation_id, &actor, &now)?
+    };
+    Ok(Json(shared_folder_invitation_response(invitation)))
+}
+
+async fn update_shared_folder_connection_members_handler(
+    State(state): State<ServerState>,
+    headers: HeaderMap,
+    method: Method,
+    OriginalUri(uri): OriginalUri,
+    AxumPath(connection_id): AxumPath<String>,
+    body: Bytes,
+) -> Result<Json<SharedFolderConnectionResponse>, ApiError> {
+    let actor = validate_request_auth(&state, &headers, &method, &uri, Some(&body))?
+        .to_npub()
+        .map_err(auth_error)?;
+    let actor = UserId::new(actor)?;
+    let request: UpdateSharedFolderConnectionMembersRequest = serde_json::from_slice(&body)
+        .map_err(|_| ApiError::new(StatusCode::BAD_REQUEST, "invalid JSON request body"))?;
+    let target = UserId::new(request.target_npub.clone())?;
+    let now = server_timestamp(&state);
+    let connection = {
+        let mut store = state.store.lock().map_err(lock_error)?;
+        let connection = store.load_shared_folder_connection(&connection_id)?;
+        match request.action.as_str() {
+            "add" => {
+                let grant = request.grant.as_ref().ok_or_else(|| {
+                    ApiError::new(StatusCode::BAD_REQUEST, "grant is required for add")
+                })?;
+                let grant = grant_request_to_metadata(
+                    grant,
+                    &connection.source_folder_id,
+                    actor.as_str(),
+                    None,
+                )?;
+                store.add_shared_folder_connection_member(
+                    &connection_id,
+                    &actor,
+                    &target,
+                    &grant,
+                    &now,
+                )?
+            }
+            "remove" => {
+                let new_key_version = request.new_key_version.ok_or_else(|| {
+                    ApiError::new(
+                        StatusCode::BAD_REQUEST,
+                        "newKeyVersion is required for remove",
+                    )
+                })?;
+                let grants = grant_requests_to_metadata(
+                    &request.grants,
+                    &connection.source_folder_id,
+                    actor.as_str(),
+                    None,
+                )?;
+                let reencrypted_records = rotation_records_from_requests(
+                    &connection.source_vault_id,
+                    &connection.source_folder_id,
+                    actor.as_str(),
+                    new_key_version,
+                    request.reencrypted_records,
+                )?;
+                store.remove_shared_folder_connection_member(
+                    &connection_id,
+                    &actor,
+                    &target,
+                    new_key_version,
+                    &grants,
+                    &reencrypted_records,
+                )?
+            }
+            _ => {
+                return Err(ApiError::new(
+                    StatusCode::BAD_REQUEST,
+                    "action must be add or remove",
+                ));
+            }
+        }
+    };
+    Ok(Json(shared_folder_connection_response(connection)))
+}
+
+async fn revoke_shared_folder_connection_handler(
+    State(state): State<ServerState>,
+    headers: HeaderMap,
+    method: Method,
+    OriginalUri(uri): OriginalUri,
+    AxumPath(connection_id): AxumPath<String>,
+    body: Bytes,
+) -> Result<Json<SharedFolderConnectionResponse>, ApiError> {
+    let actor = validate_request_auth(&state, &headers, &method, &uri, Some(&body))?
+        .to_npub()
+        .map_err(auth_error)?;
+    let actor = UserId::new(actor)?;
+    let request: RevokeSharedFolderConnectionRequest = serde_json::from_slice(&body)
+        .map_err(|_| ApiError::new(StatusCode::BAD_REQUEST, "invalid JSON request body"))?;
+    let now = server_timestamp(&state);
+    let connection = {
+        let mut store = state.store.lock().map_err(lock_error)?;
+        let connection = store.load_shared_folder_connection(&connection_id)?;
+        let grants = grant_requests_to_metadata(
+            &request.grants,
+            &connection.source_folder_id,
+            actor.as_str(),
+            None,
+        )?;
+        let reencrypted_records = rotation_records_from_requests(
+            &connection.source_vault_id,
+            &connection.source_folder_id,
+            actor.as_str(),
+            request.new_key_version,
+            request.reencrypted_records,
+        )?;
+        store.revoke_shared_folder_connection(
+            &connection_id,
+            &actor,
+            request.new_key_version,
+            &grants,
+            &reencrypted_records,
+            &now,
+        )?
+    };
+    Ok(Json(shared_folder_connection_response(connection)))
+}
+
+async fn organization_folder_mounts_handler(
+    State(state): State<ServerState>,
+    headers: HeaderMap,
+    method: Method,
+    OriginalUri(uri): OriginalUri,
+    AxumPath(vault_id): AxumPath<String>,
+) -> Result<Json<Vec<MountedFolderResponse>>, ApiError> {
+    let actor = validate_request_auth(&state, &headers, &method, &uri, None)?
+        .to_npub()
+        .map_err(auth_error)?;
+    let actor = UserId::new(actor)?;
+    let vault_id = VaultId::new(vault_id)?;
+    let projections = {
+        let store = state.store.lock().map_err(lock_error)?;
+        let stored = store.load_vault(&vault_id)?;
+        ensure_metadata_visible(&stored, actor.as_str())?;
+        store.mounted_folder_projection(&vault_id, &actor)?
+    };
+    Ok(Json(mounted_folder_responses(projections)))
+}
+
 async fn put_object_handler(
     State(state): State<ServerState>,
     headers: HeaderMap,
@@ -1558,6 +2007,42 @@ fn validate_object_revision_record(
         },
         revision,
     ))
+}
+
+fn rotation_records_from_requests(
+    vault_id: &VaultId,
+    folder_id: &FolderId,
+    actor_npub: &str,
+    new_key_version: u32,
+    requests: Vec<RotationObjectRequest>,
+) -> Result<Vec<FolderObjectRevisionSyncRecord>, ApiError> {
+    let mut records = Vec::new();
+    for request in requests {
+        if request.key_version != new_key_version {
+            return Err(ApiError::new(
+                StatusCode::BAD_REQUEST,
+                "rotation record keyVersion must match newKeyVersion",
+            ));
+        }
+        let object_id = ObjectId::new(request.object_id)?;
+        let write_request = ObjectWriteRequest {
+            base_revision: request.base_revision,
+            key_version: request.key_version,
+            cipher: request.cipher,
+            ciphertext: request.ciphertext,
+            revision_event: request.revision_event,
+        };
+        let (record, _) = validate_object_revision_record(
+            vault_id,
+            folder_id,
+            &object_id,
+            actor_npub,
+            write_request,
+            FolderObjectOperation::Update,
+        )?;
+        records.push(record);
+    }
+    Ok(records)
 }
 
 fn accept_object_tombstone(
@@ -1950,6 +2435,13 @@ fn grants_for_required(
 }
 
 fn metadata_response(stored: StoredVault) -> VaultMetadataResponse {
+    metadata_response_with_mounts(stored, Vec::new())
+}
+
+fn metadata_response_with_mounts(
+    stored: StoredVault,
+    mounted_folders: Vec<MountedFolderProjection>,
+) -> VaultMetadataResponse {
     let folder_access = stored.folder_access;
     let setup_incomplete = stored.setup_incomplete_folder_ids;
     VaultMetadataResponse {
@@ -1989,6 +2481,7 @@ fn metadata_response(stored: StoredVault) -> VaultMetadataResponse {
                 setup_incomplete: setup_incomplete.contains(&folder.id),
             })
             .collect(),
+        mounted_folders: mounted_folder_responses(mounted_folders),
         grant_count: stored.grants.len(),
     }
 }
@@ -2034,12 +2527,112 @@ fn share_link_response(share_link: StoredShareLink) -> ShareLinkResponse {
     }
 }
 
+fn shared_folder_invitation_response(
+    invitation: StoredSharedFolderInvitation,
+) -> SharedFolderInvitationResponse {
+    SharedFolderInvitationResponse {
+        id: invitation.id,
+        source_vault_id: invitation.source_vault_id.to_string(),
+        source_folder_id: invitation.source_folder_id.to_string(),
+        destination_vault_id: invitation.destination_vault_id.to_string(),
+        destination_admin_npub: invitation.destination_admin_npub.to_string(),
+        created_by_npub: invitation.created_by_npub.to_string(),
+        status: link_status_str(invitation.status).to_owned(),
+        current_key_version: invitation.current_key_version,
+        accept_path: invitation.accept_path,
+        created_at: invitation.created_at,
+        updated_at: invitation.updated_at,
+        accepted_at: invitation.accepted_at,
+        grant_id: invitation.folder_key_grant.id,
+        duplicate_accept: invitation.duplicate_accept,
+    }
+}
+
+fn shared_folder_connection_response(
+    connection: StoredSharedFolderConnection,
+) -> SharedFolderConnectionResponse {
+    SharedFolderConnectionResponse {
+        id: connection.id,
+        source_vault_id: connection.source_vault_id.to_string(),
+        source_folder_id: connection.source_folder_id.to_string(),
+        destination_vault_id: connection.destination_vault_id.to_string(),
+        destination_admin_npub: connection.destination_admin_npub.to_string(),
+        status: match connection.status {
+            SharedFolderConnectionStatus::Active => "active",
+            SharedFolderConnectionStatus::Revoked => "revoked",
+        }
+        .to_owned(),
+        created_at: connection.created_at,
+        updated_at: connection.updated_at,
+        member_npubs: connection
+            .member_npubs
+            .iter()
+            .map(ToString::to_string)
+            .collect(),
+    }
+}
+
+fn mounted_folder_responses(
+    mounted_folders: Vec<MountedFolderProjection>,
+) -> Vec<MountedFolderResponse> {
+    mounted_folders
+        .into_iter()
+        .map(|mount| MountedFolderResponse {
+            mount_id: mount.mount_id,
+            organization_vault_id: mount.organization_vault_id.to_string(),
+            source_vault_id: mount.source_vault_id.to_string(),
+            source_folder_id: mount.source_folder_id.to_string(),
+            connection_id: mount.connection_id,
+            display_name: mount.display_name,
+            display_parent_folder_id: mount.display_parent_folder_id.map(|id| id.to_string()),
+            state: match mount.state {
+                MountedFolderState::Available => "available",
+                MountedFolderState::Locked => "locked",
+                MountedFolderState::Revoked => "revoked",
+            }
+            .to_owned(),
+        })
+        .collect()
+}
+
 fn link_status_str(status: LinkStatus) -> &'static str {
     match status {
         LinkStatus::Pending => "pending",
         LinkStatus::Accepted => "accepted",
         LinkStatus::Revoked => "revoked",
     }
+}
+
+fn shared_folder_connection_id(
+    source_vault_id: &VaultId,
+    source_folder_id: &FolderId,
+    destination_vault_id: &VaultId,
+) -> String {
+    generated_link_id(
+        "shared-folder-connection",
+        &[
+            source_vault_id.as_str(),
+            source_folder_id.as_str(),
+            destination_vault_id.as_str(),
+        ],
+        8,
+    )
+}
+
+fn organization_mount_id(
+    organization_vault_id: &VaultId,
+    source_vault_id: &VaultId,
+    source_folder_id: &FolderId,
+) -> String {
+    generated_link_id(
+        "organization-mount",
+        &[
+            organization_vault_id.as_str(),
+            source_vault_id.as_str(),
+            source_folder_id.as_str(),
+        ],
+        8,
+    )
 }
 
 fn ensure_metadata_visible(stored: &StoredVault, actor_npub: &str) -> Result<(), ApiError> {
@@ -3278,6 +3871,384 @@ mod tests {
         assert_eq!(revoke.status(), StatusCode::OK);
         let revoked: ShareLinkResponse = read_json(revoke).await;
         assert_eq!(revoked.status, "revoked");
+    }
+
+    #[tokio::test]
+    async fn shared_folder_routes_project_mounts_and_route_writes_to_source() {
+        let source_admin_keys = Keys::generate();
+        let destination_admin_keys = Keys::generate();
+        let destination_member_keys = Keys::generate();
+        let source_admin_npub = npub(&source_admin_keys);
+        let destination_admin_npub = npub(&destination_admin_keys);
+        let destination_member_npub = npub(&destination_member_keys);
+        let router = test_router();
+
+        let create_source = post_vault(
+            router.clone(),
+            &source_admin_keys,
+            &create_vault_body("acme", "organization"),
+            TEST_NOW,
+            None,
+            None,
+            None,
+        )
+        .await;
+        assert_eq!(create_source.status(), StatusCode::OK);
+        let create_destination = post_vault(
+            router.clone(),
+            &destination_admin_keys,
+            &create_vault_body("dest", "organization"),
+            TEST_NOW,
+            None,
+            None,
+            None,
+        )
+        .await;
+        assert_eq!(create_destination.status(), StatusCode::OK);
+
+        let create_folder_body = serde_json::json!({
+            "folderId": "strategy",
+            "name": "Strategy",
+            "role": "folder",
+            "access": "restricted",
+            "parentFolderId": "general",
+            "path": "general/Strategy",
+            "accessUserIds": [],
+            "grants": [
+                folder_key_grant_value("grant-strategy-source-admin-v1", 1, source_admin_npub.as_str())
+            ],
+            "accessChangeEvent": admin_event(
+                &source_admin_keys,
+                "acme",
+                "change_create_shared_strategy",
+                AdminAccessAction::SetFolderAccessMode,
+                Some("strategy"),
+                None,
+                Some(1),
+            ),
+        })
+        .to_string();
+        let create_folder = authed_request(
+            router.clone(),
+            &source_admin_keys,
+            "POST",
+            "/_admin/vaults/acme/folders",
+            Some(create_folder_body),
+            TEST_NOW,
+        )
+        .await;
+        assert_eq!(create_folder.status(), StatusCode::OK);
+
+        let mark_source_body = serde_json::json!({
+            "accessChangeEvent": admin_event(
+                &source_admin_keys,
+                "acme",
+                "change_mark_shared_strategy",
+                AdminAccessAction::SetFolderAccessMode,
+                Some("strategy"),
+                None,
+                Some(1),
+            ),
+        })
+        .to_string();
+        let mark_source = authed_request(
+            router.clone(),
+            &source_admin_keys,
+            "POST",
+            "/_admin/vaults/acme/folders/strategy/share-source",
+            Some(mark_source_body),
+            TEST_NOW,
+        )
+        .await;
+        assert_eq!(mark_source.status(), StatusCode::OK);
+        let source_metadata: VaultMetadataResponse = read_json(mark_source).await;
+        assert!(
+            source_metadata
+                .folders
+                .iter()
+                .find(|folder| folder.id == "strategy")
+                .unwrap()
+                .shared_folder_source
+        );
+
+        let create_invitation_body = serde_json::json!({
+            "destinationVaultId": "dest",
+            "destinationAdminNpub": destination_admin_npub,
+            "grant": folder_key_grant_value("grant-strategy-dest-admin-v1", 1, destination_admin_npub.as_str()),
+            "accessChangeEvent": admin_event(
+                &source_admin_keys,
+                "acme",
+                "change_invite_dest_strategy",
+                AdminAccessAction::GrantFolderAccess,
+                Some("strategy"),
+                Some(destination_admin_npub.as_str()),
+                Some(1),
+            ),
+        })
+        .to_string();
+        let create_invitation = authed_request(
+            router.clone(),
+            &source_admin_keys,
+            "POST",
+            "/_admin/vaults/acme/folders/strategy/shared-folder-invitations",
+            Some(create_invitation_body),
+            TEST_NOW,
+        )
+        .await;
+        assert_eq!(create_invitation.status(), StatusCode::OK);
+        let invitation: SharedFolderInvitationResponse = read_json(create_invitation).await;
+        assert_eq!(invitation.status, "pending");
+
+        let wrong_view = authed_request(
+            router.clone(),
+            &source_admin_keys,
+            "GET",
+            &format!("/_admin/shared-folder-invitations/{}", invitation.id),
+            None,
+            TEST_NOW,
+        )
+        .await;
+        assert_error(
+            wrong_view,
+            StatusCode::NOT_FOUND,
+            "shared folder invitation unavailable",
+        )
+        .await;
+
+        let accept = authed_request(
+            router.clone(),
+            &destination_admin_keys,
+            "POST",
+            &format!("/_admin/shared-folder-invitations/{}/accept", invitation.id),
+            None,
+            TEST_NOW,
+        )
+        .await;
+        assert_eq!(accept.status(), StatusCode::OK);
+        let accepted: SharedFolderInvitationResponse = read_json(accept).await;
+        assert_eq!(accepted.status, "accepted");
+        assert!(!accepted.duplicate_accept);
+
+        let accept_retry = authed_request(
+            router.clone(),
+            &destination_admin_keys,
+            "POST",
+            &format!("/_admin/shared-folder-invitations/{}/accept", invitation.id),
+            None,
+            TEST_NOW,
+        )
+        .await;
+        assert_eq!(accept_retry.status(), StatusCode::OK);
+        let accept_retry: SharedFolderInvitationResponse = read_json(accept_retry).await;
+        assert_eq!(accept_retry.status, "accepted");
+        assert!(accept_retry.duplicate_accept);
+
+        let destination_metadata =
+            get_metadata(router.clone(), &destination_admin_keys, "dest", TEST_NOW).await;
+        assert_eq!(destination_metadata.status(), StatusCode::OK);
+        let destination_metadata: VaultMetadataResponse = read_json(destination_metadata).await;
+        assert_eq!(destination_metadata.mounted_folders.len(), 1);
+        let mount = &destination_metadata.mounted_folders[0];
+        assert_eq!(mount.state, "available");
+        assert_eq!(mount.source_vault_id, "acme");
+        assert_eq!(mount.source_folder_id, "strategy");
+        let connection_id = mount.connection_id.clone();
+
+        let add_destination_member_body = serde_json::json!({
+            "targetNpub": destination_member_npub,
+            "accessChangeEvent": admin_event(
+                &destination_admin_keys,
+                "dest",
+                "change_add_dest_member",
+                AdminAccessAction::AddMember,
+                None,
+                Some(destination_member_npub.as_str()),
+                None,
+            ),
+        })
+        .to_string();
+        let add_destination_member = authed_request(
+            router.clone(),
+            &destination_admin_keys,
+            "POST",
+            "/_admin/vaults/dest/members",
+            Some(add_destination_member_body),
+            TEST_NOW,
+        )
+        .await;
+        assert_eq!(add_destination_member.status(), StatusCode::OK);
+
+        let add_connection_member_body = serde_json::json!({
+            "action": "add",
+            "targetNpub": destination_member_npub,
+            "grant": folder_key_grant_value("grant-strategy-dest-member-v1", 1, destination_member_npub.as_str()),
+            "newKeyVersion": null,
+            "grants": [],
+            "reencryptedRecords": [],
+        })
+        .to_string();
+        let add_connection_member = authed_request(
+            router.clone(),
+            &destination_admin_keys,
+            "PATCH",
+            &format!("/_admin/shared-folder-connections/{connection_id}/members"),
+            Some(add_connection_member_body),
+            TEST_NOW,
+        )
+        .await;
+        assert_eq!(add_connection_member.status(), StatusCode::OK);
+        let connection: SharedFolderConnectionResponse = read_json(add_connection_member).await;
+        assert!(connection.member_npubs.contains(&destination_member_npub));
+
+        let destination_member_metadata =
+            get_metadata(router.clone(), &destination_member_keys, "dest", TEST_NOW).await;
+        assert_eq!(destination_member_metadata.status(), StatusCode::OK);
+        let destination_member_metadata: VaultMetadataResponse =
+            read_json(destination_member_metadata).await;
+        assert_eq!(
+            destination_member_metadata.mounted_folders[0].state,
+            "available"
+        );
+
+        let object_path = "/_admin/vaults/acme/folders/strategy/objects/obj_000000000101";
+        let create_source_object_body = object_write_body(
+            &destination_member_keys,
+            RevisionFixture {
+                vault_id: "acme",
+                folder_id: "strategy",
+                object_id: "obj_000000000101",
+                operation: FolderObjectOperation::Create,
+                revision: 1,
+                base_revision: None,
+                key_version: 1,
+                content: "mounted write goes to source",
+                nonce: 21,
+                record_type: false,
+            },
+        );
+        let create_source_object = authed_request(
+            router.clone(),
+            &destination_member_keys,
+            "PUT",
+            object_path,
+            Some(create_source_object_body),
+            TEST_NOW,
+        )
+        .await;
+        assert_eq!(create_source_object.status(), StatusCode::OK);
+
+        let source_bootstrap = authed_request(
+            router.clone(),
+            &destination_member_keys,
+            "GET",
+            "/_admin/vaults/acme/sync/bootstrap",
+            None,
+            TEST_NOW,
+        )
+        .await;
+        assert_eq!(source_bootstrap.status(), StatusCode::OK);
+        let source_bootstrap: SyncBootstrapResponse = read_json(source_bootstrap).await;
+        assert_eq!(source_bootstrap.object_count, 1);
+
+        let destination_bootstrap = authed_request(
+            router.clone(),
+            &destination_member_keys,
+            "GET",
+            "/_admin/vaults/dest/sync/bootstrap",
+            None,
+            TEST_NOW,
+        )
+        .await;
+        assert_eq!(destination_bootstrap.status(), StatusCode::OK);
+        let destination_bootstrap: SyncBootstrapResponse = read_json(destination_bootstrap).await;
+        assert_eq!(destination_bootstrap.object_count, 0);
+
+        let remove_connection_member_body = serde_json::json!({
+            "action": "remove",
+            "targetNpub": destination_member_npub,
+            "grant": null,
+            "newKeyVersion": 2,
+            "grants": [
+                folder_key_grant_value("grant-strategy-source-admin-v2", 2, source_admin_npub.as_str()),
+                folder_key_grant_value("grant-strategy-dest-admin-v2", 2, destination_admin_npub.as_str())
+            ],
+            "reencryptedRecords": [
+                rotation_object_value(
+                    &destination_admin_keys,
+                    "acme",
+                    "strategy",
+                    "obj_000000000101",
+                    2,
+                    Some(1),
+                    2,
+                    "reencrypted after dest member removal",
+                    22,
+                )
+            ],
+        })
+        .to_string();
+        let remove_connection_member = authed_request(
+            router.clone(),
+            &destination_admin_keys,
+            "PATCH",
+            &format!("/_admin/shared-folder-connections/{connection_id}/members"),
+            Some(remove_connection_member_body),
+            TEST_NOW,
+        )
+        .await;
+        assert_eq!(remove_connection_member.status(), StatusCode::OK);
+
+        let locked_metadata =
+            get_metadata(router.clone(), &destination_member_keys, "dest", TEST_NOW).await;
+        assert_eq!(locked_metadata.status(), StatusCode::OK);
+        let locked_metadata: VaultMetadataResponse = read_json(locked_metadata).await;
+        assert_eq!(locked_metadata.mounted_folders[0].state, "locked");
+
+        let revoke_connection_body = serde_json::json!({
+            "newKeyVersion": 3,
+            "grants": [
+                folder_key_grant_value("grant-strategy-source-admin-v3", 3, source_admin_npub.as_str())
+            ],
+            "reencryptedRecords": [
+                rotation_object_value(
+                    &source_admin_keys,
+                    "acme",
+                    "strategy",
+                    "obj_000000000101",
+                    3,
+                    Some(2),
+                    3,
+                    "reencrypted after source revocation",
+                    23,
+                )
+            ],
+        })
+        .to_string();
+        let revoke_connection = authed_request(
+            router.clone(),
+            &source_admin_keys,
+            "DELETE",
+            &format!("/_admin/shared-folder-connections/{connection_id}"),
+            Some(revoke_connection_body),
+            TEST_NOW,
+        )
+        .await;
+        assert_eq!(revoke_connection.status(), StatusCode::OK);
+        let revoked: SharedFolderConnectionResponse = read_json(revoke_connection).await;
+        assert_eq!(revoked.status, "revoked");
+
+        let revoked_mounts = authed_request(
+            router,
+            &destination_admin_keys,
+            "GET",
+            "/_admin/vaults/dest/organization-folder-mounts",
+            None,
+            TEST_NOW,
+        )
+        .await;
+        assert_eq!(revoked_mounts.status(), StatusCode::OK);
+        let revoked_mounts: Vec<MountedFolderResponse> = read_json(revoked_mounts).await;
+        assert_eq!(revoked_mounts[0].state, "revoked");
     }
 
     fn test_router() -> Router {
