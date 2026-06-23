@@ -43,7 +43,7 @@ new `finite-nostr` Rust crate so other Finite repos can reuse it.
   - `finitecomputer/finite-brain#12` Encrypted Export, OKF Import/Export, and LLM Wiki privacy rules
   - `finitecomputer/finite-brain#13` development-only Smoke UI
   - `finitecomputer/finite-brain#14` Portable v1 hardening, compatibility, and end-to-end readiness
-- Issue sessions: pending
+- Issue sessions: tracked in the Issue Session Ledger below
 - Agent briefs: pending
 - Review packets: pending
 - Local CodeRabbit report: pending
@@ -74,9 +74,9 @@ new `finite-nostr` Rust crate so other Finite repos can reuse it.
 | `finite-brain#8` | AFK | complete | Direct review gate in orchestrator | Bumped `finite-nostr` HTTP auth parsing to support authenticated `DELETE` and added route coverage | `cargo fmt --check`; `cargo test`; `cargo clippy --all-targets -- -D warnings`; `git diff --check` |
 | `finite-brain#9` | AFK | complete | Direct review gate in orchestrator | Added kind/key-version hardening before commit | `cargo fmt --check`; `cargo test`; `cargo clippy --all-targets -- -D warnings`; `git diff --check` |
 | `finite-brain#10` | AFK | complete | Direct review gate in orchestrator | Fixed generated link timestamps before commit | `cargo fmt --check`; `cargo test`; `cargo clippy --all-targets -- -D warnings`; `git diff --check` |
-| `finite-brain#11` | AFK | ready | None | None | Not started |
-| `finite-brain#12` | AFK | blocked by `finite-brain#11` | None | None | Not started |
-| `finite-brain#13` | AFK | blocked by `finite-brain#11`, `finite-brain#12` | None | None | Not started |
+| `finite-brain#11` | AFK | complete | In-thread two-axis review | Fixed shared Folder rotation/member-state atomicity and added idempotent accept assertions before commit | `cargo fmt --check`; `cargo test`; `cargo clippy --all-targets -- -D warnings`; `git diff --check` |
+| `finite-brain#12` | AFK | ready | None | None | Not started |
+| `finite-brain#13` | AFK | blocked by `finite-brain#12` | None | None | Not started |
 | `finite-brain#14` | AFK | blocked by `finite-brain#13` | None | None | Not started |
 
 ## Parked HITL Slices
@@ -89,6 +89,7 @@ new `finite-nostr` Rust crate so other Finite repos can reuse it.
 
 | Issue | Fixed point | Worker session | Commit | Review result | Checks |
 | --- | --- | --- | --- | --- | --- |
+| `finite-brain#11` | `735e4380db485d52936c7cffeedc57b9115afd44` | Orchestrator direct implementation | `75685e4` | Standards/spec review passed after folding shared Folder access rotation plus member/status mutation into one transaction and adding explicit idempotent accept coverage | `cargo fmt --check`; `cargo test`; `cargo clippy --all-targets -- -D warnings`; `git diff --check` |
 | `finite-brain#10` | `6b4965ccb56d763bec64ffd2a4a62ee07052daea` | Orchestrator direct implementation | `81dfcd3` | Standards/spec review passed after replacing fixed link timestamp generation with server-clock RFC3339 timestamps | `cargo fmt --check`; `cargo test`; `cargo clippy --all-targets -- -D warnings`; `git diff --check` |
 | `finite-brain#9` | `0bd2b718c1452cfefabaa12a3e3b356f06af5b46` | Orchestrator direct implementation | `e7c24ea` | Standards/spec review passed after admin event kind and rotation key-version hardening | `cargo fmt --check`; `cargo test`; `cargo clippy --all-targets -- -D warnings`; `git diff --check` |
 | `finite-brain#8` | `90877e65c07dfe860c322167a12e370c0600195c` | Orchestrator direct implementation | `e5cf5b1` | Standards/spec review passed; `finite-nostr#621bb34` consumed for generic HTTP auth method parsing | `cargo fmt --check`; `cargo test`; `cargo clippy --all-targets -- -D warnings`; `git diff --check` |
