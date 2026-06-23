@@ -23,7 +23,9 @@ new `finite-nostr` Rust crate so other Finite repos can reuse it.
 ## Durable Artifacts
 
 - CONTEXT updates: pending grill-with-docs
-- ADRs: pending only if hard-to-reverse decisions appear
+- ADRs: `docs/adr/0001-adopt-rust-workspace-and-finite-nostr.md`,
+  `docs/adr/0002-use-sqlite-from-day-one.md`,
+  `docs/adr/0003-keep-folder-object-crypto-in-finite-brain-core.md`
 - PRD issue: pending
 - Slice issues: pending
 - Issue sessions: pending
@@ -40,7 +42,7 @@ new `finite-nostr` Rust crate so other Finite repos can reuse it.
 - Lint: `cargo clippy --all-targets -- -D warnings`
 - Format: `cargo fmt --check`
 - Build: `cargo build`
-- Visual verification: pending simple smoke UI
+- Visual verification: local development-only Smoke UI served by the Rust app
 
 ## Slice Ledger
 
@@ -62,11 +64,8 @@ new `finite-nostr` Rust crate so other Finite repos can reuse it.
 
 ## Open Questions
 
-- Decide whether the first implementation shape is a single `finite-brain`
-  Rust server binary plus library crates, or a workspace with separate crates
-  from the start.
+- None.
 
 ## Escalations
 
 - None.
-
