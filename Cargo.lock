@@ -359,8 +359,11 @@ name = "finite-brain-server"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "base64",
  "finite-brain-core",
  "finite-brain-store",
+ "finite-nostr",
+ "nostr",
  "serde",
  "serde_json",
  "tokio",
