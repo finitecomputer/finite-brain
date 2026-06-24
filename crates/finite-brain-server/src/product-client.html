@@ -1,0 +1,199 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>FiniteBrain</title>
+    <link rel="stylesheet" href="/client/app.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="sidebar" aria-label="FiniteBrain sidebar">
+        <header class="brand">
+          <div>
+            <p class="eyebrow">Product Client</p>
+            <h1>FiniteBrain</h1>
+          </div>
+          <a class="dev-link" href="/smoke/ui">Smoke UI</a>
+        </header>
+
+        <section class="panel compact">
+          <div class="section-title">
+            <h2>Signer</h2>
+            <span id="signerState" class="pill muted">checking</span>
+          </div>
+          <p id="signerDetail" class="muted-copy">Looking for a NIP-07 extension.</p>
+          <button id="connectSignerButton" class="primary-action" type="button">
+            Connect signer
+          </button>
+        </section>
+
+        <section class="panel compact">
+          <label for="vaultIdInput">Vault</label>
+          <div class="inline-control">
+            <input id="vaultIdInput" value="smoke" autocomplete="off" spellcheck="false" />
+            <button id="loadVaultButton" class="primary-action" type="button">Load</button>
+          </div>
+          <p id="authDetail" class="muted-copy">Connect a signer to load protected Vault state.</p>
+        </section>
+
+        <section class="panel stretch">
+          <div class="section-title">
+            <h2>Folders</h2>
+            <span id="folderCount" class="pill muted">0</span>
+          </div>
+          <ol id="folderList" class="tree-list"></ol>
+        </section>
+      </aside>
+
+      <main class="workspace">
+        <header class="workspace-header">
+          <div>
+            <p class="eyebrow">Trusted local workflow</p>
+            <h2 id="workspaceTitle">Open a Vault</h2>
+          </div>
+          <div class="status-row" aria-label="Client state">
+            <span id="configState" class="pill muted">config</span>
+            <span id="vaultState" class="pill muted">vault</span>
+            <span id="accessState" class="pill muted">access</span>
+          </div>
+        </header>
+
+        <section class="dashboard-grid">
+          <article class="panel wide spine-panel">
+            <div>
+              <p class="eyebrow">Smoke path</p>
+              <h3>Product Client Spine</h3>
+            </div>
+            <ol class="spine-list">
+              <li id="spineSigner">Connect NIP-07 signer</li>
+              <li id="spineAuth">Prepare signed auth requests</li>
+              <li id="spineVault">Load Vault metadata</li>
+              <li id="spineKeys">Open Folder Key Grants</li>
+              <li id="spinePages">Decrypt and edit Pages</li>
+            </ol>
+          </article>
+
+          <article class="panel">
+            <h3>Vault State</h3>
+            <dl class="facts">
+              <div>
+                <dt>Kind</dt>
+                <dd id="vaultKind">-</dd>
+              </div>
+              <div>
+                <dt>Members</dt>
+                <dd id="memberCount">-</dd>
+              </div>
+              <div>
+                <dt>Admins</dt>
+                <dd id="adminCount">-</dd>
+              </div>
+              <div>
+                <dt>Visible Grants</dt>
+                <dd id="grantCount">-</dd>
+              </div>
+            </dl>
+          </article>
+
+          <article class="panel">
+            <h3>Mounts</h3>
+            <ol id="mountList" class="plain-list"></ol>
+          </article>
+
+          <article class="panel wide">
+            <h3>Page Loop</h3>
+            <div class="form-grid">
+              <label>
+                Folder
+                <input id="pageFolderIdInput" value="general" autocomplete="off" spellcheck="false" />
+              </label>
+              <label>
+                Object
+                <input id="pageObjectIdInput" value="obj_000000000001" autocomplete="off" spellcheck="false" />
+              </label>
+              <label>
+                Base revision
+                <input id="pageBaseRevisionInput" value="" autocomplete="off" spellcheck="false" />
+              </label>
+              <label>
+                Folder key
+                <input id="folderKeyInput" placeholder="base64 raw AES-256 key" autocomplete="off" spellcheck="false" />
+              </label>
+            </div>
+            <label class="page-editor-label">
+              Page content
+              <textarea id="pageDraftInput" rows="7" spellcheck="true"># New Page
+
+Start writing here.</textarea>
+            </label>
+            <div class="action-row">
+              <button id="openFolderKeyButton" type="button">Open key</button>
+              <button id="encryptDraftButton" type="button">Encrypt draft</button>
+              <button id="savePageButton" class="primary-action" type="button">Save Page</button>
+              <button id="syncBootstrapButton" class="secondary-action" type="button">Pull sync</button>
+            </div>
+          </article>
+
+          <article class="panel wide">
+            <h3>OKF Import</h3>
+            <div class="form-grid okf-controls">
+              <label>
+                Destination Folder
+                <input id="okfDestinationFolderInput" value="general" autocomplete="off" spellcheck="false" />
+              </label>
+              <label>
+                Conflict mode
+                <select id="okfConflictModeInput">
+                  <option value="skip">Skip existing Pages</option>
+                  <option value="copy">Create imported copies</option>
+                  <option value="overwrite">Overwrite existing Pages</option>
+                </select>
+              </label>
+            </div>
+            <label class="page-editor-label">
+              OKF bundle JSON
+              <textarea id="okfBundleInput" rows="7" spellcheck="false">{
+  "pages": [
+    {
+      "path": "content/General/imported-page.md",
+      "content": "# Imported Page\n\nImported through the Product Client."
+    }
+  ]
+}</textarea>
+            </label>
+            <div class="action-row">
+              <button id="planOkfImportButton" type="button">Plan OKF import</button>
+              <button id="executeOkfImportButton" class="primary-action" type="button">
+                Import encrypted Pages
+              </button>
+            </div>
+            <ol id="okfPlanList" class="plain-list replay-list"></ol>
+          </article>
+
+          <article class="panel wide graph-panel">
+            <div class="graph-toolbar">
+              <h3>Graph View</h3>
+              <div class="inline-control graph-controls">
+                <input id="graphFilterInput" placeholder="Filter graph" autocomplete="off" spellcheck="false" />
+                <button id="renderGraphButton" class="primary-action" type="button">Render graph</button>
+                <button id="replayGraphButton" type="button">Replay</button>
+              </div>
+            </div>
+            <svg id="graphCanvas" class="graph-canvas" viewBox="0 0 720 320" role="img" aria-label="FiniteBrain graph view">
+              <text x="24" y="44">No graph rendered.</text>
+            </svg>
+            <ol id="replayList" class="plain-list replay-list"></ol>
+          </article>
+
+          <article class="panel wide">
+            <h3>Activity</h3>
+            <pre id="activityLog">Ready.</pre>
+          </article>
+        </section>
+      </main>
+    </div>
+
+    <script src="/client/app.js"></script>
+  </body>
+</html>

@@ -1,17 +1,18 @@
 # FiniteBrain Portability Specification
 
 Status: hard-cut draft implementation spec
-Source snapshot: main at `c85c09c126d618b53615ba54c9b1b39b9e358ab3`
+Source snapshot: Rust hard-cut branch `feature/rust-portable-v1-core`; see
+the source map at the end of this document.
 
 This document describes FiniteBrain Portable v1 at the level needed to
 reimplement its data model, cryptographic records, authorization checks, and
 sync behavior in another programming language.
 
-It is intentionally implementation-neutral, but it is grounded in the current
-prototype. When this spec says "MUST", it describes behavior a compatible
-implementation needs in order to interoperate with the current FiniteBrain
-client and server. When it says "prototype boundary", it describes behavior
-that exists now but should be revisited before production hardening.
+It is intentionally implementation-neutral, but it is grounded in the Rust
+Portable v1 implementation. When this spec says "MUST", it describes behavior a
+compatible implementation needs in order to interoperate with the current
+FiniteBrain client and server. When it says "prototype boundary", it describes
+behavior that exists now but should be revisited before production hardening.
 
 ## 1. Product Boundary
 
@@ -127,14 +128,13 @@ Server validation rules:
 - The Nostr event id and Schnorr signature MUST verify.
 - The actor npub is derived from the event pubkey.
 
-Prototype boundary: some metadata endpoints still accept `X-Actor-User-Id`.
-Secure object, sync, folder grant, access, sharing, and invitation paths use
-Nostr authorization.
+Rust hard-cut behavior: protected API routes derive the actor from Nostr HTTP
+authorization. Metadata, Vault creation, secure object, sync, folder grant,
+access, sharing, and invitation routes do not accept `X-Actor-User-Id` as an
+authorization bridge.
 
-Prototype boundary: creating a Vault with `POST /_admin/vaults` currently
-accepts `userId` in the request body and does not require Nostr authorization.
-Portable implementations that need current interoperability should preserve the
-route shape, but production designs should authenticate Vault creation.
+Creating a Vault with `POST /_admin/vaults` requires Nostr authorization. The
+created Vault owner/admin is the signer npub, not a caller-supplied `userId`.
 
 ## 4. Core Domain Model
 
@@ -926,45 +926,32 @@ Materialization rules:
 
 ## 8. Server Storage
 
-Current prototype storage under the spaces root:
+Current Rust hard-cut storage:
 
 ```text
-.finitebrain/
-  vaults.json
-  vault-sync.sqlite3
-  personal-folder-mounts.json
-  vault-share-links.json
-  shared-folder-invitations.json
-  shared-folder-connections.json
-  organization-folder-mounts.json
-vaults/<legacy object stores may also exist depending on route path>
+finite-brain.sqlite3
+finite-brain.sqlite3-wal   # when SQLite WAL mode leaves a live WAL file
+finite-brain.sqlite3-shm   # when SQLite WAL mode leaves a live SHM file
 ```
 
-`vaults.json` is the authoritative metadata file for current route
-authorization. It stores Vaults, Folders, Members, Admins, Invitations, Folder
-Key Grants, access requests, and the admin Access Log.
+The Rust implementation uses SQLite as the authoritative store for Vault
+metadata, Folder hierarchy and access state, Folder Key Grants, sync append log,
+current encrypted object projection, Invitations, Share Links, Shared Folder
+Connections, and Mounts.
 
-`vault-sync.sqlite3` is the v1 Vault Record Index and Current Encrypted Vault
-State store.
-
-Prototype boundary: Vault metadata is still JSON-file-backed, while sync
-records are SQLite-backed. A backup/restore or second-language implementation
-must preserve both until metadata is projected into the sync database too.
+Legacy JSON metadata files are not part of the Rust Portable v1 hard-cut route
+surface. They may appear only as explicit import or migration inputs outside the
+default secure flow.
 
 ### 8.1 Backup, Migration, And Retention
 
 A complete server backup MUST include:
 
-- `.finitebrain/vaults.json`
-- `.finitebrain/vault-sync.sqlite3`
+- The configured SQLite database file, default `finite-brain.sqlite3`.
 - SQLite WAL/SHM files if WAL mode is active and the database has not been
   checkpointed.
-- `.finitebrain/personal-folder-mounts.json`
-- `.finitebrain/vault-share-links.json`
-- `.finitebrain/shared-folder-invitations.json`
-- `.finitebrain/shared-folder-connections.json`
-- `.finitebrain/organization-folder-mounts.json`
-- Any legacy object stores still enabled by compatibility flags.
+- Any separate local Product Client or Vault Working Tree projections only when
+  the backup is meant to preserve local decrypted/agent workspace state.
 
 Backup consistency:
 
@@ -972,13 +959,12 @@ Backup consistency:
   snapshot.
 - If writes are not paused, SQLite MUST be backed up through a safe online
   backup/checkpoint mechanism, not by copying only the main database file.
-- The metadata JSON files and sync database MUST represent the same logical
-  point in time. A restored server MUST NOT advertise metadata grants that do
-  not exist in sync records when those grants are required for current content.
+- A restored server MUST NOT advertise metadata grants that do not exist in sync
+  records when those grants are required for current content.
 
 Restore order:
 
-1. Restore files into an isolated spaces root.
+1. Restore the database into an isolated server data path.
 2. Run schema migrations before serving traffic.
 3. Validate every Vault id, Folder id, member npub, mount source, invitation,
    Share Link, and connection reference.
@@ -1229,17 +1215,10 @@ POST   /_admin/vaults/{vaultId}/folders/{folderId}/objects/{objectId}/move
 These routes require Nostr auth and encrypted Folder Object payloads. The
 server stores ciphertext only.
 
-Legacy plaintext file routes still exist:
-
-```http
-GET    /_admin/vaults/{vaultId}/folders/{folderId}/files/*
-PUT    /_admin/vaults/{vaultId}/folders/{folderId}/files/*
-DELETE /_admin/vaults/{vaultId}/folders/{folderId}/files/*
-```
-
-Prototype boundary: clients must explicitly opt into legacy file routes with
-`X-FiniteBrain-Legacy-File-Route: true`. Secure clients should use encrypted
-object routes.
+Rust hard-cut behavior: legacy plaintext file routes are not part of the
+default server route surface. Readable Page content enters through trusted
+Product Client, OKF import, or Vault Working Tree flows and is uploaded through
+encrypted object routes.
 
 ## 11. Vault Invitations
 
@@ -1743,21 +1722,19 @@ Agent discovery rules:
 Admin and metadata:
 
 ```http
-GET    /_admin/vaults
 POST   /_admin/vaults
-GET    /_admin/vaults/{vaultId}
 GET    /_admin/vaults/{vaultId}/metadata
-GET    /_admin/vaults/{vaultId}/search?q=...
 GET    /_admin/vaults/{vaultId}/export
-GET    /_admin/vaults/{vaultId}/access-log
+GET    /_admin/vaults/{vaultId}/search
 ```
 
 Vault membership and invitations:
 
 ```http
-PUT    /_admin/vaults/{vaultId}/admins/{adminNpub}
-DELETE /_admin/vaults/{vaultId}/admins/{adminNpub}
+POST   /_admin/vaults/{vaultId}/members
 DELETE /_admin/vaults/{vaultId}/members/{memberNpub}
+POST   /_admin/vaults/{vaultId}/admins
+DELETE /_admin/vaults/{vaultId}/admins/{adminNpub}
 POST   /_admin/vaults/{vaultId}/invitations
 DELETE /_admin/vaults/{vaultId}/invitations/{invitationId}
 POST   /_admin/vaults/{vaultId}/invitations/{invitationId}/accept
@@ -1769,15 +1746,13 @@ Folders and access:
 
 ```http
 POST   /_admin/vaults/{vaultId}/folders
-PATCH  /_admin/vaults/{vaultId}/folders/{folderId}
-DELETE /_admin/vaults/{vaultId}/folders/{folderId}
 POST   /_admin/vaults/{vaultId}/folders/{folderId}/finish-setup
-POST   /_admin/vaults/{vaultId}/folders/{folderId}/access-requests
-GET    /_admin/vaults/{vaultId}/folder-access-requests
-PATCH  /_admin/vaults/{vaultId}/folder-access-requests/{requestId}
-GET    /_admin/vaults/{vaultId}/folders/{folderId}/key-grants
-POST   /_admin/vaults/{vaultId}/folders/{folderId}/key-grants
-GET    /_admin/vaults/{vaultId}/key-grants?folderIds=a,b&currentOnly=true
+POST   /_admin/vaults/{vaultId}/folders/{folderId}/access
+DELETE /_admin/vaults/{vaultId}/folders/{folderId}/access/{targetNpub}
+POST   /_admin/vaults/{vaultId}/folders/{folderId}/share-links
+POST   /_admin/vaults/{vaultId}/folders/{folderId}/share-source
+POST   /_admin/vaults/{vaultId}/folders/{folderId}/shared-folder-invitations
+GET    /_admin/vaults/{vaultId}/organization-folder-mounts
 ```
 
 Secure content and sync:
@@ -1795,22 +1770,14 @@ POST   /_admin/vaults/{vaultId}/sync/records
 Sharing:
 
 ```http
-GET    /_admin/personal-folder-mounts
-POST   /_admin/personal-folder-mounts
-DELETE /_admin/personal-folder-mounts/{mountId}
-POST   /_admin/vaults/{vaultId}/folders/{folderId}/share-links
 GET    /_admin/share-links/{shareLinkId}
 POST   /_admin/share-links/{shareLinkId}/accept
 DELETE /_admin/share-links/{shareLinkId}
-POST   /_admin/vaults/{vaultId}/folders/{folderId}/shared-folder-invitations
-GET    /_admin/shared-folder-invitations
 GET    /_admin/shared-folder-invitations/{invitationId}
 POST   /_admin/shared-folder-invitations/{invitationId}/accept
 DELETE /_admin/shared-folder-invitations/{invitationId}
 PATCH  /_admin/shared-folder-connections/{connectionId}/members
 DELETE /_admin/shared-folder-connections/{connectionId}
-GET    /_admin/vaults/{vaultId}/organization-folder-mounts
-DELETE /_admin/vaults/{vaultId}/organization-folder-mounts/{mountId}
 ```
 
 ## 15. Error Semantics And Recovery
@@ -1955,11 +1922,6 @@ These behaviors are part of the current prototype and should be understood by a
 porting implementation, but they are not final product guarantees:
 
 - Session Folder Keys are in-memory only.
-- Vault metadata is JSON-file-backed while sync records are SQLite-backed.
-- Some metadata paths still accept `X-Actor-User-Id`; secure object paths use
-  Nostr auth.
-- Legacy plaintext file routes still exist behind an explicit compatibility
-  flag.
 - Sync is pull-based, not realtime.
 - Conflict resolution is limited to base-revision checks.
 - Public Nostr relay storage is deferred.
@@ -2030,7 +1992,7 @@ A compatible implementation in another language should implement, in order:
       conventions.
     - Generated report visibility filtering.
 13. Operations and compatibility:
-    - Backup/restore of JSON metadata plus SQLite sync.
+    - Backup/restore of SQLite metadata, sync, grants, sharing, and mounts.
     - Retention and `rebootstrap_required`.
     - Canonical serialization and fixture test vectors.
     - Portable v1 hard-cut versioning and unknown-field behavior.
@@ -2043,11 +2005,11 @@ Hard-cut rule:
 
 - New compatible implementations target this document, not earlier loose
   prototype behavior.
-- Legacy plaintext file routes, unauthenticated metadata shortcuts, reusable
-  accepted Share Links, and JSON-only metadata storage are compatibility
-  bridges, not Portable v1 product guarantees.
-- Implementations MAY support legacy behavior behind explicit compatibility
-  flags, but MUST NOT make those paths the default secure flow.
+- Earlier prototype behaviors such as plaintext file routes, unauthenticated
+  metadata shortcuts, reusable accepted Share Links, and JSON-only metadata
+  storage are outside the Rust Portable v1 hard-cut surface.
+- Implementations MAY build explicit import or migration tooling for old data,
+  but MUST NOT make those paths the default secure flow.
 
 Version strings:
 
@@ -2077,10 +2039,10 @@ Route compatibility:
 
 - Secure object, grant, invitation, share, and sync routes are the normative
   Portable v1 route surface.
-- Legacy file routes require `X-FiniteBrain-Legacy-File-Route: true`.
-- Metadata routes that still accept `X-Actor-User-Id` are prototype bridges.
-  Production-compatible clients SHOULD use Nostr authorization whenever a route
-  supports it.
+- Metadata and Vault creation routes are protected API routes and derive actor
+  identity from Nostr authorization.
+- Plaintext file compatibility routes are not part of the Rust Portable v1
+  default route surface.
 
 Migration compatibility:
 
@@ -2104,30 +2066,21 @@ Feature negotiation:
 The current implementation source of truth is spread across:
 
 - `CONTEXT.md`: domain language and invariants.
-- `docs/adr/0008-*.md` through `docs/adr/0043-*.md`: product and crypto
+- `docs/adr/0001-*.md` through `docs/adr/0006-*.md`: accepted workspace,
+  storage, crypto-boundary, Product Client, graph/replay, and OKF import
   decisions.
-- `docs/architecture/finite-brain-high-level.md`: boundary diagram.
-- `packages/vault-crypto/src/index.ts`: crypto data shapes, encryption,
-  signing, verification, grants, export opening.
-- `packages/vault-directory/src/index.ts`: Vault Directory and Working Tree
-  format.
-- `client/vault/types.ts`: client-facing domain types.
-- `client/vault/api.ts`: HTTP API client and Nostr auth construction.
-- `client/vault/session_keyring.ts`: in-memory Folder Key session cache.
-- `client/vault/open_folder_keys_on_load.ts`: grant opening behavior.
-- `client/vault/secure_content_adapter.ts`: secure page read/write/delete.
-- `client/vault/admin_access_flow.ts`: folder creation, setup, access changes.
-- `client/vault/folder_key_rotation.ts`: client-side rotation payload
-  construction.
-- `client/vault/share_folder_flow.ts`: share grant preparation.
-- `client/vault/vault_sync.ts`: pull sync into a Vault Working Tree.
-- `server/nostr_auth.go`: Nostr HTTP auth validation.
-- `server/vaults.go`: Vault metadata, access, invitation, grant, export, and
-  legacy route behavior.
-- `server/vault_folder_objects.go`: secure encrypted object routes and signed
-  revision/tombstone validation.
-- `server/vault_sync.go`: SQLite Vault Record Index and sync APIs.
-- `server/personal_folder_mounts.go`: Personal Folder Mount storage.
-- `server/vault_share_links.go`: Share Link flow.
-- `server/shared_folder_invitations.go`: Shared Folder Invitation, Connection,
-  and Organization Mount flows.
+- `crates/finite-brain-core/src/lib.rs`: domain model, validation, signed
+  payload checks, encrypted Folder Object helpers, and core bootstrap rules.
+- `crates/finite-brain-core/src/portability.rs`: OKF export/import planning,
+  local search/agent discovery helpers, and Vault Working Tree intent shaping.
+- `crates/finite-brain-store/src/lib.rs`: SQLite schema, migrations,
+  transaction boundary, grants, sync append log, current projection,
+  invitations, shares, mounts, backup/rebuild tests, and retention behavior.
+- `crates/finite-brain-server/src/lib.rs`: HTTP route catalog, request/response
+  types, server-side policy orchestration, and Product Client asset serving.
+- `crates/finite-brain-server/src/protected_routes.rs`: Nostr HTTP auth
+  validation, replay rejection, protected-route rate limits, and CORS allowlist
+  behavior.
+- `crates/finite-brain-server/src/product-client.js`: first-party Product
+  Client workflow, NIP-07/NIP-44 bridge, local Folder Key opening, decrypt/edit
+  loop, Graph View, Graph Replay, OKF import execution, and local sync merge.
