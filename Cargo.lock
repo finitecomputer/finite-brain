@@ -394,7 +394,7 @@ dependencies = [
 [[package]]
 name = "finite-nostr"
 version = "0.1.0"
-source = "git+https://github.com/finitecomputer/finite-nostr.git?branch=feature%2Frust-portable-v1-core#621bb347f9734f2dcb891333ed8e7c2862ca73e1"
+source = "git+https://github.com/finitecomputer/finite-nostr.git?branch=feature%2Frust-portable-v1-core#0ecf25abc3198f357a7b922865829b37a7fe5d13"
 dependencies = [
  "nostr",
 ]
