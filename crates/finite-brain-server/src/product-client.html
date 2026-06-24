@@ -9,11 +9,37 @@
   <body>
     <div class="obsidian-shell" data-workspace-view="page">
       <aside class="app-ribbon" aria-label="Primary navigation">
-        <button class="ribbon-button active" id="ribbonFilesButton" type="button" title="Files" aria-label="Files">F</button>
-        <button class="ribbon-button" id="ribbonGraphButton" type="button" title="Graph View" aria-label="Graph View">G</button>
-        <button class="ribbon-button" id="ribbonSearchButton" type="button" title="Search" aria-label="Search">S</button>
-        <button class="ribbon-button" id="ribbonAccessButton" type="button" title="Vault access" aria-label="Vault access">A</button>
-        <a class="ribbon-button ribbon-link" href="/smoke/ui" title="Smoke UI" aria-label="Smoke UI">D</a>
+        <button class="ribbon-button active" id="ribbonFilesButton" type="button" title="Files" aria-label="Files" aria-pressed="true">
+          <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M3 5h6l2 2h10v12H3z" />
+            <path d="M3 9h18" />
+          </svg>
+          <span class="sr-only">Files</span>
+        </button>
+        <button class="ribbon-button" id="ribbonGraphButton" type="button" title="Graph View" aria-label="Graph View" aria-pressed="false">
+          <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+            <circle cx="6" cy="7" r="2.5" />
+            <circle cx="18" cy="6" r="2.5" />
+            <circle cx="16" cy="18" r="2.5" />
+            <path d="M8.2 7h7.3M7.5 9.1l6.9 7M17.3 8.5l-1 7" />
+          </svg>
+          <span class="sr-only">Graph View</span>
+        </button>
+        <button class="ribbon-button" id="ribbonSearchButton" type="button" title="Search" aria-label="Search" aria-pressed="false">
+          <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+            <circle cx="10.5" cy="10.5" r="5.5" />
+            <path d="m15 15 5 5" />
+          </svg>
+          <span class="sr-only">Search</span>
+        </button>
+        <button class="ribbon-button" id="ribbonAccessButton" type="button" title="Vault access" aria-label="Vault access" aria-pressed="false">
+          <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M7 11V8a5 5 0 0 1 10 0v3" />
+            <rect x="5" y="11" width="14" height="10" rx="2" />
+            <path d="M12 15v3" />
+          </svg>
+          <span class="sr-only">Vault access</span>
+        </button>
       </aside>
 
       <aside class="file-sidebar" aria-label="Vault file explorer">
@@ -37,9 +63,25 @@
         </section>
 
         <div class="sidebar-toolbar" aria-label="File explorer actions">
-          <button id="obsidianNewPageButton" type="button" title="New Page">New</button>
-          <button id="obsidianNewFolderButton" type="button" title="New Folder">Folder</button>
-          <button id="refreshReaderButton" type="button" title="Refresh Vault">Refresh</button>
+          <button id="obsidianNewPageButton" class="sidebar-icon-button" type="button" title="New Page" aria-label="New Page">
+            <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M6 3h8l4 4v14H6z" />
+              <path d="M14 3v5h5M9 15h6M12 12v6" />
+            </svg>
+          </button>
+          <button id="obsidianNewFolderButton" class="sidebar-icon-button" type="button" title="New Folder" aria-label="New Folder">
+            <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M3 6h6l2 2h10v11H3z" />
+              <path d="M12 13h6M15 10v6" />
+            </svg>
+          </button>
+          <span class="toolbar-spacer"></span>
+          <button id="refreshReaderButton" class="sidebar-icon-button" type="button" title="Refresh Vault" aria-label="Refresh Vault">
+            <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M20 7v5h-5M4 17v-5h5" />
+              <path d="M18.2 9A7 7 0 0 0 6.4 6.8M5.8 15A7 7 0 0 0 17.6 17.2" />
+            </svg>
+          </button>
         </div>
 
         <section id="filesSidebarPanel" class="file-explorer sidebar-mode-panel">
@@ -134,9 +176,16 @@
                 <p class="eyebrow">Page</p>
                 <h2 id="readerPageTitle">No page selected</h2>
               </div>
-              <span id="readerPageMeta" class="pill muted">locked</span>
+              <div class="page-header-actions">
+                <span id="readerPageMeta" class="pill muted">locked</span>
+                <button id="readerModeButton" class="reader-mode-button" type="button" aria-pressed="false">
+                  Reading
+                </button>
+              </div>
             </header>
-            <pre id="readerPageContent" class="note-content">Open an accessible vault to read decrypted Pages here.</pre>
+            <div id="readerPageContent" class="note-content note-markdown">
+              Open an accessible vault to read decrypted Pages here.
+            </div>
             <details class="editor-drawer">
               <summary>Edit current Page</summary>
               <label class="page-editor-label">
@@ -180,9 +229,12 @@ Start writing here.</textarea>
             </div>
           </header>
           <div class="graph-stage">
-            <svg id="graphCanvas" class="graph-canvas" viewBox="0 0 900 560" role="img" aria-label="FiniteBrain graph view">
-              <text x="24" y="44">No graph rendered.</text>
-            </svg>
+            <svg id="graphCanvas" class="graph-canvas" viewBox="0 0 900 560" role="img" aria-label="FiniteBrain graph view"></svg>
+            <div id="graphEmptyState" class="graph-empty-state">
+              <p class="eyebrow">Graph View</p>
+              <h3 id="graphEmptyTitle">No readable graph yet</h3>
+              <p id="graphEmptyCopy">Open a vault with readable Pages to render the local link graph.</p>
+            </div>
             <div class="graph-floating-controls" aria-label="Graph controls">
               <button id="fitGraphButton" type="button" title="Fit graph">Fit</button>
               <button id="resetGraphButton" type="button" title="Reset graph">Reset</button>
@@ -224,8 +276,21 @@ Start writing here.</textarea>
           <ol id="mountList" class="plain-list"></ol>
         </section>
 
+        <section class="right-panel link-context-panel">
+          <h2>Outgoing links</h2>
+          <ol id="outgoingLinkList" class="plain-list link-list"></ol>
+        </section>
+
+        <section class="right-panel link-context-panel">
+          <h2>Backlinks</h2>
+          <ol id="backlinkList" class="plain-list link-list"></ol>
+        </section>
+
         <details class="right-panel dev-console">
           <summary>Advanced client tools</summary>
+          <div class="dev-console-actions">
+            <a class="dev-link" href="/smoke/ui">Open development Smoke UI</a>
+          </div>
           <ol class="spine-list hidden-list">
             <li id="spineSigner">Connect NIP-07 signer</li>
             <li id="spineAuth">Prepare signed auth requests</li>
@@ -305,6 +370,8 @@ Start writing here.</textarea>
       <footer class="status-bar">
         <span id="signerDetail">Looking for a NIP-07 extension.</span>
         <span id="authDetail">Connect a signer to load protected Vault state.</span>
+        <span id="pageStatusDetail">No page selected.</span>
+        <span id="vaultStatusDetail">Vault idle.</span>
       </footer>
 
       <div id="contextMenu" class="context-menu" role="menu" hidden></div>

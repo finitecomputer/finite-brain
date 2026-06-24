@@ -175,14 +175,21 @@ function checkStaticShell() {
     "ribbonFilesButton",
     "ribbonGraphButton",
     "ribbonAccessButton",
+    "sidebar-icon-button",
     "searchSidebarPanel",
     "readerFolderList",
     "contextMenu",
     "pageWorkspace",
     "graphWorkspace",
+    "graphEmptyState",
     "accessFolderInspector",
     "accessManageButton",
     "accessShareButton",
+    "readerModeButton",
+    "outgoingLinkList",
+    "backlinkList",
+    "pageStatusDetail",
+    "vaultStatusDetail",
   ]) {
     assertIncludes(html, marker, "Product Client HTML");
   }
@@ -193,9 +200,16 @@ function checkStaticShell() {
     ".obsidian-folder-button",
     ".context-menu",
     ".graph-stage",
+    ".graph-empty-state",
     ".graph-replay-overlay",
     ".access-inspector",
     ".access-badge",
+    ".note-content-empty",
+    ".note-markdown",
+    ".note-source",
+    ".internal-link",
+    ".link-context-panel",
+    ".status-bar",
   ]) {
     assertIncludes(css, marker, "Product Client CSS");
   }
@@ -206,6 +220,8 @@ function checkStaticShell() {
     "workspaceChromeState",
     "accessBadgesForFolder",
     "accessActionRoute",
+    "markdownPreviewBlocks",
+    "pageLinkContext",
     "readerFolderRows",
     "readerPageRows",
   ]) {
@@ -273,6 +289,17 @@ async function main() {
   assert.ok(graph.edges.length > 0, "expected graph edges from seeded wiki links");
   assert.equal(client.workspaceChromeState("graph").shellView, "graph");
   assert.equal(client.workspaceChromeState("graph").graphHidden, false);
+  const linkSource = readyPages.find((page) => client.extractPageLinks(page.text).length > 0);
+  assert.ok(linkSource, "expected at least one seeded Page with local links");
+  const linkContext = client.pageLinkContext(linkSource, readyPages);
+  assert.ok(
+    linkContext.outgoing.length > 0 || linkContext.backlinks.length > 0,
+    "expected link context rows for seeded Pages"
+  );
+  assert.ok(
+    client.markdownPreviewBlocks(linkSource.text).some((block) => block.type === "heading"),
+    "expected Markdown preview blocks to include headings"
+  );
 
   const restricted = folderRows.find((folder) => folder.id === "restricted-lab");
   assert.ok(restricted, "restricted-lab folder should exist");

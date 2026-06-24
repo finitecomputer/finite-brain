@@ -18,6 +18,7 @@ const FiniteBrainProductClient = (() => {
     activeSidebarMode: "files",
     activeAccessFolderId: null,
     activeAccessIntent: "inspect",
+    readerMode: "reading",
     expandedFolderIds: new Set(),
     contextMenuTarget: null,
   };
@@ -634,6 +635,115 @@ const FiniteBrainProductClient = (() => {
     return [...links].filter(Boolean);
   }
 
+  function inlineLinkSegments(text) {
+    const source = String(text || "");
+    const segments = [];
+    const pattern = /\[\[([^\]|#]+)(?:#[^\]|]*)?(?:\|([^\]]+))?\]\]|\[([^\]]+)\]\(([^)]+)\)/g;
+    let cursor = 0;
+    for (const match of source.matchAll(pattern)) {
+      if (match.index > cursor) {
+        segments.push({ kind: "text", text: source.slice(cursor, match.index) });
+      }
+      if (match[1]) {
+        segments.push({
+          kind: "internal",
+          target: normalizePageReference(match[1]),
+          text: String(match[2] || match[1]).trim(),
+        });
+      } else {
+        const target = String(match[4] || "").trim();
+        const external = /^https?:\/\//i.test(target);
+        segments.push({
+          kind: external ? "external" : "internal",
+          target: external ? target : normalizePageReference(target.split("#")[0]),
+          text: String(match[3] || target).trim(),
+        });
+      }
+      cursor = match.index + match[0].length;
+    }
+    if (cursor < source.length) {
+      segments.push({ kind: "text", text: source.slice(cursor) });
+    }
+    return segments.filter((segment) => segment.text || segment.target);
+  }
+
+  function markdownPreviewBlocks(markdown) {
+    const lines = String(markdown || "").replace(/\r\n/g, "\n").split("\n");
+    const blocks = [];
+    let paragraph = [];
+
+    function flushParagraph() {
+      if (!paragraph.length) return;
+      blocks.push({ text: paragraph.join(" "), type: "paragraph" });
+      paragraph = [];
+    }
+
+    for (let index = 0; index < lines.length; index += 1) {
+      const line = lines[index];
+      const trimmed = line.trim();
+      if (!trimmed) {
+        flushParagraph();
+        continue;
+      }
+      if (/^```/.test(trimmed)) {
+        flushParagraph();
+        const code = [];
+        index += 1;
+        while (index < lines.length && !/^```/.test(lines[index].trim())) {
+          code.push(lines[index]);
+          index += 1;
+        }
+        blocks.push({ text: code.join("\n"), type: "code" });
+        continue;
+      }
+      const heading = trimmed.match(/^(#{1,3})\s+(.+)$/);
+      if (heading) {
+        flushParagraph();
+        blocks.push({ level: heading[1].length, text: heading[2].trim(), type: "heading" });
+        continue;
+      }
+      if (/^[-*]\s+/.test(trimmed)) {
+        flushParagraph();
+        const items = [];
+        while (index < lines.length && /^[-*]\s+/.test(lines[index].trim())) {
+          items.push(lines[index].trim().replace(/^[-*]\s+/, ""));
+          index += 1;
+        }
+        index -= 1;
+        blocks.push({ items, type: "list" });
+        continue;
+      }
+      if (/^>\s?/.test(trimmed)) {
+        flushParagraph();
+        const quotes = [];
+        while (index < lines.length && /^>\s?/.test(lines[index].trim())) {
+          quotes.push(lines[index].trim().replace(/^>\s?/, ""));
+          index += 1;
+        }
+        index -= 1;
+        blocks.push({ text: quotes.join(" "), type: "quote" });
+        continue;
+      }
+      if (/^---+$/.test(trimmed)) {
+        flushParagraph();
+        blocks.push({ type: "rule" });
+        continue;
+      }
+      paragraph.push(trimmed);
+    }
+    flushParagraph();
+    return blocks;
+  }
+
+  function pageStatsForText(text) {
+    const clean = String(text || "").trim();
+    const words = clean ? clean.split(/\s+/).filter(Boolean).length : 0;
+    return {
+      links: extractPageLinks(clean).length,
+      words,
+    };
+  }
+
   function normalizeSafeRelativePath(value, label = "path") {
     const normalized = String(value || "")
       .trim()
@@ -1184,6 +1294,58 @@ const FiniteBrainProductClient = (() => {
       .sort((left, right) => left.title.localeCompare(right.title));
   }
 
+  function pageLinkContext(page, pages = readablePages()) {
+    if (!isReadablePage(page)) return { backlinks: [], outgoing: [] };
+    const keyForPage = (candidate) => candidate.key || pageKey(candidate.folderId, candidate.objectId);
+    const readable = [...pages].filter(isReadablePage);
+    const referencesForPage = (candidate) =>
+      [
+        candidate.title || pageTitleFromText(candidate.text ?? "", candidate.objectId),
+        candidate.path || `${candidate.objectId}.md`,
+        String(candidate.path || `${candidate.objectId}.md`).split("/").pop(),
+      ]
+        .map(normalizePageReference)
+        .filter(Boolean);
+    const byReference = new Map();
+    for (const candidate of readable) {
+      for (const reference of referencesForPage(candidate)) {
+        if (!byReference.has(reference)) byReference.set(reference, candidate);
+      }
+    }
+    const currentKey = keyForPage(page);
+    const currentReferences = new Set(referencesForPage(page));
+    const outgoing = extractPageLinks(page.text).map((targetRef) => {
+      const target = byReference.get(targetRef);
+      if (!target) {
+        return {
+          detail: "unresolved",
+          key: null,
+          label: targetRef,
+          status: "missing",
+        };
+      }
+      return {
+        detail: target.folderId,
+        key: keyForPage(target),
+        label: target.title || pageTitleFromText(target.text ?? "", target.objectId),
+        status: "resolved",
+      };
+    });
+    const backlinks = readable
+      .filter((candidate) => keyForPage(candidate) !== currentKey)
+      .filter((candidate) =>
+        extractPageLinks(candidate.text).some((targetRef) => currentReferences.has(targetRef))
+      )
+      .map((candidate) => ({
+        detail: candidate.folderId,
+        key: keyForPage(candidate),
+        label: candidate.title || pageTitleFromText(candidate.text ?? "", candidate.objectId),
+        status: "resolved",
+      }))
+      .sort((left, right) => left.label.localeCompare(right.label));
+    return { backlinks, outgoing };
+  }
+
   function pageCountLabel(count) {
     return `${count} ${count === 1 ? "page" : "pages"}`;
   }
@@ -1310,6 +1472,7 @@ const FiniteBrainProductClient = (() => {
     $("pageTabButton").setAttribute("aria-selected", String(!chrome.pageHidden));
     $("graphTabButton").setAttribute("aria-selected", String(!chrome.graphHidden));
     $("ribbonGraphButton").className = chrome.ribbonGraphClass;
+    setPressed("ribbonGraphButton", !chrome.graphHidden);
     setText("workspaceTitle", workspaceTabTitle(state.metadata, page));
   }
 
@@ -1412,18 +1575,42 @@ const FiniteBrainProductClient = (() => {
     return pages;
   }
 
-  function drawGraph(graph) {
+  function graphEmptyStateCopy(options = {}) {
+    const filterText = String(options.filterText || "").trim();
+    const readablePageCount = Number(options.readablePageCount || 0);
+    if (readablePageCount <= 0) {
+      return {
+        title: "No readable graph yet",
+        copy: "Open a vault with readable Pages to render the local link graph.",
+      };
+    }
+    if (filterText) {
+      return {
+        title: "No matching Pages",
+        copy: "Clear or change the graph filter to bring readable Pages back into view.",
+      };
+    }
+    return {
+      title: "No graph links yet",
+      copy: "Readable Pages are open, but no Page links are available for this graph projection.",
+    };
+  }
+
+  function drawGraph(graph, options = {}) {
     const svg = $("graphCanvas");
+    const emptyState = $("graphEmptyState");
     svg.replaceChildren();
     svg.setAttribute("viewBox", `0 0 ${graphViewport.width} ${graphViewport.height}`);
     if (!graph.nodes.length) {
-      const empty = document.createElementNS("http://www.w3.org/2000/svg", "text");
-      empty.setAttribute("x", "24");
-      empty.setAttribute("y", "44");
-      empty.textContent = "No accessible decrypted Pages match this graph.";
-      svg.appendChild(empty);
+      if (emptyState) {
+        const copy = graphEmptyStateCopy(options);
+        setText("graphEmptyTitle", copy.title);
+        setText("graphEmptyCopy", copy.copy);
+        emptyState.hidden = false;
+      }
       return;
     }
+    if (emptyState) emptyState.hidden = true;
     const positions = graphLayout(graph);
     const edgeDegree = new Map(graph.nodes.map((node) => [node.id, 0]));
     for (const edge of graph.edges) {
@@ -1497,6 +1684,130 @@ const FiniteBrainProductClient = (() => {
 
   function setText(id, text) {
     $(id).textContent = text;
+  }
+
+  function setPressed(id, pressed) {
+    $(id).setAttribute("aria-pressed", String(Boolean(pressed)));
+  }
+
+  function appendInlineSegments(parent, text) {
+    for (const segment of inlineLinkSegments(text)) {
+      if (segment.kind === "text") {
+        parent.appendChild(document.createTextNode(segment.text));
+        continue;
+      }
+      const link = document.createElement("span");
+      link.className = segment.kind === "external" ? "external-link" : "internal-link";
+      link.textContent = segment.text || segment.target;
+      if (segment.target) link.dataset.target = segment.target;
+      parent.appendChild(link);
+    }
+  }
+
+  function renderMarkdownPreview(container, markdown) {
+    container.replaceChildren();
+    for (const block of markdownPreviewBlocks(markdown)) {
+      if (block.type === "heading") {
+        const heading = document.createElement(`h${block.level}`);
+        appendInlineSegments(heading, block.text);
+        container.appendChild(heading);
+        continue;
+      }
+      if (block.type === "list") {
+        const list = document.createElement("ul");
+        for (const itemText of block.items) {
+          const item = document.createElement("li");
+          appendInlineSegments(item, itemText);
+          list.appendChild(item);
+        }
+        container.appendChild(list);
+        continue;
+      }
+      if (block.type === "quote") {
+        const quote = document.createElement("blockquote");
+        appendInlineSegments(quote, block.text);
+        container.appendChild(quote);
+        continue;
+      }
+      if (block.type === "code") {
+        const pre = document.createElement("pre");
+        const code = document.createElement("code");
+        code.textContent = block.text;
+        pre.appendChild(code);
+        container.appendChild(pre);
+        continue;
+      }
+      if (block.type === "rule") {
+        container.appendChild(document.createElement("hr"));
+        continue;
+      }
+      const paragraph = document.createElement("p");
+      appendInlineSegments(paragraph, block.text);
+      container.appendChild(paragraph);
+    }
+  }
+
+  function setNoteEmptyState(isEmpty) {
+    $("readerPageContent").className = isEmpty ? "note-content note-content-empty" : "note-content";
+  }
+
+  function renderPageContent(page) {
+    const content = $("readerPageContent");
+    content.replaceChildren();
+    if (!page) {
+      content.className = "note-content note-content-empty";
+      content.textContent = "Open an accessible vault to read decrypted Pages here.";
+      return;
+    }
+    if (!isReadablePage(page)) {
+      content.className = "note-content note-content-empty";
+      content.textContent = "This Page is present in sync, but its Folder Key is not open in this session.";
+      return;
+    }
+    if (state.readerMode === "source") {
+      content.className = "note-content note-source";
+      content.textContent = page.text || "";
+      return;
+    }
+    content.className = "note-content note-markdown";
+    renderMarkdownPreview(content, page.text || "");
+  }
+
+  function renderPageStatus(page) {
+    const readableCount = readablePages().length;
+    const openedKeyCount = state.keyring?.openedGrants.length || 0;
+    setText(
+      "vaultStatusDetail",
+      `${state.activeVaultId || "vault"} | ${readableCount} readable Pages | ${openedKeyCount} keys open`
+    );
+    if (!isReadablePage(page)) {
+      setText("pageStatusDetail", "No readable page selected.");
+      return;
+    }
+    const stats = pageStatsForText(page.text);
+    const path = page.path || `${page.objectId}.md`;
+    setText(
+      "pageStatusDetail",
+      `${page.folderId}/${path} | ${stats.words} words | ${stats.links} links`
+    );
+  }
+
+  function renderLinkContext(page) {
+    const context = pageLinkContext(page, readablePages());
+    const renderLinkRow = (item, row) => {
+      const button = readerButton(
+        row.label,
+        row.detail,
+        `link-button ${row.status}${row.key === state.selectedPageKey ? " active" : ""}`,
+        () => {
+          if (row.key) selectReaderPage(row.key);
+        }
+      );
+      button.disabled = !row.key;
+      item.appendChild(button);
+    };
+    setList("outgoingLinkList", context.outgoing, "No outgoing links", renderLinkRow);
+    setList("backlinkList", context.backlinks, "No backlinks", renderLinkRow);
   }
 
   function setGraphStats(graph, readablePageCount) {
@@ -1682,30 +1993,38 @@ const FiniteBrainProductClient = (() => {
     $("ribbonFilesButton").className = `ribbon-button${mode === "files" ? " active" : ""}`;
     $("ribbonSearchButton").className = `ribbon-button${mode === "search" ? " active" : ""}`;
     $("ribbonAccessButton").className = `ribbon-button${mode === "access" ? " active" : ""}`;
+    setPressed("ribbonFilesButton", mode === "files");
+    setPressed("ribbonSearchButton", mode === "search");
+    setPressed("ribbonAccessButton", mode === "access");
   }
 
   function renderSearchPanel() {
     const query = $("sidebarSearchInput").value;
     const rows = searchPageRows(query);
     setPill("searchResultCount", `${rows.length}`, rows.length ? "ready" : "muted");
-    setList("sidebarSearchResults", rows, "Search readable Pages", (item, row) => {
-      const button = obsidianTreeButton(
-        row.label,
-        row.detail,
-        `obsidian-page-button ${row.key === state.selectedPageKey ? " active" : ""}`,
-        () => selectReaderPage(row.key),
-        {
-          contextTarget: {
-            type: "page",
-            folderId: row.folderId,
-            objectId: row.objectId,
-            pageKey: row.key,
-            title: row.title,
-          },
-        }
-      );
-      item.appendChild(button);
-    });
+    setList(
+      "sidebarSearchResults",
+      rows,
+      query.trim() ? "No matching readable Pages" : "No search query",
+      (item, row) => {
+        const button = obsidianTreeButton(
+          row.label,
+          row.detail,
+          `obsidian-page-button ${row.key === state.selectedPageKey ? " active" : ""}`,
+          () => selectReaderPage(row.key),
+          {
+            contextTarget: {
+              type: "page",
+              folderId: row.folderId,
+              objectId: row.objectId,
+              pageKey: row.key,
+              title: row.title,
+            },
+          }
+        );
+        item.appendChild(button);
+      }
+    );
   }
 
   function renderAccessPanel() {
@@ -1813,10 +2132,15 @@ const FiniteBrainProductClient = (() => {
     });
 
     const page = selectedReaderPage();
+    $("readerModeButton").textContent = state.readerMode === "source" ? "Source" : "Reading";
+    setPressed("readerModeButton", state.readerMode === "source");
+    $("readerModeButton").disabled = !isReadablePage(page);
     if (!page) {
       setText("readerPageTitle", state.selectedFolderId ? "No readable page selected" : "No folder selected");
       setPill("readerPageMeta", "empty", "muted");
-      setText("readerPageContent", "Open an accessible vault to read decrypted Pages here.");
+      renderPageContent(null);
+      renderLinkContext(null);
+      renderPageStatus(null);
       renderWorkspaceChrome(null);
       return;
     }
@@ -1827,12 +2151,9 @@ const FiniteBrainProductClient = (() => {
       `${page.folderId} r${page.revision || 0}`,
       page.status === "ready" ? "ready" : "warn"
     );
-    setText(
-      "readerPageContent",
-      isReadablePage(page)
-        ? page.text
-        : "This Page is present in sync, but its Folder Key is not open in this session."
-    );
+    renderPageContent(page);
+    renderLinkContext(page);
+    renderPageStatus(page);
     renderWorkspaceChrome(page);
   }
 
@@ -2151,8 +2472,9 @@ const FiniteBrainProductClient = (() => {
 
   function renderGraphView() {
     const pages = decryptedPagesForGraph();
-    const graph = buildGraphProjection(pages, $("graphFilterInput").value);
-    drawGraph(graph);
+    const filterText = $("graphFilterInput").value;
+    const graph = buildGraphProjection(pages, filterText);
+    drawGraph(graph, { filterText, readablePageCount: pages.length });
     setGraphStats(graph, pages.length);
     log("Rendered graph from decrypted client index.", {
       edges: graph.edges.length,
@@ -2208,7 +2530,7 @@ const FiniteBrainProductClient = (() => {
       item.textContent = `#${frame.sequence} ${frame.action}: ${frame.nodeCount} nodes, ${frame.edgeCount} edges`;
     });
     if (frames.length) {
-      drawGraph(frames[frames.length - 1].graph);
+      drawGraph(frames[frames.length - 1].graph, { readablePageCount: decryptedPagesForGraph().length });
       setGraphStats(frames[frames.length - 1].graph, decryptedPagesForGraph().length);
     }
     log("Built graph replay frames.", frames.map((frame) => ({
@@ -2323,6 +2645,10 @@ const FiniteBrainProductClient = (() => {
     });
     $("graphTabButton").addEventListener("click", () => {
       setWorkspaceView("graph");
+    });
+    $("readerModeButton").addEventListener("click", () => {
+      state.readerMode = state.readerMode === "source" ? "reading" : "source";
+      render();
     });
     $("ribbonGraphButton").addEventListener("click", () => {
       setWorkspaceView("graph");
@@ -2463,8 +2789,11 @@ const FiniteBrainProductClient = (() => {
     deriveSignerState,
     encryptFolderObject,
     extractPageLinks,
+    graphEmptyStateCopy,
     graphLayout,
     graphStats,
+    inlineLinkSegments,
+    markdownPreviewBlocks,
     mergeSyncProjection,
     metadataFolderRows,
     metadataMountRows,
@@ -2476,6 +2805,8 @@ const FiniteBrainProductClient = (() => {
     openFolderObject,
     openSyncObjects,
     parseOkfBundle,
+    pageLinkContext,
+    pageStatsForText,
     plaintextGrantFromExportGrant,
     planOkfImport,
     prepareOkfImportWrites,

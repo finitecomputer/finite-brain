@@ -264,6 +264,105 @@
     projection are verified through the repeatable Node verifier using the same
     Product Client helpers and seeded Folder Key Grants.
 
+### Final Obsidian Parity Polish
+
+- Baseline: `47e043b`
+- Implementation checkpoint: pending commit
+- Status: implementation complete; local checks, review, and CodeRabbit passed;
+  branch push pending
+- Owner: current orchestrator thread using direct implementation as a small
+  follow-up polish slice across `#32`, `#34`, and `#36`.
+- Current implementation:
+  - Replaced placeholder-letter primary ribbon controls with icon-only Files,
+    Graph, Search, and Access controls with accessible labels and
+    `aria-pressed` state.
+  - Kept the development-only Smoke UI link out of the primary product ribbon
+    and behind the Advanced client tools drawer.
+  - Replaced text/pseudo-content sidebar toolbar controls with real icon
+    buttons for New Page, New Folder, and Refresh.
+  - Tightened the Obsidian shell geometry with wider ribbon hit areas, active
+    rail indicators, tab/tree active markers, tabular numeric counters, root
+    font smoothing, explicit transition properties, and tactile press states.
+  - Added intentional Page and Graph empty states so unselected, unreadable, or
+    filtered-empty views do not look like raw placeholder text.
+  - Extended the repeatable verifier so the new sidebar icon controls and empty
+    states remain pinned by local smoke checks.
+- Verification:
+  - `node --check crates/finite-brain-server/src/product-client.js`
+  - `node --check scripts/seed-smoke-doc-pages.mjs`
+  - `node --check scripts/verify-obsidian-product-client.mjs`
+  - `node crates/finite-brain-server/src/product-client.test.js`
+  - `node scripts/seed-smoke-doc-pages.mjs`
+  - `node scripts/verify-obsidian-product-client.mjs`
+  - `git diff --check`
+  - `cargo fmt --check`
+  - `cargo test -p finite-brain-server product_client_serves_spine_assets_and_config -- --nocapture`
+  - `cargo test --workspace`
+  - `cargo clippy --workspace --all-targets -- -D warnings`
+  - `cargo build`
+  - Local server rebuilt and restarted on `http://127.0.0.1:4015/client`.
+  - Local curl smoke verified `/health`, `/client`, `/client/app.css`, and
+    `/client/app.js` serve the polished shell markers.
+- Visual verification boundary:
+  - Computer Use browser-state verification captured the desktop Product
+    Client shell from `http://127.0.0.1:4015/client` in Zen, including the
+    icon ribbon, sidebar toolbar, Page empty state, Graph tab switch, centered
+    Graph empty state, and right properties/activity rail.
+- Review:
+  - Standards/spec review packet:
+    `docs/feature-dev/2026-06-24-final-obsidian-polish-review-packet.md`
+  - Findings fixed: development Smoke UI demoted from the primary product
+    ribbon; graph empty state no longer renders raw SVG placeholder text;
+    graph empty copy is filter-aware; verification evidence was expanded.
+
+### Further Obsidian Parity Polish
+
+- Baseline: uncommitted final polish delta
+- Implementation checkpoint: current uncommitted delta
+- Status: implementation complete; verification, review, and CodeRabbit refresh
+  passed
+- Owner: current orchestrator thread using direct implementation as a focused
+  UI/UX parity pass.
+- Current implementation:
+  - Added a safe, tiny Markdown reading renderer for decrypted Pages so the
+    main workspace shows headings, lists, quotes, code blocks, and internal
+    links instead of a raw source dump by default.
+  - Added a Reading/Source toggle in the Page header for smoke-testers who
+    still need to inspect plaintext source.
+  - Added right-rail Outgoing links and Backlinks panels derived from the same
+    decrypted Page link extraction used by Graph View.
+  - Added status-bar Page/Vault detail for selected path, word count, link
+    count, readable Page count, and open key count.
+  - Fixed folder tree row layout so Folder labels, page-count details, and
+    access badges do not run together.
+  - Extended deterministic tests and the seeded smoke verifier for Markdown
+    preview blocks, inline link parsing, page link context, stats, and the new
+    shell markers.
+- Verification:
+  - `node --check crates/finite-brain-server/src/product-client.js`
+  - `node --check scripts/verify-obsidian-product-client.mjs`
+  - `node crates/finite-brain-server/src/product-client.test.js`
+  - `node scripts/verify-obsidian-product-client.mjs`
+  - `git diff --check`
+  - `cargo fmt --check`
+  - `cargo test -p finite-brain-server product_client_serves_spine_assets_and_config -- --nocapture`
+  - `cargo test --workspace`
+  - `cargo clippy --workspace --all-targets -- -D warnings`
+  - `cargo build`
+  - Local server rebuilt and running on `http://127.0.0.1:4015/client` with
+    `FINITE_BRAIN_DB=/tmp/finite-brain-smoke-test.sqlite3`.
+  - Chromium Computer Use verification confirmed the refreshed shell markers.
+  - Playwright fixture smoke against the live client opened the seeded Vault
+    with 11 folders, rendered Markdown headings in the Page surface, and
+    confirmed the page content host is no longer a raw `<pre>`.
+- Review:
+  - Review packet:
+    `docs/feature-dev/2026-06-24-further-obsidian-parity-review-packet.md`
+  - Local CodeRabbit report:
+    `docs/feature-dev/2026-06-24-local-coderabbit-further-obsidian-parity.md`
+  - Findings fixed: wiki alias display text, zero-readable graph empty-state
+    copy, and path/basename-aware link context resolution.
+
 ## Local CodeRabbit
 
 ### Round 1
@@ -293,6 +392,26 @@
   - `cargo test --workspace`
   - `cargo clippy --workspace --all-targets -- -D warnings`
   - `git diff --check`
+
+### Final Polish Uncommitted Delta
+
+- Command: `coderabbit review --agent --type uncommitted`
+- Result: completed through the free CLI allowance.
+- Report:
+  `docs/feature-dev/2026-06-24-local-coderabbit-final-obsidian-polish.md`
+- Findings: zero.
+- Post-fix verification:
+  - `node --check crates/finite-brain-server/src/product-client.js`
+  - `node --check scripts/verify-obsidian-product-client.mjs`
+  - `node crates/finite-brain-server/src/product-client.test.js`
+  - `node scripts/verify-obsidian-product-client.mjs`
+  - `cargo fmt --check`
+  - `cargo test -p finite-brain-server product_client_serves_spine_assets_and_config -- --nocapture`
+  - `cargo build`
+  - `git diff --check`
+  - live curl smoke for `/health`, `/client`, `/client/app.css`, and
+    `/client/app.js`
+  - Computer Use browser-state verification in Zen for Page and Graph views.
 
 ## PR Review And CI
 

@@ -334,6 +334,19 @@ assert.equal(client.accessPanelState("manage", folderRows[1]).title, "Manage Res
   assert.equal(client.workspaceChromeState("graph").pageHidden, true);
   assert.equal(client.workspaceChromeState("graph").graphHidden, false);
   assert.match(client.workspaceChromeState("graph").graphTabClass, /active/);
+  assert.equal(client.graphEmptyStateCopy().title, "No readable graph yet");
+  assert.equal(
+    client.graphEmptyStateCopy({ readablePageCount: 3 }).copy,
+    "Readable Pages are open, but no Page links are available for this graph projection."
+  );
+  assert.equal(
+    client.graphEmptyStateCopy({ filterText: "folder key", readablePageCount: 3 }).title,
+    "No matching Pages"
+  );
+  assert.equal(
+    client.graphEmptyStateCopy({ filterText: "folder key", readablePageCount: 0 }).title,
+    "No readable graph yet"
+  );
   assert.equal(client.normalizeSidebarMode("search"), "search");
   assert.equal(client.normalizeSidebarMode("access"), "access");
   assert.equal(client.normalizeSidebarMode("bogus"), "files");
@@ -447,6 +460,123 @@ assert.equal(client.accessPanelState("manage", folderRows[1]).title, "Manage Res
   assert.deepEqual(
     Array.from(client.extractPageLinks("[[Roadmap]] [Spec](Specs/OKF.md) [Web](https://example.com)")),
     ["roadmap", "specs/okf"]
+  );
+  assert.equal(
+    JSON.stringify(client.inlineLinkSegments("Read [[Roadmap]] and [Spec](Specs/OKF.md).")),
+    JSON.stringify([
+      { kind: "text", text: "Read " },
+      { kind: "internal", target: "roadmap", text: "Roadmap" },
+      { kind: "text", text: " and " },
+      { kind: "internal", target: "specs/okf", text: "Spec" },
+      { kind: "text", text: "." },
+    ])
+  );
+  assert.equal(
+    JSON.stringify(client.inlineLinkSegments("Read [[Roadmap#Now|Q3 roadmap]].")),
+    JSON.stringify([
+      { kind: "text", text: "Read " },
+      { kind: "internal", target: "roadmap", text: "Q3 roadmap" },
+      { kind: "text", text: "." },
+    ])
+  );
+  assert.equal(
+    JSON.stringify(client.markdownPreviewBlocks("# Title\n\n- One\n- Two\n\n> Note\n\n```js\nconst ok = true;\n```")),
+    JSON.stringify([
+      { level: 1, text: "Title", type: "heading" },
+      { items: ["One", "Two"], type: "list" },
+      { text: "Note", type: "quote" },
+      { text: "const ok = true;", type: "code" },
+    ])
+  );
+  assert.equal(JSON.stringify(client.pageStatsForText("# Title\n\nSee [[Roadmap]] and words.")), JSON.stringify({
+    links: 1,
+    words: 6,
+  }));
+  const linkContext = client.pageLinkContext(
+    {
+      folderId: "general",
+      key: "general/alpha",
+      objectId: "alpha",
+      status: "ready",
+      text: "# Alpha\n\nSee [[Beta]] and [[Missing]].",
+      title: "Alpha",
+    },
+    [
+      {
+        folderId: "general",
+        key: "general/alpha",
+        objectId: "alpha",
+        status: "ready",
+        text: "# Alpha\n\nSee [[Beta]] and [[Missing]].",
+        title: "Alpha",
+      },
+      {
+        folderId: "general",
+        key: "general/beta",
+        objectId: "beta",
+        status: "ready",
+        text: "# Beta\n\nBack to [[Alpha]].",
+        title: "Beta",
+      },
+      {
+        folderId: "restricted",
+        key: "restricted/locked",
+        objectId: "locked",
+        status: "locked",
+        text: "# Locked\n\n[[Alpha]]",
+        title: "Locked",
+      },
+    ]
+  );
+  assert.equal(
+    JSON.stringify(linkContext.outgoing.map((row) => [row.label, row.status])),
+    JSON.stringify([
+      ["Beta", "resolved"],
+      ["missing", "missing"],
+    ])
+  );
+  assert.equal(
+    JSON.stringify(linkContext.backlinks.map((row) => [row.label, row.key])),
+    JSON.stringify([["Beta", "general/beta"]])
+  );
+  const pathLinkContext = client.pageLinkContext(
+    {
+      folderId: "docs",
+      key: "docs/intro",
+      objectId: "intro",
+      path: "docs/intro.md",
+      status: "ready",
+      text: "# Intro\n\nSee [Deep Dive](deep-dive.md).",
+      title: "Intro",
+    },
+    [
+      {
+        folderId: "docs",
+        key: "docs/intro",
+        objectId: "intro",
+        path: "docs/intro.md",
+        status: "ready",
+        text: "# Intro\n\nSee [Deep Dive](deep-dive.md).",
+        title: "Intro",
+      },
+      {
+        folderId: "docs",
+        key: "docs/deep-dive",
+        objectId: "deep-dive",
+        path: "docs/deep-dive.md",
+        status: "ready",
+        text: "# Deep Dive\n\nBack to [Intro](intro.md).",
+        title: "Deep Dive",
+      },
+    ]
+  );
+  assert.equal(
+    JSON.stringify(pathLinkContext.outgoing.map((row) => [row.label, row.status])),
+    JSON.stringify([["Deep Dive", "resolved"]])
+  );
+  assert.equal(
+    JSON.stringify(pathLinkContext.backlinks.map((row) => [row.label, row.key])),
+    JSON.stringify([["Deep Dive", "docs/deep-dive"]])
   );
 
   const okfInput = {

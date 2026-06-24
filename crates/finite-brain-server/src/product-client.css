@@ -14,6 +14,8 @@
   --green: #45d483;
   --amber: #f2bd5c;
   --red: #f46d75;
+  --shadow-obsi-ring: 0 0 0 1px rgba(255, 255, 255, 0.08);
+  --shadow-obsi-hover: 0 0 0 1px rgba(255, 255, 255, 0.14);
 }
 
 * {
@@ -26,6 +28,8 @@ body {
   background: var(--bg);
   color: var(--text);
   font: 14px/1.45 ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
   overflow-x: hidden;
 }
 
@@ -50,6 +54,9 @@ button,
   font-weight: 750;
   padding: 8px 12px;
   text-decoration: none;
+  transition-duration: 140ms;
+  transition-property: background-color, border-color, box-shadow, color, opacity, transform;
+  transition-timing-function: cubic-bezier(0.2, 0, 0, 1);
   white-space: nowrap;
 }
 
@@ -62,6 +69,11 @@ button:hover,
 button:disabled {
   cursor: not-allowed;
   opacity: 0.48;
+}
+
+button:not(:disabled):active,
+.dev-link:active {
+  transform: scale(0.96);
 }
 
 button:focus-visible,
@@ -113,11 +125,13 @@ dd {
 h1 {
   font-size: 23px;
   letter-spacing: 0;
+  text-wrap: balance;
 }
 
 h2 {
   font-size: 21px;
   letter-spacing: 0;
+  text-wrap: balance;
 }
 
 h3 {
@@ -453,6 +467,7 @@ label,
   color: var(--muted);
   font-size: 12px;
   font-weight: 750;
+  font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
 
@@ -478,6 +493,7 @@ label,
 
 .muted-copy {
   font-size: 13px;
+  text-wrap: pretty;
 }
 
 .tree-list,
@@ -579,6 +595,7 @@ label,
   margin-top: 5px;
   font-size: 18px;
   font-weight: 800;
+  font-variant-numeric: tabular-nums;
 }
 
 pre {
@@ -657,7 +674,7 @@ pre {
 
 .obsidian-shell {
   display: grid;
-  grid-template-columns: 38px minmax(250px, 320px) minmax(0, 1fr) minmax(230px, 280px);
+  grid-template-columns: 44px minmax(260px, 330px) minmax(0, 1fr) minmax(230px, 280px);
   grid-template-rows: minmax(0, 1fr) 24px;
   min-height: 100vh;
   background: #1f1f1f;
@@ -669,27 +686,30 @@ pre {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 8px;
+  gap: 4px;
+  overflow: visible;
   border-right: 1px solid #303030;
-  background: #242424;
-  padding: 10px 5px;
+  background: #232323;
+  padding: 8px 2px;
 }
 
 .ribbon-button {
+  position: relative;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 28px;
-  height: 28px;
-  min-height: 28px;
+  width: 40px;
+  height: 40px;
+  min-height: 40px;
   border: 0;
-  border-radius: 5px;
+  border-radius: 6px;
   background: transparent;
   color: #a8a8a8;
-  font-size: 12px;
-  font-weight: 800;
   padding: 0;
   text-decoration: none;
+  transition-duration: 140ms;
+  transition-property: background-color, box-shadow, color, transform;
+  transition-timing-function: cubic-bezier(0.2, 0, 0, 1);
 }
 
 .ribbon-button:hover,
@@ -698,8 +718,36 @@ pre {
   color: #f1f1f1;
 }
 
-.ribbon-link {
-  margin-top: auto;
+.ribbon-button.active::before {
+  position: absolute;
+  top: 50%;
+  left: 2px;
+  width: 3px;
+  height: 18px;
+  border-radius: 999px;
+  background: var(--blue);
+  content: "";
+  transform: translateY(-50%);
+}
+
+.icon {
+  width: 18px;
+  height: 18px;
+  flex: 0 0 auto;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.9;
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
 }
 
 .file-sidebar,
@@ -753,7 +801,6 @@ pre {
 }
 
 .vault-control-strip button,
-.sidebar-toolbar button,
 .icon-text-button {
   min-height: 30px;
   border-radius: 5px;
@@ -761,36 +808,36 @@ pre {
 }
 
 .sidebar-toolbar {
-  gap: 6px;
+  gap: 4px;
   border-bottom: 1px solid #303030;
-  padding: 8px 10px;
+  padding: 6px 8px;
 }
 
-.sidebar-toolbar button {
+.sidebar-icon-button {
   flex: 0 0 auto;
-  width: 30px;
+  width: 36px;
+  height: 36px;
+  min-height: 36px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: #aaaeb8;
   padding: 0;
-  color: transparent;
-  font-size: 0;
 }
 
-.sidebar-toolbar button::before {
-  color: #b9b9b9;
-  font-size: 14px;
-  font-weight: 800;
+.sidebar-icon-button:hover {
+  background: #333333;
+  box-shadow: var(--shadow-obsi-ring);
+  color: #f1f1f1;
 }
 
-#obsidianNewPageButton::before {
-  content: "+";
+.sidebar-icon-button .icon {
+  width: 17px;
+  height: 17px;
 }
 
-#obsidianNewFolderButton::before {
-  content: "F+";
-  font-size: 11px;
-}
-
-#refreshReaderButton::before {
-  content: "R";
+.toolbar-spacer {
+  flex: 1 1 auto;
 }
 
 .file-explorer {
@@ -929,9 +976,12 @@ pre {
 .obsidian-folder-button,
 .obsidian-page-button {
   position: relative;
+  display: inline-flex;
+  flex-direction: column;
+  align-items: flex-start;
   justify-content: flex-start;
   width: calc(100% - 12px);
-  min-height: 28px;
+  min-height: 30px;
   margin: 1px 6px;
   border: 0;
   border-radius: 5px;
@@ -941,6 +991,9 @@ pre {
   font-weight: 650;
   padding: 5px 8px 5px 22px;
   text-align: left;
+  transition-duration: 130ms;
+  transition-property: background-color, color, transform;
+  transition-timing-function: cubic-bezier(0.2, 0, 0, 1);
 }
 
 .obsidian-page-button {
@@ -980,6 +1033,11 @@ pre {
   color: #f1f1f1;
 }
 
+.obsidian-folder-button.active,
+.obsidian-page-button.active {
+  box-shadow: inset 3px 0 0 var(--blue);
+}
+
 .obsidian-folder-button.locked,
 .obsidian-folder-button.setup {
   color: #f1c36f;
@@ -991,6 +1049,7 @@ pre {
   color: #8d8d8d;
   font-size: 11px;
   font-weight: 600;
+  text-wrap: pretty;
 }
 
 .obsidian-page-children {
@@ -1013,7 +1072,9 @@ pre {
   border: 1px solid #484848;
   border-radius: 8px;
   background: #262626;
-  box-shadow: 0 16px 38px rgba(0, 0, 0, 0.42);
+  box-shadow:
+    0 0 0 1px rgba(255, 255, 255, 0.05),
+    0 16px 38px rgba(0, 0, 0, 0.42);
   padding: 6px;
 }
 
@@ -1088,10 +1149,14 @@ pre {
   background: transparent;
   color: #a8a8a8;
   padding: 7px 12px;
+  transition-duration: 140ms;
+  transition-property: background-color, box-shadow, color, transform;
+  transition-timing-function: cubic-bezier(0.2, 0, 0, 1);
 }
 
 .workspace-tab.active {
   background: #202020;
+  box-shadow: inset 0 2px 0 var(--blue);
   color: #f1f1f1;
 }
 
@@ -1136,6 +1201,27 @@ pre {
   letter-spacing: 0;
 }
 
+.page-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.reader-mode-button {
+  min-height: 28px;
+  border-radius: 5px;
+  background: transparent;
+  color: #a8a8a8;
+  font-size: 12px;
+  padding: 4px 8px;
+}
+
+.reader-mode-button:hover {
+  background: #333333;
+  color: #f1f1f1;
+}
+
 .note-content {
   min-height: 0;
   height: 100%;
@@ -1145,9 +1231,108 @@ pre {
   border-radius: 0;
   background: #202020;
   color: #dedede;
-  font: 15px/1.65 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   padding: 28px min(9vw, 96px);
+}
+
+.note-markdown {
+  font: 15px/1.65 ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+.note-markdown > * {
+  max-width: 760px;
+}
+
+.note-markdown h1,
+.note-markdown h2,
+.note-markdown h3 {
+  margin: 0 0 12px;
+  color: #f0f0f0;
+  font-weight: 760;
+  line-height: 1.25;
+}
+
+.note-markdown h1 {
+  font-size: 28px;
+}
+
+.note-markdown h2 {
+  margin-top: 24px;
+  font-size: 22px;
+}
+
+.note-markdown h3 {
+  margin-top: 18px;
+  font-size: 17px;
+}
+
+.note-markdown p,
+.note-markdown ul,
+.note-markdown blockquote,
+.note-markdown pre {
+  margin: 0 0 14px;
+}
+
+.note-markdown ul {
+  display: grid;
+  gap: 6px;
+  padding-left: 24px;
+}
+
+.note-markdown blockquote {
+  border-left: 3px solid #444b59;
+  color: #bdc4cf;
+  padding-left: 12px;
+}
+
+.note-markdown code {
+  border: 1px solid #343a46;
+  border-radius: 4px;
+  background: #191b20;
+  color: #e5e7eb;
+  font: 0.92em ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  padding: 1px 4px;
+}
+
+.note-markdown pre {
+  overflow: auto;
+  border: 1px solid #343a46;
+  border-radius: 7px;
+  background: #171a20;
+  padding: 12px;
+}
+
+.note-markdown pre code {
+  border: 0;
+  background: transparent;
+  padding: 0;
+}
+
+.note-markdown hr {
+  max-width: 760px;
+  height: 1px;
+  margin: 20px 0;
+  border: 0;
+  background: #343a46;
+}
+
+.note-source {
+  font: 14px/1.65 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   white-space: pre-wrap;
+}
+
+.internal-link,
+.external-link {
+  color: #8fb6ff;
+  font-weight: 650;
+}
+
+.note-content-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #8f97a6;
+  font: 14px/1.5 ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  text-align: center;
 }
 
 .editor-drawer {
@@ -1189,6 +1374,40 @@ pre {
   min-width: 0;
   min-height: 0;
   overflow: hidden;
+}
+
+.graph-empty-state {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  display: grid;
+  width: min(360px, calc(100% - 48px));
+  gap: 8px;
+  padding: 18px;
+  border-radius: 10px;
+  background: rgba(32, 32, 32, 0.82);
+  box-shadow: var(--shadow-obsi-ring);
+  color: #aeb4c0;
+  text-align: center;
+  transform: translate(-50%, -50%);
+  transition-duration: 160ms;
+  transition-property: opacity, transform;
+  transition-timing-function: cubic-bezier(0.2, 0, 0, 1);
+}
+
+.graph-empty-state[hidden] {
+  display: none;
+}
+
+.graph-empty-state h3 {
+  margin: 0;
+  color: #f1f1f1;
+  font-size: 15px;
+}
+
+.graph-empty-state p:not(.eyebrow) {
+  color: #aeb4c0;
+  text-wrap: pretty;
 }
 
 .graph-canvas {
@@ -1242,7 +1461,7 @@ pre {
 
 .right-sidebar {
   display: grid;
-  grid-template-rows: auto auto auto minmax(0, 1fr);
+  grid-template-rows: auto auto auto auto auto minmax(0, 1fr);
   border-left: 1px solid #303030;
   border-right: 0;
 }
@@ -1256,6 +1475,48 @@ pre {
   margin: 0 0 10px;
   color: #d8d8d8;
   font-size: 13px;
+}
+
+.link-context-panel {
+  max-height: 180px;
+  overflow: hidden;
+}
+
+.link-list {
+  display: grid;
+  gap: 4px;
+  max-height: 126px;
+  overflow: auto;
+}
+
+.link-button {
+  justify-content: flex-start;
+  width: 100%;
+  min-height: 28px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: #c9c9c9;
+  font-size: 12px;
+  font-weight: 650;
+  padding: 5px 7px;
+  text-align: left;
+}
+
+.link-button:hover,
+.link-button.active {
+  background: #333333;
+  color: #f1f1f1;
+}
+
+.link-button.missing {
+  color: #9098a8;
+}
+
+.link-button .reader-list-detail {
+  margin-left: auto;
+  color: #808895;
+  font-size: 11px;
 }
 
 .right-sidebar .facts {
@@ -1272,6 +1533,13 @@ pre {
 
 .dev-console[open] {
   max-height: 48vh;
+}
+
+.dev-console-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 12px;
 }
 
 .activity-panel {
@@ -1305,7 +1573,7 @@ pre {
 
 @media (max-width: 1180px) {
   .obsidian-shell {
-    grid-template-columns: 38px minmax(230px, 290px) minmax(0, 1fr);
+    grid-template-columns: 44px minmax(240px, 300px) minmax(0, 1fr);
     grid-template-rows: minmax(0, 1fr) minmax(220px, 40vh) 24px;
   }
 
