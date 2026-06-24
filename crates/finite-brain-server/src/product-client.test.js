@@ -274,6 +274,33 @@ assert.equal(client.accessPanelState("manage", folderRows[1]).title, "Manage Res
   assert.equal(readerFolders[0].accessLabel, "all members");
   assert.equal(readerFolders[1].status, "locked");
   assert.equal(readerFolders[1].accessLabel, "restricted");
+  const compatibilityRows = client.metadataFolderRows({
+    folders: [
+      {
+        id: "architecture",
+        path: "Architecture",
+        access_mode: "all_members",
+        access_user_ids: [],
+        current_key_version: 2,
+        setup_incomplete: false,
+        shared_folder_source: false,
+      },
+      {
+        id: "vault-ops",
+        path: "vault-ops",
+        accessMode: "AdminOnly",
+        accessUserIds: [],
+        currentKeyVersion: 1,
+        setupIncomplete: false,
+        sharedFolderSource: false,
+      },
+    ],
+  });
+  assert.equal(compatibilityRows[0].access, "all_members");
+  assert.equal(compatibilityRows[0].accessLabel, "all members");
+  assert.equal(compatibilityRows[0].currentKeyVersion, 2);
+  assert.equal(compatibilityRows[1].access, "admin_only");
+  assert.equal(compatibilityRows[1].accessLabel, "admin only");
   assert.equal(
     client.readerFolderDetail(readerFolders[0]),
     "1 page readable - all members"

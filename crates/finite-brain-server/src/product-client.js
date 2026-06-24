@@ -62,43 +62,64 @@ const FiniteBrainProductClient = (() => {
     };
   }
 
+  function normalizeAccessValue(access) {
+    const value = String(access || "unknown")
+      .trim()
+      .replace(/([a-z0-9])([A-Z])/g, "$1_$2")
+      .replace(/[-\s]+/g, "_")
+      .toLowerCase();
+    return value || "unknown";
+  }
+
+  function folderAccessValue(folder) {
+    return normalizeAccessValue(folder?.access ?? folder?.accessMode ?? folder?.access_mode);
+  }
+
+  function folderAccessUsers(folder) {
+    return folder?.accessUserIds || folder?.access_user_ids || [];
+  }
+
   function folderStatus(folder) {
-    if (folder.setupIncomplete) return "setup";
-    if (folder.access === "restricted" && (folder.accessUserIds || []).length === 0) {
+    if (folder?.setupIncomplete ?? folder?.setup_incomplete) return "setup";
+    if (folderAccessValue(folder) === "restricted" && folderAccessUsers(folder).length === 0) {
       return "locked";
     }
     return "ready";
   }
 
   function folderAccessLabel(access) {
+    const normalized = normalizeAccessValue(access);
     return (
       {
         admin_only: "admin only",
         all_members: "all members",
+        owner: "owner",
         restricted: "restricted",
-      }[access] || access || "unknown access"
+      }[normalized] || normalized.replaceAll("_", " ")
     );
   }
 
   function metadataFolderRows(metadata) {
     return (metadata?.folders || []).map((folder) => {
+      const access = folderAccessValue(folder);
       const status = folderStatus(folder);
-      const accessLabel = folderAccessLabel(folder.access);
+      const accessLabel = folderAccessLabel(access);
       const flags = [];
-      if (folder.sharedFolderSource) flags.push("source");
-      if (folder.setupIncomplete) flags.push("setup needed");
+      if (folder.sharedFolderSource ?? folder.shared_folder_source) flags.push("source");
+      if (folder.setupIncomplete ?? folder.setup_incomplete) flags.push("setup needed");
       if (status === "locked") flags.push("locked");
+      const currentKeyVersion = folder.currentKeyVersion ?? folder.current_key_version ?? 1;
       return {
-        access: folder.access,
+        access,
         accessLabel,
-        accessUserIds: folder.accessUserIds || [],
-        currentKeyVersion: folder.currentKeyVersion,
+        accessUserIds: folderAccessUsers(folder),
+        currentKeyVersion,
         id: folder.id,
         path: folder.path,
-        setupIncomplete: Boolean(folder.setupIncomplete),
-        sharedFolderSource: Boolean(folder.sharedFolderSource),
+        setupIncomplete: Boolean(folder.setupIncomplete ?? folder.setup_incomplete),
+        sharedFolderSource: Boolean(folder.sharedFolderSource ?? folder.shared_folder_source),
         status,
-        label: `${folder.path} - ${accessLabel} - key v${folder.currentKeyVersion}`,
+        label: `${folder.path} - ${accessLabel} - key v${currentKeyVersion}`,
         detail: flags.join(", "),
       };
     });

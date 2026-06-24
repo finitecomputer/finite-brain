@@ -1120,15 +1120,22 @@ mod tests {
             .await
             .expect("client body");
         let client_body = std::str::from_utf8(&client_body).expect("client utf8");
-        assert!(client_body.contains("Product Client"));
+        assert!(client_body.contains("obsidian-shell"));
+        assert!(client_body.contains("app-ribbon"));
+        assert!(client_body.contains("file-sidebar"));
         assert!(client_body.contains("Connect signer"));
         assert!(client_body.contains("Open a Vault"));
+        assert!(client_body.contains("readerFolderList"));
+        assert!(client_body.contains("accessFolderInspector"));
+        assert!(client_body.contains("accessManageButton"));
+        assert!(client_body.contains("accessShareButton"));
         assert!(client_body.contains("Page Loop"));
         assert!(client_body.contains("Save Page"));
         assert!(client_body.contains("OKF Import"));
         assert!(client_body.contains("Plan OKF import"));
         assert!(client_body.contains("Graph View"));
         assert!(client_body.contains("Render graph"));
+        assert!(client_body.contains("contextMenu"));
         assert!(client_body.contains("/client/app.js"));
 
         let config_response = router
@@ -1168,8 +1175,13 @@ mod tests {
             .await
             .expect("client css body");
         let css_body = std::str::from_utf8(&css_body).expect("client css utf8");
-        assert!(css_body.contains(".app-shell"));
-        assert!(css_body.contains(".spine-list"));
+        assert!(css_body.contains(".obsidian-shell"));
+        assert!(css_body.contains(".app-ribbon"));
+        assert!(css_body.contains(".obsidian-folder-button"));
+        assert!(css_body.contains(".context-menu"));
+        assert!(css_body.contains(".graph-stage"));
+        assert!(css_body.contains(".access-inspector"));
+        assert!(css_body.contains(".access-badge"));
         assert!(css_body.contains(".okf-controls"));
 
         let js_response = router
@@ -1193,6 +1205,11 @@ mod tests {
         assert!(js_body.contains("prepareOkfImportWrites"));
         assert!(js_body.contains("buildAuthEventTemplate"));
         assert!(js_body.contains("buildPageWriteRequest"));
+        assert!(js_body.contains("workspaceChromeState"));
+        assert!(js_body.contains("accessBadgesForFolder"));
+        assert!(js_body.contains("accessActionRoute"));
+        assert!(js_body.contains("readerFolderRows"));
+        assert!(js_body.contains("readerPageRows"));
         assert!(js_body.contains("buildGraphProjection"));
         assert!(js_body.contains("buildReplayFrames"));
         assert!(js_body.contains("createSessionKeyring"));

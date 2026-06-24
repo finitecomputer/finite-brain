@@ -169,3 +169,56 @@
   - In-app browser verification: Access ribbon switches the sidebar to the new
     inspector, no-signer state is disabled and explicit, and the page remains
     in the Obsidian shell.
+
+### `#36` Prototype Verification Hardening
+
+- Baseline: `18c31ac`
+- Implementation checkpoint: this commit
+- Status: implementation complete; local checks and browser smoke passed
+- Owner: current orchestrator thread using direct implementation for the
+  verification hardening slice.
+- Current implementation:
+  - Added `scripts/verify-obsidian-product-client.mjs` as a no-new-dependency
+    smoke verifier for the Obsidian Product Client prototype.
+  - The verifier checks static HTML/CSS/JS shell markers, opens the seeded
+    Folder Key Grants, decrypts the docs-rich fixture, validates Page
+    navigation rows, validates Graph View projection, and validates
+    access/share panel helpers.
+  - Hardened the verifier so seeded fixture folders/pages are enforced while
+    extra human-created smoke-test folders do not make the fixture check
+    brittle.
+  - Expanded the Rust static asset test and parity runbook so the Obsidian
+    shell, graph pane, access inspector, context menu, and repeatable smoke
+    verifier stay covered.
+  - Normalized Product Client folder metadata handling across camelCase,
+    snake_case, and enum-style access values so UI rows do not leak
+    `undefined` when metadata shape drifts.
+- Review:
+  - Standards axis: self-review against `AGENTS.md`, ADR 0004, ADR 0005, and
+    the parity runbook found the verification split appropriate for the current
+    NIP-07 browser boundary.
+  - Spec axis: #36 acceptance criteria are covered by the repeatable fixture
+    verifier, browser shell/Graph smoke, full workspace checks, and PR update
+    follow-up before final staging review.
+- Verification:
+  - `node --check scripts/verify-obsidian-product-client.mjs`
+  - `node --check scripts/seed-smoke-doc-pages.mjs`
+  - `node --check crates/finite-brain-server/src/product-client.js`
+  - `node crates/finite-brain-server/src/product-client.test.js`
+  - `node scripts/seed-smoke-doc-pages.mjs`
+  - `node scripts/verify-obsidian-product-client.mjs`
+  - `cargo fmt --check`
+  - `cargo test -p finite-brain-server product_client_serves_spine_assets_and_config -- --nocapture`
+  - `cargo test --workspace`
+  - `cargo clippy --workspace --all-targets -- -D warnings`
+  - `git diff --check`
+  - `curl -fsS http://127.0.0.1:4015/health`
+  - `curl -fsS http://127.0.0.1:4015/client/app.js | rg 'normalizeAccessValue|access_mode|AdminOnly'`
+  - Browser smoke through the in-app browser: `/client` renders
+    `.obsidian-shell`, Files sidebar, Page workspace, Access inspector, and
+    Graph workspace; Graph ribbon switches shell state to `graph`.
+- Browser boundary:
+  - The automation browser reports `window.nostr` missing, so it cannot load
+    protected fixture metadata directly. Fixture Page navigation and Graph
+    projection are verified through the repeatable Node verifier using the same
+    Product Client helpers and seeded Folder Key Grants.
