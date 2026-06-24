@@ -280,6 +280,92 @@ pub struct CurrentEncryptedObject {
     pub deleted: bool,
 }
 
+/// Encrypted Vault Export with actor-filtered visibility.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct EncryptedVaultExport {
+    /// Export version.
+    pub version: String,
+    /// Vault summary.
+    pub vault: ExportVaultSummary,
+    /// Folder metadata with actor accessibility.
+    pub folders: Vec<EncryptedExportFolder>,
+    /// Current encrypted object projection.
+    pub objects: Vec<EncryptedExportObject>,
+    /// Visible Folder Key Grants.
+    pub key_grants: Vec<FolderKeyGrantMetadata>,
+    /// Visible access state.
+    pub access_state: EncryptedExportAccessState,
+}
+
+/// Vault summary in Encrypted Vault Export.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct ExportVaultSummary {
+    /// Vault id.
+    pub id: VaultId,
+    /// Vault kind.
+    pub kind: VaultKind,
+    /// Vault name.
+    pub name: DisplayName,
+    /// Personal Vault owner, if any.
+    pub owner_user_id: Option<UserId>,
+}
+
+/// Folder export entry.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct EncryptedExportFolder {
+    /// Folder id.
+    pub id: FolderId,
+    /// Folder display path.
+    pub path: SafeRelativePath,
+    /// Access mode.
+    pub access: FolderAccessMode,
+    /// Current key version.
+    pub current_key_version: u32,
+    /// Whether this is a Shared Folder Source.
+    pub shared_folder_source: bool,
+    /// Whether the actor can access current encrypted objects in this Folder.
+    pub accessible: bool,
+}
+
+/// Object export entry. Inaccessible objects are opaque metadata only.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct EncryptedExportObject {
+    /// Folder id.
+    pub folder_id: FolderId,
+    /// Object id.
+    pub object_id: ObjectId,
+    /// Current encrypted payload JSON when accessible.
+    pub payload_json: Option<String>,
+    /// Current revision.
+    pub revision: u64,
+    /// Projection update timestamp.
+    pub updated_at: String,
+    /// Whether current projection is deleted.
+    pub deleted: bool,
+    /// True when payload is intentionally withheld.
+    pub opaque: bool,
+}
+
+/// Actor-visible export access state.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct EncryptedExportAccessState {
+    /// Visible members.
+    pub members: Vec<UserId>,
+    /// Visible admins.
+    pub admins: Vec<UserId>,
+    /// Visible restricted Folder access entries.
+    pub folders: Vec<EncryptedExportFolderAccess>,
+}
+
+/// Restricted Folder access entry.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct EncryptedExportFolderAccess {
+    /// Folder id.
+    pub folder_id: FolderId,
+    /// Visible users.
+    pub user_ids: Vec<UserId>,
+}
+
 /// Current lifecycle state for Vault Invitations and Share Links.
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum LinkStatus {
@@ -1929,6 +2015,71 @@ impl BrainStore {
             object_count: objects.len(),
             objects,
             current_state_kind: "current_encrypted_vault_state",
+        })
+    }
+
+    /// Build an actor-filtered Encrypted Vault Export without decrypting content.
+    pub fn encrypted_vault_export(
+        &self,
+        vault_id: &VaultId,
+        actor_npub: &UserId,
+    ) -> Result<EncryptedVaultExport, StoreError> {
+        let stored = self.load_vault(vault_id)?;
+        if !vault_visible_to_actor(&stored.vault, actor_npub) {
+            return Err(StoreError::BrokenInvariant {
+                reason: "vault access required for encrypted export".to_owned(),
+            });
+        }
+        let is_admin = stored.vault.admins.contains(actor_npub);
+        let folders = stored
+            .vault
+            .folders
+            .iter()
+            .map(|folder| EncryptedExportFolder {
+                id: folder.id.clone(),
+                path: folder.path.clone(),
+                access: folder.access,
+                current_key_version: folder.current_key_version,
+                shared_folder_source: folder.shared_folder_source,
+                accessible: folder_visible_to_actor(&stored, &folder.id, actor_npub),
+            })
+            .collect::<Vec<_>>();
+        let objects = self
+            .load_current_objects(vault_id)?
+            .into_iter()
+            .map(|object| {
+                let accessible = folder_visible_to_actor(&stored, &object.folder_id, actor_npub);
+                EncryptedExportObject {
+                    folder_id: object.folder_id,
+                    object_id: object.object_id,
+                    payload_json: accessible.then_some(object.payload_json),
+                    revision: object.revision,
+                    updated_at: object.updated_at,
+                    deleted: object.deleted,
+                    opaque: !accessible,
+                }
+            })
+            .collect::<Vec<_>>();
+        let key_grants = stored
+            .grants
+            .iter()
+            .filter(|grant| is_admin || grant.recipient_npub == *actor_npub)
+            .cloned()
+            .collect::<Vec<_>>();
+        let access_state = export_access_state(&stored, actor_npub, is_admin);
+
+        Ok(EncryptedVaultExport {
+            version: "finite-vault-export-v1".to_owned(),
+            vault: ExportVaultSummary {
+                id: stored.vault.id,
+                kind: stored.vault.kind,
+                name: stored.vault.name,
+                owner_user_id: stored.vault.owner_user_id,
+            },
+            folders,
+            objects,
+            key_grants,
+            access_state,
         })
     }
 
@@ -4055,6 +4206,104 @@ fn required_recipients(
     Ok(recipients)
 }
 
+fn vault_visible_to_actor(vault: &Vault, actor_npub: &UserId) -> bool {
+    match vault.kind {
+        VaultKind::Personal => vault
+            .owner_user_id
+            .as_ref()
+            .is_some_and(|owner| owner == actor_npub),
+        VaultKind::Organization => vault
+            .members
+            .iter()
+            .any(|member| member.user_id == *actor_npub),
+    }
+}
+
+fn folder_visible_to_actor(
+    stored: &StoredVault,
+    folder_id: &FolderId,
+    actor_npub: &UserId,
+) -> bool {
+    let Some(folder) = stored
+        .vault
+        .folders
+        .iter()
+        .find(|folder| folder.id == *folder_id)
+    else {
+        return false;
+    };
+    let is_owner = stored
+        .vault
+        .owner_user_id
+        .as_ref()
+        .is_some_and(|owner| owner == actor_npub);
+    let is_admin = stored.vault.admins.contains(actor_npub);
+    let is_member = stored
+        .vault
+        .members
+        .iter()
+        .any(|member| member.user_id == *actor_npub);
+
+    match folder.access {
+        FolderAccessMode::Owner => is_owner,
+        FolderAccessMode::AdminOnly => is_admin,
+        FolderAccessMode::AllMembers => is_admin || is_member,
+        FolderAccessMode::Restricted => {
+            is_admin
+                || stored
+                    .folder_access
+                    .get(folder_id)
+                    .is_some_and(|users| users.contains(actor_npub))
+        }
+    }
+}
+
+fn export_access_state(
+    stored: &StoredVault,
+    actor_npub: &UserId,
+    is_admin: bool,
+) -> EncryptedExportAccessState {
+    if is_admin {
+        return EncryptedExportAccessState {
+            members: stored
+                .vault
+                .members
+                .iter()
+                .map(|member| member.user_id.clone())
+                .collect(),
+            admins: stored.vault.admins.clone(),
+            folders: stored
+                .folder_access
+                .iter()
+                .map(|(folder_id, users)| EncryptedExportFolderAccess {
+                    folder_id: folder_id.clone(),
+                    user_ids: users.iter().cloned().collect(),
+                })
+                .collect(),
+        };
+    }
+
+    EncryptedExportAccessState {
+        members: stored
+            .vault
+            .members
+            .iter()
+            .filter(|member| member.user_id == *actor_npub)
+            .map(|member| member.user_id.clone())
+            .collect(),
+        admins: Vec::new(),
+        folders: stored
+            .folder_access
+            .iter()
+            .filter(|(_, users)| users.contains(actor_npub))
+            .map(|(folder_id, _)| EncryptedExportFolderAccess {
+                folder_id: folder_id.clone(),
+                user_ids: vec![actor_npub.clone()],
+            })
+            .collect(),
+    }
+}
+
 fn validate_rotation_records(
     live_objects: &[CurrentEncryptedObject],
     reencrypted_records: &[FolderObjectRevisionSyncRecord],
@@ -4613,6 +4862,98 @@ mod tests {
     }
 
     #[test]
+    fn encrypted_vault_export_filters_payloads_grants_and_access_state() {
+        let mut store = bootstrapped_org_store();
+        let vault_id = VaultId::new("acme").unwrap();
+        let admin = UserId::new("npub-admin").unwrap();
+        let member = UserId::new("npub-member").unwrap();
+        store.add_member(&vault_id, &member).unwrap();
+        store
+            .create_folder(
+                &vault_id,
+                &strategy_folder(),
+                &BTreeSet::new(),
+                &[grant(
+                    "grant-strategy-admin",
+                    "strategy",
+                    1,
+                    "npub-admin",
+                    "npub-admin",
+                )],
+            )
+            .unwrap();
+        store
+            .submit_sync_record(
+                &vault_id,
+                &revision_record_for(
+                    "general",
+                    "event-general-create",
+                    "obj_000000000101",
+                    1,
+                    None,
+                    "general payload",
+                ),
+            )
+            .unwrap();
+        store
+            .submit_sync_record(
+                &vault_id,
+                &revision_record_for(
+                    "strategy",
+                    "event-strategy-create",
+                    "obj_000000000102",
+                    1,
+                    None,
+                    "restricted payload",
+                ),
+            )
+            .unwrap();
+
+        let member_export = store.encrypted_vault_export(&vault_id, &member).unwrap();
+        assert_eq!(member_export.version, "finite-vault-export-v1");
+        assert!(member_export.key_grants.is_empty());
+        assert_eq!(member_export.access_state.members, vec![member.clone()]);
+        assert!(member_export.access_state.admins.is_empty());
+        let general = member_export
+            .objects
+            .iter()
+            .find(|object| object.folder_id == FolderId::new("general").unwrap())
+            .unwrap();
+        assert!(!general.opaque);
+        assert!(general.payload_json.as_ref().unwrap().contains("general"));
+        let strategy = member_export
+            .objects
+            .iter()
+            .find(|object| object.folder_id == FolderId::new("strategy").unwrap())
+            .unwrap();
+        assert!(strategy.opaque);
+        assert!(strategy.payload_json.is_none());
+        assert!(
+            !member_export
+                .folders
+                .iter()
+                .find(|folder| folder.id == FolderId::new("strategy").unwrap())
+                .unwrap()
+                .accessible
+        );
+
+        let admin_export = store.encrypted_vault_export(&vault_id, &admin).unwrap();
+        assert!(admin_export.key_grants.len() >= 3);
+        assert!(admin_export.access_state.admins.contains(&admin));
+        assert!(
+            admin_export
+                .objects
+                .iter()
+                .find(|object| object.folder_id == FolderId::new("strategy").unwrap())
+                .unwrap()
+                .payload_json
+                .as_ref()
+                .unwrap()
+                .contains("restricted")
+        );
+    }
+
+    #[test]
     fn pending_revoked_and_expired_links_cannot_be_accepted() {
         let mut store = store_with_strategy_folder();
         let vault_id = VaultId::new("acme").unwrap();
@@ -4928,6 +5269,7 @@ mod tests {
                 )],
                 &[revision_record_struct(
                     "event-reencrypt-1",
+                    "strategy",
                     "obj_000000000001",
                     2,
                     Some(1),
@@ -5034,6 +5376,7 @@ mod tests {
                     )],
                     &[revision_record_struct(
                         "event-reencrypt-1",
+                        "strategy",
                         "obj_000000000001",
                         2,
                         Some(1),
@@ -5738,6 +6081,7 @@ mod tests {
     ) -> SyncRecordInput {
         SyncRecordInput::FolderObjectRevision(revision_record_struct(
             event_id,
+            "strategy",
             object_id,
             revision,
             base_revision,
@@ -5747,6 +6091,7 @@ mod tests {
 
     fn revision_record_struct(
         event_id: &str,
+        folder_id: &str,
         object_id: &str,
         revision: u64,
         base_revision: Option<u64>,
@@ -5754,7 +6099,7 @@ mod tests {
     ) -> FolderObjectRevisionSyncRecord {
         FolderObjectRevisionSyncRecord {
             record_event_id: event_id.to_owned(),
-            folder_id: FolderId::new("strategy").unwrap(),
+            folder_id: FolderId::new(folder_id).unwrap(),
             object_id: ObjectId::new(object_id).unwrap(),
             revision,
             base_revision,
@@ -5763,6 +6108,24 @@ mod tests {
             payload_json: format!("{{\"body\":\"{body}\"}}"),
             record_event_kind: APP_SPECIFIC_KIND,
         }
+    }
+
+    fn revision_record_for(
+        folder_id: &str,
+        event_id: &str,
+        object_id: &str,
+        revision: u64,
+        base_revision: Option<u64>,
+        body: &str,
+    ) -> SyncRecordInput {
+        SyncRecordInput::FolderObjectRevision(revision_record_struct(
+            event_id,
+            folder_id,
+            object_id,
+            revision,
+            base_revision,
+            body,
+        ))
     }
 
     fn tombstone_record(

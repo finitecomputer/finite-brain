@@ -25,11 +25,11 @@ use finite_brain_core::{
     validate_tombstone_event,
 };
 use finite_brain_store::{
-    BrainStore, ControlSyncRecord, FolderKeyGrantMetadata, FolderObjectRevisionSyncRecord,
-    FolderObjectTombstoneSyncRecord, LinkStatus, MountedFolderProjection, MountedFolderState,
-    SharedFolderConnectionStatus, StoreError, StoredShareLink, StoredSharedFolderConnection,
-    StoredSharedFolderInvitation, StoredSyncRecord, StoredVault, StoredVaultInvitation,
-    SyncRecordInput, SyncRecordType,
+    BrainStore, ControlSyncRecord, EncryptedVaultExport, FolderKeyGrantMetadata,
+    FolderObjectRevisionSyncRecord, FolderObjectTombstoneSyncRecord, LinkStatus,
+    MountedFolderProjection, MountedFolderState, SharedFolderConnectionStatus, StoreError,
+    StoredShareLink, StoredSharedFolderConnection, StoredSharedFolderInvitation, StoredSyncRecord,
+    StoredVault, StoredVaultInvitation, SyncRecordInput, SyncRecordType,
 };
 use finite_nostr::{HttpAuthValidation, NostrPrimitiveError, NostrPublicKey};
 use nostr::Event;
@@ -252,6 +252,85 @@ pub struct ObjectResponse {
     pub revision: u64,
     pub ciphertext: String,
     pub deleted: bool,
+}
+
+/// Encrypted Vault Export response.
+#[derive(Debug, Clone, Eq, PartialEq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EncryptedVaultExportResponse {
+    pub version: String,
+    pub vault: ExportVaultSummaryResponse,
+    pub folders: Vec<EncryptedExportFolderResponse>,
+    pub objects: Vec<EncryptedExportObjectResponse>,
+    pub key_grants: Vec<FolderKeyGrantResponse>,
+    pub access_state: EncryptedExportAccessStateResponse,
+}
+
+/// Vault summary in an encrypted export.
+#[derive(Debug, Clone, Eq, PartialEq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExportVaultSummaryResponse {
+    pub id: String,
+    pub kind: VaultKind,
+    pub name: String,
+    pub owner_user_id: Option<String>,
+}
+
+/// Folder entry in an encrypted export.
+#[derive(Debug, Clone, Eq, PartialEq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EncryptedExportFolderResponse {
+    pub id: String,
+    pub path: String,
+    pub access: FolderAccessMode,
+    pub current_key_version: u32,
+    pub shared_folder_source: bool,
+    pub accessible: bool,
+}
+
+/// Object entry in an encrypted export.
+#[derive(Debug, Clone, Eq, PartialEq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EncryptedExportObjectResponse {
+    pub folder_id: String,
+    pub object_id: String,
+    pub payload_json: Option<String>,
+    pub revision: u64,
+    pub updated_at: String,
+    pub deleted: bool,
+    pub opaque: bool,
+}
+
+/// Folder Key Grant metadata in an encrypted export.
+#[derive(Debug, Clone, Eq, PartialEq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FolderKeyGrantResponse {
+    pub id: String,
+    pub folder_id: String,
+    pub key_version: u32,
+    pub issuer_npub: String,
+    pub recipient_npub: String,
+    pub format: String,
+    pub wrapped_event_json: String,
+    pub access_change_event_json: Option<String>,
+    pub created_at: String,
+}
+
+/// Access state in an encrypted export.
+#[derive(Debug, Clone, Eq, PartialEq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EncryptedExportAccessStateResponse {
+    pub members: Vec<String>,
+    pub admins: Vec<String>,
+    pub folders: Vec<EncryptedExportFolderAccessResponse>,
+}
+
+/// Restricted Folder access state in an encrypted export.
+#[derive(Debug, Clone, Eq, PartialEq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EncryptedExportFolderAccessResponse {
+    pub folder_id: String,
+    pub user_ids: Vec<String>,
 }
 
 /// Sync bootstrap response.
@@ -553,6 +632,14 @@ pub fn router_with_state(state: ServerState) -> Router {
             get(vault_metadata_handler),
         )
         .route(
+            "/_admin/vaults/{vault_id}/export",
+            get(encrypted_vault_export_handler),
+        )
+        .route(
+            "/_admin/vaults/{vault_id}/search",
+            get(vault_search_handler),
+        )
+        .route(
             "/_admin/vaults/{vault_id}/members",
             post(add_member_handler),
         )
@@ -731,6 +818,49 @@ async fn vault_metadata_handler(
     };
 
     Ok(Json(metadata_response_with_mounts(stored, mounted_folders)))
+}
+
+async fn encrypted_vault_export_handler(
+    State(state): State<ServerState>,
+    headers: HeaderMap,
+    method: Method,
+    OriginalUri(uri): OriginalUri,
+    AxumPath(vault_id): AxumPath<String>,
+) -> Result<Json<EncryptedVaultExportResponse>, ApiError> {
+    let actor = validate_request_auth(&state, &headers, &method, &uri, None)?
+        .to_npub()
+        .map_err(auth_error)?;
+    let actor_id = UserId::new(actor.clone())?;
+    let vault_id = VaultId::new(vault_id)?;
+    let export = {
+        let store = state.store.lock().map_err(lock_error)?;
+        let stored = store.load_vault(&vault_id)?;
+        ensure_metadata_visible(&stored, &actor)?;
+        store.encrypted_vault_export(&vault_id, &actor_id)?
+    };
+    Ok(Json(encrypted_vault_export_response(export)))
+}
+
+async fn vault_search_handler(
+    State(state): State<ServerState>,
+    headers: HeaderMap,
+    method: Method,
+    OriginalUri(uri): OriginalUri,
+    AxumPath(vault_id): AxumPath<String>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let actor = validate_request_auth(&state, &headers, &method, &uri, None)?
+        .to_npub()
+        .map_err(auth_error)?;
+    let vault_id = VaultId::new(vault_id)?;
+    {
+        let store = state.store.lock().map_err(lock_error)?;
+        let stored = store.load_vault(&vault_id)?;
+        ensure_metadata_visible(&stored, &actor)?;
+    }
+    Err(ApiError::new(
+        StatusCode::BAD_REQUEST,
+        "plaintext search is client-side only over decrypted accessible content",
+    ))
 }
 
 async fn add_member_handler(
@@ -2595,6 +2725,89 @@ fn mounted_folder_responses(
         .collect()
 }
 
+fn encrypted_vault_export_response(export: EncryptedVaultExport) -> EncryptedVaultExportResponse {
+    EncryptedVaultExportResponse {
+        version: export.version,
+        vault: ExportVaultSummaryResponse {
+            id: export.vault.id.to_string(),
+            kind: export.vault.kind,
+            name: export.vault.name.to_string(),
+            owner_user_id: export.vault.owner_user_id.map(|owner| owner.to_string()),
+        },
+        folders: export
+            .folders
+            .into_iter()
+            .map(|folder| EncryptedExportFolderResponse {
+                id: folder.id.to_string(),
+                path: folder.path.to_string(),
+                access: folder.access,
+                current_key_version: folder.current_key_version,
+                shared_folder_source: folder.shared_folder_source,
+                accessible: folder.accessible,
+            })
+            .collect(),
+        objects: export
+            .objects
+            .into_iter()
+            .map(|object| EncryptedExportObjectResponse {
+                folder_id: object.folder_id.to_string(),
+                object_id: object.object_id.as_str().to_owned(),
+                payload_json: object.payload_json,
+                revision: object.revision,
+                updated_at: object.updated_at,
+                deleted: object.deleted,
+                opaque: object.opaque,
+            })
+            .collect(),
+        key_grants: export
+            .key_grants
+            .into_iter()
+            .map(folder_key_grant_response)
+            .collect(),
+        access_state: EncryptedExportAccessStateResponse {
+            members: export
+                .access_state
+                .members
+                .into_iter()
+                .map(|member| member.to_string())
+                .collect(),
+            admins: export
+                .access_state
+                .admins
+                .into_iter()
+                .map(|admin| admin.to_string())
+                .collect(),
+            folders: export
+                .access_state
+                .folders
+                .into_iter()
+                .map(|folder| EncryptedExportFolderAccessResponse {
+                    folder_id: folder.folder_id.to_string(),
+                    user_ids: folder
+                        .user_ids
+                        .into_iter()
+                        .map(|user_id| user_id.to_string())
+                        .collect(),
+                })
+                .collect(),
+        },
+    }
+}
+
+fn folder_key_grant_response(grant: FolderKeyGrantMetadata) -> FolderKeyGrantResponse {
+    FolderKeyGrantResponse {
+        id: grant.id,
+        folder_id: grant.folder_id.to_string(),
+        key_version: grant.key_version,
+        issuer_npub: grant.issuer_npub.to_string(),
+        recipient_npub: grant.recipient_npub.to_string(),
+        format: grant.format,
+        wrapped_event_json: grant.wrapped_event_json,
+        access_change_event_json: grant.access_change_event_json,
+        created_at: grant.created_at,
+    }
+}
+
 fn link_status_str(status: LinkStatus) -> &'static str {
     match status {
         LinkStatus::Pending => "pending",
@@ -3120,6 +3333,115 @@ mod tests {
         let bootstrap: SyncBootstrapResponse = read_json(bootstrap).await;
         assert_eq!(bootstrap.latest_sequence, 4);
         assert!(bootstrap.objects[0].deleted);
+    }
+
+    #[tokio::test]
+    async fn encrypted_export_route_filters_opaque_objects_and_search_stays_client_side() {
+        let admin_keys = Keys::generate();
+        let member_keys = Keys::generate();
+        let admin_npub = npub(&admin_keys);
+        let member_npub = npub(&member_keys);
+        let vault_id = VaultId::new("acme").unwrap();
+        let mut store = BrainStore::open_in_memory().unwrap();
+        let output = bootstrap_organization_vault("acme", "Acme", &admin_npub).unwrap();
+        let grants = grants_for_required(&output.required_key_grants, &admin_npub);
+        store.create_vault_bootstrap(&output, &grants).unwrap();
+        store
+            .add_member(&vault_id, &UserId::new(member_npub.clone()).unwrap())
+            .unwrap();
+        store
+            .create_folder(
+                &vault_id,
+                &Folder {
+                    id: FolderId::new("strategy").unwrap(),
+                    name: DisplayName::new("folder_name", "Strategy").unwrap(),
+                    role: FolderRole::Folder,
+                    access: FolderAccessMode::Restricted,
+                    parent_folder_id: Some(FolderId::new("general").unwrap()),
+                    path: SafeRelativePath::new("folder_path", "general/Strategy").unwrap(),
+                    current_key_version: 1,
+                    shared_folder_source: false,
+                },
+                &BTreeSet::new(),
+                &[FolderKeyGrantMetadata {
+                    id: "grant-strategy-admin".to_owned(),
+                    folder_id: FolderId::new("strategy").unwrap(),
+                    key_version: 1,
+                    issuer_npub: UserId::new(admin_npub.clone()).unwrap(),
+                    recipient_npub: UserId::new(admin_npub.clone()).unwrap(),
+                    format: "NIP-59".to_owned(),
+                    wrapped_event_json: "{\"kind\":1059}".to_owned(),
+                    access_change_event_json: Some("{\"kind\":30078}".to_owned()),
+                    created_at: "2026-06-23T00:00:00.000Z".to_owned(),
+                }],
+            )
+            .unwrap();
+        for (folder_id, object_id, body) in [
+            ("general", "obj_000000000201", "general encrypted payload"),
+            ("strategy", "obj_000000000202", "secret encrypted payload"),
+        ] {
+            store
+                .submit_sync_record(
+                    &vault_id,
+                    &SyncRecordInput::FolderObjectRevision(FolderObjectRevisionSyncRecord {
+                        record_event_id: format!("event-{folder_id}"),
+                        folder_id: FolderId::new(folder_id).unwrap(),
+                        object_id: ObjectId::new(object_id).unwrap(),
+                        revision: 1,
+                        base_revision: None,
+                        actor_npub: UserId::new(admin_npub.clone()).unwrap(),
+                        client_created_at: "2026-06-23T00:00:00.000Z".to_owned(),
+                        payload_json: format!("{{\"body\":\"{body}\"}}"),
+                        record_event_kind: APP_SPECIFIC_KIND,
+                    }),
+                )
+                .unwrap();
+        }
+
+        let router =
+            router_with_state(ServerState::new(store, TEST_BASE_URL).with_auth_clock(TEST_NOW, 60));
+        let export = authed_request(
+            router.clone(),
+            &member_keys,
+            "GET",
+            "/_admin/vaults/acme/export",
+            None,
+            TEST_NOW,
+        )
+        .await;
+        assert_eq!(export.status(), StatusCode::OK);
+        let export: EncryptedVaultExportResponse = read_json(export).await;
+        assert_eq!(export.version, "finite-vault-export-v1");
+        let general = export
+            .objects
+            .iter()
+            .find(|object| object.folder_id == "general")
+            .unwrap();
+        assert!(!general.opaque);
+        assert!(general.payload_json.as_ref().unwrap().contains("general"));
+        let strategy = export
+            .objects
+            .iter()
+            .find(|object| object.folder_id == "strategy")
+            .unwrap();
+        assert!(strategy.opaque);
+        assert!(strategy.payload_json.is_none());
+
+        let search = authed_request(
+            router,
+            &member_keys,
+            "GET",
+            "/_admin/vaults/acme/search?q=secret",
+            None,
+            TEST_NOW,
+        )
+        .await;
+        assert_error(
+            search,
+            StatusCode::BAD_REQUEST,
+            "plaintext search is client-side only",
+        )
+        .await;
     }
 
     #[tokio::test]

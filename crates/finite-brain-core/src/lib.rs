@@ -1,5 +1,7 @@
 //! FiniteBrain Portable v1 core domain and validation logic.
 
+pub mod portability;
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
 use std::fmt;
