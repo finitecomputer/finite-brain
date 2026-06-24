@@ -76,8 +76,8 @@ new `finite-nostr` Rust crate so other Finite repos can reuse it.
 | `finite-brain#10` | AFK | complete | Direct review gate in orchestrator | Fixed generated link timestamps before commit | `cargo fmt --check`; `cargo test`; `cargo clippy --all-targets -- -D warnings`; `git diff --check` |
 | `finite-brain#11` | AFK | complete | In-thread two-axis review | Fixed shared Folder rotation/member-state atomicity and added idempotent accept assertions before commit | `cargo fmt --check`; `cargo test`; `cargo clippy --all-targets -- -D warnings`; `git diff --check` |
 | `finite-brain#12` | AFK | complete | In-thread two-axis review | Kept readable OKF/import/search as client-side core logic over opened plaintext; server exposes encrypted export only and rejects plaintext search | `cargo fmt --check`; `cargo test`; `cargo clippy --all-targets -- -D warnings`; `git diff --check` |
-| `finite-brain#13` | AFK | ready | None | None | Not started |
-| `finite-brain#14` | AFK | blocked by `finite-brain#13` | None | None | Not started |
+| `finite-brain#13` | AFK | complete | In-thread two-axis review | Expanded the first UI draft to cover invitation, Share Link, shared Folder invitation, connection, and mount route families before commit | `cargo fmt --check`; `cargo test -p finite-brain-server smoke_ui_serves_static_assets_and_sqlite_flow_works -- --nocapture`; `cargo test`; `cargo clippy --all-targets -- -D warnings`; `git diff --check` |
+| `finite-brain#14` | AFK | ready | None | None | Not started |
 
 ## Parked HITL Slices
 
@@ -89,6 +89,7 @@ new `finite-nostr` Rust crate so other Finite repos can reuse it.
 
 | Issue | Fixed point | Worker session | Commit | Review result | Checks |
 | --- | --- | --- | --- | --- | --- |
+| `finite-brain#13` | `2d9026f2bca5b27e3cf4e1448749749ec0a511d0` | Orchestrator direct implementation | `ff5cb09` | Standards/spec review passed after adding dev-only routes, static HTML/CSS/JS, route controls for bootstrap, metadata, folders, objects, sync, invites, Share Links, shared Folder invitations, connections, mounts, export, and SQLite-backed route coverage | `cargo fmt --check`; `cargo test -p finite-brain-server smoke_ui_serves_static_assets_and_sqlite_flow_works -- --nocapture`; `cargo test`; `cargo clippy --all-targets -- -D warnings`; `git diff --check` |
 | `finite-brain#12` | `ad343867783b1ff622e347781b0eda5569110e4a` | Orchestrator direct implementation | `9740c1b` | Standards/spec review passed; encrypted export route/store filtering landed alongside client-side OKF bundle generation, import conflict planning, LLM Wiki conventions, and local-search privacy boundary | `cargo fmt --check`; `cargo test`; `cargo clippy --all-targets -- -D warnings`; `git diff --check` |
 | `finite-brain#11` | `735e4380db485d52936c7cffeedc57b9115afd44` | Orchestrator direct implementation | `75685e4` | Standards/spec review passed after folding shared Folder access rotation plus member/status mutation into one transaction and adding explicit idempotent accept coverage | `cargo fmt --check`; `cargo test`; `cargo clippy --all-targets -- -D warnings`; `git diff --check` |
 | `finite-brain#10` | `6b4965ccb56d763bec64ffd2a4a62ee07052daea` | Orchestrator direct implementation | `81dfcd3` | Standards/spec review passed after replacing fixed link timestamp generation with server-clock RFC3339 timestamps | `cargo fmt --check`; `cargo test`; `cargo clippy --all-targets -- -D warnings`; `git diff --check` |
