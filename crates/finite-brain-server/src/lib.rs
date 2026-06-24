@@ -630,6 +630,15 @@ fn expected_created_at(event: &Event) -> Result<String, ApiError> {
 }
 
 fn ensure_vault_admin(stored: &StoredVault, actor_npub: &str) -> Result<(), ApiError> {
+    if stored.vault.kind == VaultKind::Personal
+        && stored
+            .vault
+            .owner_user_id
+            .as_ref()
+            .is_some_and(|owner| owner.as_str() == actor_npub)
+    {
+        return Ok(());
+    }
     let is_admin = stored
         .vault
         .admins
@@ -786,14 +795,15 @@ fn lock_error<T>(_error: T) -> ApiError {
 
 fn grants_for_required(
     required: &[RequiredFolderKeyGrant],
+    vault_id: &VaultId,
     issuer_npub: &str,
 ) -> Vec<FolderKeyGrantMetadata> {
     required
         .iter()
         .map(|required| FolderKeyGrantMetadata {
             id: format!(
-                "bootstrap-{}-{}-{}",
-                required.folder_id, required.key_version, required.recipient_user_id
+                "bootstrap-{}-{}-{}-{}",
+                vault_id, required.folder_id, required.key_version, required.recipient_user_id
             ),
             folder_id: required.folder_id.clone(),
             key_version: required.key_version,
@@ -1230,6 +1240,90 @@ mod tests {
         let metadata: VaultMetadataResponse = read_json(response).await;
         assert_eq!(metadata.vault_id, "acme");
         assert_eq!(metadata.members.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn same_owner_can_create_multiple_personal_vaults() {
+        let keys = Keys::generate();
+        let router = test_router();
+        let first = post_vault(
+            router.clone(),
+            &keys,
+            &create_vault_body("personal-a", "personal"),
+            TEST_NOW,
+            None,
+            None,
+            None,
+        )
+        .await;
+        let second = post_vault(
+            router,
+            &keys,
+            &create_vault_body("personal-b", "personal"),
+            TEST_NOW,
+            None,
+            None,
+            None,
+        )
+        .await;
+
+        assert_eq!(first.status(), StatusCode::OK);
+        assert_eq!(second.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn personal_vault_owner_can_create_owner_folder() {
+        let keys = Keys::generate();
+        let owner_npub = npub(&keys);
+        let router = test_router();
+        let create = post_vault(
+            router.clone(),
+            &keys,
+            &create_vault_body("personal", "personal"),
+            TEST_NOW,
+            None,
+            None,
+            None,
+        )
+        .await;
+        assert_eq!(create.status(), StatusCode::OK);
+
+        let body = serde_json::json!({
+            "folderId": "notes",
+            "name": "Notes",
+            "role": "folder",
+            "access": "owner",
+            "parentFolderId": null,
+            "path": "Notes",
+            "sharedFolderSource": false,
+            "accessUserIds": [],
+            "grants": [
+                folder_key_grant_value("grant-notes-owner-v1", 1, owner_npub.as_str())
+            ],
+            "accessChangeEvent": admin_event(
+                &keys,
+                "personal",
+                "change-create-notes",
+                AdminAccessAction::SetFolderAccessMode,
+                Some("notes"),
+                None,
+                Some(1),
+            )
+        })
+        .to_string();
+        let response = authed_request(
+            router,
+            &keys,
+            "POST",
+            "/_admin/vaults/personal/folders",
+            Some(body),
+            TEST_NOW + 1,
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let metadata: VaultMetadataResponse = read_json(response).await;
+        assert!(metadata.folders.iter().any(|folder| folder.id == "notes"));
     }
 
     #[tokio::test]
@@ -1728,7 +1822,7 @@ mod tests {
         let vault_id = VaultId::new("acme").unwrap();
         let mut store = BrainStore::open_in_memory().unwrap();
         let output = bootstrap_organization_vault("acme", "Acme", &admin_npub).unwrap();
-        let grants = grants_for_required(&output.required_key_grants, &admin_npub);
+        let grants = grants_for_required(&output.required_key_grants, &vault_id, &admin_npub);
         store.create_vault_bootstrap(&output, &grants).unwrap();
         store
             .add_member(&vault_id, &UserId::new(member_npub.clone()).unwrap())

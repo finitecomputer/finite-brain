@@ -347,6 +347,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "finite-brain-cli"
+version = "0.1.0"
+dependencies = [
+ "base64",
+ "finite-brain-core",
+ "finite-nostr",
+ "nostr",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "time",
+]
+
+[[package]]
 name = "finite-brain-core"
 version = "0.1.0"
 dependencies = [

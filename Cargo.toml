@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "crates/finite-brain-app",
+    "crates/finite-brain-cli",
     "crates/finite-brain-core",
     "crates/finite-brain-server",
     "crates/finite-brain-store",

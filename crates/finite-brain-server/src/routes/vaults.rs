@@ -19,8 +19,8 @@ pub(crate) async fn create_vault_handler(
             bootstrap_organization_vault(request.vault_id, request.name, actor_npub.clone())?
         }
     };
-    let grants = grants_for_required(&output.required_key_grants, &actor_npub);
     let vault_id = output.vault.id.clone();
+    let grants = grants_for_required(&output.required_key_grants, &vault_id, &actor_npub);
 
     let stored = {
         let mut store = state.store.lock().map_err(lock_error)?;

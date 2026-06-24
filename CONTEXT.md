@@ -73,6 +73,33 @@ Pages. It writes `AGENTS.md`, `_index.md`, `_wiki/`, `raw/`, `compiled/`, and
 for inaccessible Folders, and maps file changes back into Product Client
 encrypted-object write, move, and delete intents.
 
+### Agent CLI
+
+The terminal control surface for a trusted Agent Runtime working inside a Vault
+Working Tree. It explains and controls identity, local daemon state, Folder Key
+opening, automatic sync health, blocked edits, activity, and access reasons
+while the agent reads and writes ordinary files.
+
+### Agent Sync Daemon
+
+The resident trusted-client process that watches a Vault Working Tree, opens
+available Folder Keys for the acting User, detects file changes, syncs with the
+server, and records blocked states that require agent or human resolution.
+
+### Local Agent Signer
+
+A trusted signer available to the Agent Runtime when browser NIP-07 is not
+available. It exposes the same conceptual abilities the Product Client needs:
+identify the acting npub, sign FiniteBrain events, and perform NIP-44
+encryption and decryption for Folder Key Grant handling.
+
+### Blocked Sync State
+
+A local condition where automatic sync cannot safely complete without
+resolution. Examples include missing auth, missing Folder Key Grant, locked
+Folder, stale base revision conflict, revoked access, unavailable server, or a
+working-tree change that cannot be mapped to a secure object intent.
+
 ### Hard Cut
 
 A compatibility boundary where FiniteBrain does not carry legacy route,
