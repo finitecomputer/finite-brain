@@ -1,0 +1,339 @@
+use std::fmt;
+
+use finite_nostr::NostrPublicKey;
+use nostr::Keys;
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+
+use crate::{AGENT_STATE_VERSION, AUTH_VERSION, CliError};
+
+#[derive(Debug, Clone, Eq, PartialEq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct PrototypeAuth {
+    pub(crate) version: String,
+    pub(crate) npub: String,
+    pub(crate) secret_key: String,
+    pub(crate) signer: String,
+    pub(crate) capabilities: Vec<String>,
+    pub(crate) created_at: String,
+}
+
+impl PrototypeAuth {
+    pub(crate) fn from_nsec(nsec: &str, created_at: String) -> Result<Self, CliError> {
+        let keys = Keys::parse(nsec).map_err(|error| CliError::InvalidSigner(error.to_string()))?;
+        let npub = NostrPublicKey::from_protocol(keys.public_key())
+            .to_npub()
+            .map_err(|error| CliError::InvalidSigner(error.to_string()))?;
+        Ok(Self {
+            version: AUTH_VERSION.to_owned(),
+            npub,
+            secret_key: nsec.to_owned(),
+            signer: "local-nostr-keypair".to_owned(),
+            capabilities: vec![
+                "getPublicKey".to_owned(),
+                "signEvent".to_owned(),
+                "nip44.encrypt".to_owned(),
+                "nip44.decrypt".to_owned(),
+            ],
+            created_at,
+        })
+    }
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct AgentState {
+    pub(crate) version: String,
+    pub(crate) vault_id: String,
+    pub(crate) server_url: Option<String>,
+    pub(crate) auth_npub: Option<String>,
+    pub(crate) daemon: DaemonState,
+    pub(crate) sync: AgentSyncState,
+    pub(crate) unlocked_folders: Vec<UnlockedFolder>,
+    #[serde(default)]
+    pub(crate) local_folder_keys: Vec<LocalFolderKey>,
+    pub(crate) conflicts: Vec<ConflictEntry>,
+    pub(crate) activity: Vec<ActivityEntry>,
+    pub(crate) created_at: String,
+    pub(crate) updated_at: String,
+}
+
+impl AgentState {
+    pub(crate) fn new(vault_id: &str, now: &str) -> Self {
+        Self {
+            version: AGENT_STATE_VERSION.to_owned(),
+            vault_id: vault_id.to_owned(),
+            server_url: None,
+            auth_npub: None,
+            daemon: DaemonState {
+                state: DaemonRunState::Stopped,
+                last_started_at: None,
+            },
+            sync: AgentSyncState {
+                mode: "automatic".to_owned(),
+                status: "idle".to_owned(),
+            },
+            unlocked_folders: Vec::new(),
+            local_folder_keys: Vec::new(),
+            conflicts: Vec::new(),
+            activity: Vec::new(),
+            created_at: now.to_owned(),
+            updated_at: now.to_owned(),
+        }
+    }
+
+    pub(crate) fn add_activity(
+        &mut self,
+        at: String,
+        kind: impl Into<String>,
+        message: impl Into<String>,
+    ) {
+        let kind = kind.into();
+        let id = activity_id(&at, self.activity.len() + 1, &kind);
+        self.activity.push(ActivityEntry {
+            id,
+            at: at.clone(),
+            kind,
+            message: message.into(),
+        });
+        self.updated_at = at;
+    }
+}
+
+fn activity_id(at: &str, index: usize, kind: &str) -> String {
+    let digest = Sha256::digest(format!("{at}\n{index}\n{kind}").as_bytes());
+    format!(
+        "activity-{}",
+        digest
+            .iter()
+            .take(8)
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>()
+    )
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct DaemonState {
+    pub(crate) state: DaemonRunState,
+    pub(crate) last_started_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum DaemonRunState {
+    Running,
+    Stopped,
+    Missing,
+}
+
+impl fmt::Display for DaemonRunState {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Running => f.write_str("running"),
+            Self::Stopped => f.write_str("stopped"),
+            Self::Missing => f.write_str("missing"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct AgentSyncState {
+    pub(crate) mode: String,
+    pub(crate) status: String,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UnlockedFolder {
+    pub folder_id: String,
+    pub key_version: u32,
+    pub opened_at: String,
+    pub source: String,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct LocalFolderKey {
+    pub(crate) folder_id: String,
+    pub(crate) key_version: u32,
+    pub(crate) key_base64: String,
+    pub(crate) source: String,
+    pub(crate) opened_at: String,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConflictEntry {
+    pub id: String,
+    pub folder_id: Option<String>,
+    pub path: Option<String>,
+    pub reason: String,
+    pub state: ConflictState,
+    pub created_at: String,
+    pub resolved_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ConflictState {
+    Open,
+    Resolved,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ActivityEntry {
+    pub id: String,
+    pub at: String,
+    pub kind: String,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct AuthStatus {
+    pub(crate) state: String,
+    pub(crate) npub: Option<String>,
+    pub(crate) signer: String,
+    pub(crate) capabilities: Vec<String>,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct DaemonStatus {
+    pub(crate) state: String,
+    pub(crate) sync_mode: String,
+    pub(crate) last_started_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct SyncStatus {
+    pub(crate) mode: String,
+    pub(crate) status: String,
+    pub(crate) latest_sequence: u64,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct SyncOnceReport {
+    pub(crate) status: String,
+    pub(crate) latest_sequence: u64,
+    pub(crate) record_count: usize,
+    pub(crate) server_url: String,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct StatusReport {
+    pub(crate) vault_id: Option<String>,
+    pub(crate) working_tree_path: Option<String>,
+    pub(crate) auth: AuthStatus,
+    pub(crate) daemon: DaemonStatus,
+    pub(crate) sync: SyncStatus,
+    pub(crate) unlocked_folders: Vec<UnlockedFolder>,
+    pub(crate) conflicts: Vec<ConflictEntry>,
+    pub(crate) blocked: Vec<String>,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct CheckState {
+    pub(crate) state: String,
+    pub(crate) message: String,
+}
+
+impl CheckState {
+    pub(crate) fn ok(message: impl Into<String>) -> Self {
+        Self {
+            state: "ok".to_owned(),
+            message: message.into(),
+        }
+    }
+
+    pub(crate) fn warn(message: impl Into<String>) -> Self {
+        Self {
+            state: "warn".to_owned(),
+            message: message.into(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct HealthCheck {
+    pub(crate) state: String,
+    pub(crate) message: String,
+}
+
+impl HealthCheck {
+    pub(crate) fn ok(message: impl Into<String>) -> Self {
+        Self {
+            state: "ok".to_owned(),
+            message: message.into(),
+        }
+    }
+
+    pub(crate) fn warn(message: impl Into<String>) -> Self {
+        Self {
+            state: "warn".to_owned(),
+            message: message.into(),
+        }
+    }
+
+    pub(crate) fn skipped(message: impl Into<String>) -> Self {
+        Self {
+            state: "skipped".to_owned(),
+            message: message.into(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct DoctorReport {
+    pub(crate) cli: CheckState,
+    pub(crate) auth: CheckState,
+    pub(crate) working_tree: CheckState,
+    pub(crate) daemon: CheckState,
+    pub(crate) server: HealthCheck,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct AccessExplanation {
+    pub(crate) folder: String,
+    pub(crate) state: String,
+    pub(crate) reason: String,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub(crate) struct HttpResponse {
+    pub(crate) status: u16,
+    pub(crate) body: String,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct VaultMetadataView {
+    pub(crate) vault_id: String,
+    pub(crate) kind: String,
+    pub(crate) name: String,
+    pub(crate) owner_user_id: Option<String>,
+    pub(crate) members: Vec<String>,
+    pub(crate) admins: Vec<String>,
+    pub(crate) folders: Vec<FolderMetadataView>,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct FolderMetadataView {
+    pub(crate) id: String,
+    pub(crate) name: String,
+    pub(crate) access: String,
+    pub(crate) path: String,
+    pub(crate) access_user_ids: Vec<String>,
+    pub(crate) current_key_version: u32,
+}

@@ -9,7 +9,7 @@
 - Improvement branch: `feature/fbrain-agent-cli`
 - Human owner: Austin
 - Started: `2026-06-24T21:33:58Z`
-- Current status: candidate report generated; awaiting human candidate selection
+- Current status: selected candidate implemented and reviewed locally
 
 ## Improvement Frame
 
@@ -44,29 +44,40 @@
 
 ## Selection
 
-- Selected candidate: pending human selection
-- Selected by: pending
-- Selected at: pending
-- Reason: pending
-- Candidates parked or discarded: pending
+- Selected candidate: Deepen the fbrain CLI module
+- Selected by: Austin
+- Selected at: `2026-06-24T21:45:45Z`
+- Reason: human selected candidate `1`; it is the top recommendation and
+  preserves behavior while improving locality for later daemon/sync/signer
+  hardening.
+- Candidates parked or discarded: Local Agent Runtime state module, admin
+  command construction, and server admin mutation helpers are parked as
+  follow-up candidates.
 
 ## Design Decisions
 
-- Module being deepened: pending candidate selection
-- Interface: pending candidate selection
-- Seam: pending candidate selection
-- Adapters: pending candidate selection
-- Test surface: pending candidate selection
-- Scope boundaries: pending candidate selection
+- Module being deepened: `finite-brain-cli`
+- Interface: existing public `CliEnvironment`, `CliError`,
+  `run_from_process`, and `run_with_env`.
+- Seam: the existing CLI runner seam used by `src/main.rs` and CLI tests.
+- Adapters: none introduced; this slice moves implementation behind internal
+  modules only.
+- Test surface: current CLI behavior tests through `run_with_env`, plus
+  workspace format/check/lint/test commands.
+- Scope boundaries: split internal responsibilities and preserve all command
+  behavior, output shape, persistence shape, and server route usage.
 - Non-goals: no feature behavior changes without explicit human approval
 - CONTEXT.md updates: none warranted during discovery
 - ADRs created or updated: none warranted during discovery
 
 ## Slice Brief
 
-- Brief path or issue: pending candidate selection
-- Fixed point: `e98d0cf`
-- Files likely to change: pending candidate selection
+- Brief path or issue:
+  `docs/improve-codebase/2026-06-24-fbrain-cli-module-slice-brief.md`
+- Fixed point: `21994fd`
+- Files likely to change: `crates/finite-brain-cli/src/lib.rs`,
+  new internal files under `crates/finite-brain-cli/src/`, and this
+  Improve Codebase ledger.
 - Behavior changes approved: none
 - Human gates: candidate selection
 
@@ -76,23 +87,41 @@
 | --- | --- | --- | --- |
 | Context read | `AGENTS.md`, `CONTEXT.md`, `docs/adr/`, fbrain ledgers | pass | No ADR conflict found. |
 | Architecture discovery | code inspection plus candidate report | pass | Report written to OS temp directory. |
+| Candidate selection | Austin selected candidate `1` | pass | Selected the top recommendation. |
+| Slice implementation | Split `finite-brain-cli` internals into focused modules | pass | Public runner seam and command behavior preserved. |
+| Format | `cargo fmt --check` | pass | |
+| Targeted check | `cargo check -p finite-brain-cli` | pass | |
+| Targeted test | `cargo test -p finite-brain-cli` | pass | 8 CLI tests passed. |
+| Targeted lint | `cargo clippy -p finite-brain-cli --all-targets -- -D warnings` | pass | |
+| Workspace check | `cargo check --workspace` | pass | |
+| Workspace lint | `cargo clippy --workspace --all-targets -- -D warnings` | pass | |
+| Workspace test | `cargo test --workspace` | pass | 92 tests passed across CLI/core/server/store. |
+| Build | `cargo build` | pass | |
+| Diff hygiene | `git diff --check` | pass | |
 
 ## Review Ledger
 
 | Review axis | Fixed point | Findings | Result |
 | --- | --- | --- | --- |
-| Standards | `e98d0cf` | pending selected slice | pending |
-| Spec | `e98d0cf` | pending selected slice | pending |
+| Standards | `21994fd` | none | pass |
+| Spec | `21994fd` | none | pass |
 
 ## PR And Follow-Up
 
 - PR URL: `https://github.com/finitecomputer/finite-brain/pull/42`
-- Commit SHA: pending selected slice
-- Checks: candidate report generation only so far
-- Review notes: implementation review pending selected slice
-- Follow-up issues: pending selected slice
-- Handoffs: candidate selection gate is human-owned
+- Commit SHA: pending implementation
+- Checks: `cargo fmt --check`, `cargo check -p finite-brain-cli`,
+  `cargo test -p finite-brain-cli`,
+  `cargo clippy -p finite-brain-cli --all-targets -- -D warnings`,
+  `cargo check --workspace`,
+  `cargo clippy --workspace --all-targets -- -D warnings`,
+  `cargo test --workspace`, `cargo build`, and `git diff --check` passed.
+- Review notes:
+  `docs/improve-codebase/2026-06-24-fbrain-cli-module-review-packet.md`
+- Follow-up issues: none created in this slice; parked candidates remain in the
+  slice brief.
+- Handoffs: none.
 
 ## Open Gates
 
-- Human must select exactly one candidate before implementation.
+- None.
