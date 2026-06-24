@@ -2,23 +2,17 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
-use std::str;
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use axum::body::Bytes;
-use axum::extract::{DefaultBodyLimit, OriginalUri, Path as AxumPath, Query, Request, State};
-use axum::http::header::{
-    ACCESS_CONTROL_ALLOW_HEADERS, ACCESS_CONTROL_ALLOW_METHODS, ACCESS_CONTROL_ALLOW_ORIGIN,
-    ACCESS_CONTROL_MAX_AGE, AUTHORIZATION, CONTENT_TYPE, ORIGIN, VARY,
-};
-use axum::http::{HeaderMap, HeaderValue, Method, StatusCode, Uri};
-use axum::middleware::{self, Next};
+use axum::extract::{DefaultBodyLimit, OriginalUri, Path as AxumPath, Query, State};
+use axum::http::header::CONTENT_TYPE;
+use axum::http::{HeaderMap, Method, StatusCode};
+use axum::middleware;
 use axum::response::{Html, IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use base64::Engine;
-use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use finite_brain_core::{
     AdminAccessAction, AdminAccessChangePayload, AdminAccessChangeValidation,
     BootstrapSmokeSummary, CoreError, CryptoRecordError, DisplayName, Folder, FolderAccessMode,
@@ -35,12 +29,18 @@ use finite_brain_store::{
     StoredShareLink, StoredSharedFolderConnection, StoredSharedFolderInvitation, StoredSyncRecord,
     StoredVault, StoredVaultInvitation, SyncRecordInput, SyncRecordType,
 };
-use finite_nostr::{HttpAuthValidation, NostrPrimitiveError, NostrPublicKey, validate_gift_wrap};
+use finite_nostr::{NostrPublicKey, validate_gift_wrap};
 use nostr::Event;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
+
+mod protected_routes;
+
+use protected_routes::{
+    cors_allowed_origins_from_public_base_url, cors_allowlist_middleware, validate_request_auth,
+};
 
 const DEFAULT_PUBLIC_BASE_URL: &str = "http://127.0.0.1:3015";
 const DEFAULT_MAX_AUTH_SKEW_SECONDS: u64 = 60;
@@ -140,17 +140,6 @@ impl ServerState {
     fn cors_origin_allowed(&self, origin: &str) -> bool {
         self.cors_allowed_origins.contains(origin)
     }
-}
-
-fn cors_allowed_origins_from_public_base_url(public_base_url: &str) -> BTreeSet<String> {
-    let mut origins = BTreeSet::from([public_base_url.to_owned()]);
-    if let Some((scheme, rest)) = public_base_url.split_once("://") {
-        let host = rest.split('/').next().unwrap_or(rest);
-        if !host.is_empty() {
-            origins.insert(format!("{scheme}://{host}"));
-        }
-    }
-    origins
 }
 
 /// API error body.
@@ -838,57 +827,6 @@ pub fn router_with_state(state: ServerState) -> Router {
         .with_state(state)
 }
 
-async fn cors_allowlist_middleware(
-    State(state): State<ServerState>,
-    request: Request,
-    next: Next,
-) -> Response {
-    let origin = request
-        .headers()
-        .get(ORIGIN)
-        .and_then(|value| value.to_str().ok())
-        .map(ToOwned::to_owned);
-    let allowed_origin = origin
-        .as_deref()
-        .filter(|origin| state.cors_origin_allowed(origin));
-
-    if request.method() == Method::OPTIONS && origin.is_some() {
-        let mut response = if allowed_origin.is_some() {
-            StatusCode::NO_CONTENT.into_response()
-        } else {
-            ApiError::new(StatusCode::FORBIDDEN, "CORS origin is not allowed").into_response()
-        };
-        if let Some(origin) = allowed_origin {
-            add_cors_headers(response.headers_mut(), origin);
-        }
-        return response;
-    }
-
-    let mut response = next.run(request).await;
-    if let Some(origin) = allowed_origin {
-        add_cors_headers(response.headers_mut(), origin);
-    }
-    response
-}
-
-fn add_cors_headers(headers: &mut HeaderMap, origin: &str) {
-    if let Ok(origin) = HeaderValue::from_str(origin) {
-        headers.insert(ACCESS_CONTROL_ALLOW_ORIGIN, origin);
-    }
-    headers.insert(VARY, HeaderValue::from_static("Origin"));
-    headers.insert(
-        ACCESS_CONTROL_ALLOW_METHODS,
-        HeaderValue::from_static("GET,POST,PUT,DELETE,PATCH,OPTIONS"),
-    );
-    headers.insert(
-        ACCESS_CONTROL_ALLOW_HEADERS,
-        HeaderValue::from_static(
-            "authorization,content-type,x-nostr-authorization,x-finitebrain-nostr",
-        ),
-    );
-    headers.insert(ACCESS_CONTROL_MAX_AGE, HeaderValue::from_static("600"));
-}
-
 async fn root_handler() -> &'static str {
     "FiniteBrain Rust smoke server"
 }
@@ -957,8 +895,7 @@ async fn create_vault_handler(
     OriginalUri(uri): OriginalUri,
     body: Bytes,
 ) -> Result<Json<VaultMetadataResponse>, ApiError> {
-    let signer = validate_request_auth(&state, &headers, &method, &uri, Some(&body))?;
-    let actor_npub = signer.to_npub().map_err(auth_error)?;
+    let actor_npub = validate_request_auth(&state, &headers, &method, &uri, Some(&body))?;
     let request: CreateVaultRequest = serde_json::from_slice(&body)
         .map_err(|_| ApiError::new(StatusCode::BAD_REQUEST, "invalid JSON request body"))?;
 
@@ -989,8 +926,7 @@ async fn vault_metadata_handler(
     OriginalUri(uri): OriginalUri,
     AxumPath(vault_id): AxumPath<String>,
 ) -> Result<Json<VaultMetadataResponse>, ApiError> {
-    let signer = validate_request_auth(&state, &headers, &method, &uri, None)?;
-    let actor_npub = signer.to_npub().map_err(auth_error)?;
+    let actor_npub = validate_request_auth(&state, &headers, &method, &uri, None)?;
     let vault_id = VaultId::new(vault_id)?;
 
     let stored = {
@@ -1013,9 +949,7 @@ async fn encrypted_vault_export_handler(
     OriginalUri(uri): OriginalUri,
     AxumPath(vault_id): AxumPath<String>,
 ) -> Result<Json<EncryptedVaultExportResponse>, ApiError> {
-    let actor = validate_request_auth(&state, &headers, &method, &uri, None)?
-        .to_npub()
-        .map_err(auth_error)?;
+    let actor = validate_request_auth(&state, &headers, &method, &uri, None)?;
     let actor_id = UserId::new(actor.clone())?;
     let vault_id = VaultId::new(vault_id)?;
     let export = {
@@ -1034,9 +968,7 @@ async fn vault_search_handler(
     OriginalUri(uri): OriginalUri,
     AxumPath(vault_id): AxumPath<String>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    let actor = validate_request_auth(&state, &headers, &method, &uri, None)?
-        .to_npub()
-        .map_err(auth_error)?;
+    let actor = validate_request_auth(&state, &headers, &method, &uri, None)?;
     let vault_id = VaultId::new(vault_id)?;
     {
         let store = state.store.lock().map_err(lock_error)?;
@@ -1057,9 +989,7 @@ async fn add_member_handler(
     AxumPath(vault_id): AxumPath<String>,
     body: Bytes,
 ) -> Result<Json<VaultMetadataResponse>, ApiError> {
-    let actor = validate_request_auth(&state, &headers, &method, &uri, Some(&body))?
-        .to_npub()
-        .map_err(auth_error)?;
+    let actor = validate_request_auth(&state, &headers, &method, &uri, Some(&body))?;
     let request: AdminTargetRequest = serde_json::from_slice(&body)
         .map_err(|_| ApiError::new(StatusCode::BAD_REQUEST, "invalid JSON request body"))?;
     let vault_id = VaultId::new(vault_id)?;
@@ -1087,9 +1017,7 @@ async fn remove_member_handler(
     AxumPath((vault_id, target_npub)): AxumPath<(String, String)>,
     body: Bytes,
 ) -> Result<Json<VaultMetadataResponse>, ApiError> {
-    let actor = validate_request_auth(&state, &headers, &method, &uri, Some(&body))?
-        .to_npub()
-        .map_err(auth_error)?;
+    let actor = validate_request_auth(&state, &headers, &method, &uri, Some(&body))?;
     let request: AdminEventRequest = serde_json::from_slice(&body)
         .map_err(|_| ApiError::new(StatusCode::BAD_REQUEST, "invalid JSON request body"))?;
     let vault_id = VaultId::new(vault_id)?;
@@ -1117,9 +1045,7 @@ async fn add_admin_handler(
     AxumPath(vault_id): AxumPath<String>,
     body: Bytes,
 ) -> Result<Json<VaultMetadataResponse>, ApiError> {
-    let actor = validate_request_auth(&state, &headers, &method, &uri, Some(&body))?
-        .to_npub()
-        .map_err(auth_error)?;
+    let actor = validate_request_auth(&state, &headers, &method, &uri, Some(&body))?;
     let request: AdminTargetRequest = serde_json::from_slice(&body)
         .map_err(|_| ApiError::new(StatusCode::BAD_REQUEST, "invalid JSON request body"))?;
     let vault_id = VaultId::new(vault_id)?;
@@ -1147,9 +1073,7 @@ async fn remove_admin_handler(
     AxumPath((vault_id, target_npub)): AxumPath<(String, String)>,
     body: Bytes,
 ) -> Result<Json<VaultMetadataResponse>, ApiError> {
-    let actor = validate_request_auth(&state, &headers, &method, &uri, Some(&body))?
-        .to_npub()
-        .map_err(auth_error)?;
+    let actor = validate_request_auth(&state, &headers, &method, &uri, Some(&body))?;
     let request: AdminEventRequest = serde_json::from_slice(&body)
         .map_err(|_| ApiError::new(StatusCode::BAD_REQUEST, "invalid JSON request body"))?;
     let vault_id = VaultId::new(vault_id)?;
@@ -1177,9 +1101,7 @@ async fn create_vault_invitation_handler(
     AxumPath(vault_id): AxumPath<String>,
     body: Bytes,
 ) -> Result<Json<VaultInvitationResponse>, ApiError> {
-    let actor = validate_request_auth(&state, &headers, &method, &uri, Some(&body))?
-        .to_npub()
-        .map_err(auth_error)?;
+    let actor = validate_request_auth(&state, &headers, &method, &uri, Some(&body))?;
     let request: CreateVaultInvitationRequest = serde_json::from_slice(&body)
         .map_err(|_| ApiError::new(StatusCode::BAD_REQUEST, "invalid JSON request body"))?;
     let vault_id = VaultId::new(vault_id)?;
@@ -1243,9 +1165,7 @@ async fn revoke_vault_invitation_handler(
     OriginalUri(uri): OriginalUri,
     AxumPath((vault_id, invitation_id)): AxumPath<(String, String)>,
 ) -> Result<Json<VaultInvitationResponse>, ApiError> {
-    let actor = validate_request_auth(&state, &headers, &method, &uri, None)?
-        .to_npub()
-        .map_err(auth_error)?;
+    let actor = validate_request_auth(&state, &headers, &method, &uri, None)?;
     let vault_id = VaultId::new(vault_id)?;
     let actor_user_id = UserId::new(actor)?;
     let updated_at = server_timestamp(&state);
@@ -1263,9 +1183,7 @@ async fn accept_vault_invitation_handler(
     OriginalUri(uri): OriginalUri,
     AxumPath((vault_id, invitation_id)): AxumPath<(String, String)>,
 ) -> Result<Json<VaultInvitationResponse>, ApiError> {
-    let actor = validate_request_auth(&state, &headers, &method, &uri, None)?
-        .to_npub()
-        .map_err(auth_error)?;
+    let actor = validate_request_auth(&state, &headers, &method, &uri, None)?;
     let actor = UserId::new(actor)?;
     let vault_id = VaultId::new(vault_id)?;
     let now = server_timestamp(&state);
@@ -1290,9 +1208,7 @@ async fn get_vault_invitation_link_handler(
     OriginalUri(uri): OriginalUri,
     AxumPath(invite_code): AxumPath<String>,
 ) -> Result<Json<VaultInvitationResponse>, ApiError> {
-    let actor = validate_request_auth(&state, &headers, &method, &uri, None)?
-        .to_npub()
-        .map_err(auth_error)?;
+    let actor = validate_request_auth(&state, &headers, &method, &uri, None)?;
     let actor = UserId::new(actor)?;
     let now = server_timestamp(&state);
     let invitation = {
@@ -1309,9 +1225,7 @@ async fn accept_vault_invitation_link_handler(
     OriginalUri(uri): OriginalUri,
     AxumPath(invite_code): AxumPath<String>,
 ) -> Result<Json<VaultInvitationResponse>, ApiError> {
-    let actor = validate_request_auth(&state, &headers, &method, &uri, None)?
-        .to_npub()
-        .map_err(auth_error)?;
+    let actor = validate_request_auth(&state, &headers, &method, &uri, None)?;
     let actor = UserId::new(actor)?;
     let now = server_timestamp(&state);
     let invitation = {
@@ -1329,9 +1243,7 @@ async fn create_folder_handler(
     AxumPath(vault_id): AxumPath<String>,
     body: Bytes,
 ) -> Result<Json<VaultMetadataResponse>, ApiError> {
-    let actor = validate_request_auth(&state, &headers, &method, &uri, Some(&body))?
-        .to_npub()
-        .map_err(auth_error)?;
+    let actor = validate_request_auth(&state, &headers, &method, &uri, Some(&body))?;
     let request: CreateFolderRequest = serde_json::from_slice(&body)
         .map_err(|_| ApiError::new(StatusCode::BAD_REQUEST, "invalid JSON request body"))?;
     let vault_id = VaultId::new(vault_id)?;
@@ -1385,9 +1297,7 @@ async fn finish_folder_setup_handler(
     AxumPath((vault_id, folder_id)): AxumPath<(String, String)>,
     body: Bytes,
 ) -> Result<Json<VaultMetadataResponse>, ApiError> {
-    let actor = validate_request_auth(&state, &headers, &method, &uri, Some(&body))?
-        .to_npub()
-        .map_err(auth_error)?;
+    let actor = validate_request_auth(&state, &headers, &method, &uri, Some(&body))?;
     let request: FinishFolderSetupRequest = serde_json::from_slice(&body)
         .map_err(|_| ApiError::new(StatusCode::BAD_REQUEST, "invalid JSON request body"))?;
     let vault_id = VaultId::new(vault_id)?;
@@ -1437,9 +1347,7 @@ async fn grant_folder_access_handler(
     AxumPath((vault_id, folder_id)): AxumPath<(String, String)>,
     body: Bytes,
 ) -> Result<Json<VaultMetadataResponse>, ApiError> {
-    let actor = validate_request_auth(&state, &headers, &method, &uri, Some(&body))?
-        .to_npub()
-        .map_err(auth_error)?;
+    let actor = validate_request_auth(&state, &headers, &method, &uri, Some(&body))?;
     let request: GrantFolderAccessRequest = serde_json::from_slice(&body)
         .map_err(|_| ApiError::new(StatusCode::BAD_REQUEST, "invalid JSON request body"))?;
     let vault_id = VaultId::new(vault_id)?;
@@ -1489,9 +1397,7 @@ async fn remove_folder_access_handler(
     AxumPath((vault_id, folder_id, target_npub)): AxumPath<(String, String, String)>,
     body: Bytes,
 ) -> Result<Json<VaultMetadataResponse>, ApiError> {
-    let actor = validate_request_auth(&state, &headers, &method, &uri, Some(&body))?
-        .to_npub()
-        .map_err(auth_error)?;
+    let actor = validate_request_auth(&state, &headers, &method, &uri, Some(&body))?;
     let request: RemoveFolderAccessRequest = serde_json::from_slice(&body)
         .map_err(|_| ApiError::new(StatusCode::BAD_REQUEST, "invalid JSON request body"))?;
     let vault_id = VaultId::new(vault_id)?;
@@ -1576,9 +1482,7 @@ async fn create_share_link_handler(
     AxumPath((vault_id, folder_id)): AxumPath<(String, String)>,
     body: Bytes,
 ) -> Result<Json<ShareLinkResponse>, ApiError> {
-    let actor = validate_request_auth(&state, &headers, &method, &uri, Some(&body))?
-        .to_npub()
-        .map_err(auth_error)?;
+    let actor = validate_request_auth(&state, &headers, &method, &uri, Some(&body))?;
     let request: CreateShareLinkRequest = serde_json::from_slice(&body)
         .map_err(|_| ApiError::new(StatusCode::BAD_REQUEST, "invalid JSON request body"))?;
     let vault_id = VaultId::new(vault_id)?;
@@ -1647,9 +1551,7 @@ async fn get_share_link_handler(
     OriginalUri(uri): OriginalUri,
     AxumPath(share_link_id): AxumPath<String>,
 ) -> Result<Json<ShareLinkResponse>, ApiError> {
-    let actor = validate_request_auth(&state, &headers, &method, &uri, None)?
-        .to_npub()
-        .map_err(auth_error)?;
+    let actor = validate_request_auth(&state, &headers, &method, &uri, None)?;
     let actor = UserId::new(actor)?;
     let now = server_timestamp(&state);
     let share_link = {
@@ -1666,9 +1568,7 @@ async fn accept_share_link_handler(
     OriginalUri(uri): OriginalUri,
     AxumPath(share_link_id): AxumPath<String>,
 ) -> Result<Json<ShareLinkResponse>, ApiError> {
-    let actor = validate_request_auth(&state, &headers, &method, &uri, None)?
-        .to_npub()
-        .map_err(auth_error)?;
+    let actor = validate_request_auth(&state, &headers, &method, &uri, None)?;
     let actor = UserId::new(actor)?;
     let now = server_timestamp(&state);
     let share_link = {
@@ -1691,9 +1591,7 @@ async fn revoke_share_link_handler(
     OriginalUri(uri): OriginalUri,
     AxumPath(share_link_id): AxumPath<String>,
 ) -> Result<Json<ShareLinkResponse>, ApiError> {
-    let actor = validate_request_auth(&state, &headers, &method, &uri, None)?
-        .to_npub()
-        .map_err(auth_error)?;
+    let actor = validate_request_auth(&state, &headers, &method, &uri, None)?;
     let actor = UserId::new(actor)?;
     let now = server_timestamp(&state);
     let share_link = {
@@ -1711,9 +1609,7 @@ async fn mark_shared_folder_source_handler(
     AxumPath((vault_id, folder_id)): AxumPath<(String, String)>,
     body: Bytes,
 ) -> Result<Json<VaultMetadataResponse>, ApiError> {
-    let actor = validate_request_auth(&state, &headers, &method, &uri, Some(&body))?
-        .to_npub()
-        .map_err(auth_error)?;
+    let actor = validate_request_auth(&state, &headers, &method, &uri, Some(&body))?;
     let request: MarkSharedFolderSourceRequest = serde_json::from_slice(&body)
         .map_err(|_| ApiError::new(StatusCode::BAD_REQUEST, "invalid JSON request body"))?;
     let vault_id = VaultId::new(vault_id)?;
@@ -1747,9 +1643,7 @@ async fn create_shared_folder_invitation_handler(
     AxumPath((source_vault_id, source_folder_id)): AxumPath<(String, String)>,
     body: Bytes,
 ) -> Result<Json<SharedFolderInvitationResponse>, ApiError> {
-    let actor = validate_request_auth(&state, &headers, &method, &uri, Some(&body))?
-        .to_npub()
-        .map_err(auth_error)?;
+    let actor = validate_request_auth(&state, &headers, &method, &uri, Some(&body))?;
     let request: CreateSharedFolderInvitationRequest = serde_json::from_slice(&body)
         .map_err(|_| ApiError::new(StatusCode::BAD_REQUEST, "invalid JSON request body"))?;
     let source_vault_id = VaultId::new(source_vault_id)?;
@@ -1816,9 +1710,7 @@ async fn get_shared_folder_invitation_handler(
     OriginalUri(uri): OriginalUri,
     AxumPath(invitation_id): AxumPath<String>,
 ) -> Result<Json<SharedFolderInvitationResponse>, ApiError> {
-    let actor = validate_request_auth(&state, &headers, &method, &uri, None)?
-        .to_npub()
-        .map_err(auth_error)?;
+    let actor = validate_request_auth(&state, &headers, &method, &uri, None)?;
     let invitation = {
         let store = state.store.lock().map_err(lock_error)?;
         let invitation = store.load_shared_folder_invitation(&invitation_id)?;
@@ -1840,9 +1732,7 @@ async fn accept_shared_folder_invitation_handler(
     OriginalUri(uri): OriginalUri,
     AxumPath(invitation_id): AxumPath<String>,
 ) -> Result<Json<SharedFolderInvitationResponse>, ApiError> {
-    let actor = validate_request_auth(&state, &headers, &method, &uri, None)?
-        .to_npub()
-        .map_err(auth_error)?;
+    let actor = validate_request_auth(&state, &headers, &method, &uri, None)?;
     let actor = UserId::new(actor)?;
     let now = server_timestamp(&state);
     let invitation = {
@@ -1882,9 +1772,7 @@ async fn revoke_shared_folder_invitation_handler(
     OriginalUri(uri): OriginalUri,
     AxumPath(invitation_id): AxumPath<String>,
 ) -> Result<Json<SharedFolderInvitationResponse>, ApiError> {
-    let actor = validate_request_auth(&state, &headers, &method, &uri, None)?
-        .to_npub()
-        .map_err(auth_error)?;
+    let actor = validate_request_auth(&state, &headers, &method, &uri, None)?;
     let actor = UserId::new(actor)?;
     let now = server_timestamp(&state);
     let invitation = {
@@ -1902,9 +1790,7 @@ async fn update_shared_folder_connection_members_handler(
     AxumPath(connection_id): AxumPath<String>,
     body: Bytes,
 ) -> Result<Json<SharedFolderConnectionResponse>, ApiError> {
-    let actor = validate_request_auth(&state, &headers, &method, &uri, Some(&body))?
-        .to_npub()
-        .map_err(auth_error)?;
+    let actor = validate_request_auth(&state, &headers, &method, &uri, Some(&body))?;
     let actor = UserId::new(actor)?;
     let request: UpdateSharedFolderConnectionMembersRequest = serde_json::from_slice(&body)
         .map_err(|_| ApiError::new(StatusCode::BAD_REQUEST, "invalid JSON request body"))?;
@@ -1988,9 +1874,7 @@ async fn revoke_shared_folder_connection_handler(
     AxumPath(connection_id): AxumPath<String>,
     body: Bytes,
 ) -> Result<Json<SharedFolderConnectionResponse>, ApiError> {
-    let actor = validate_request_auth(&state, &headers, &method, &uri, Some(&body))?
-        .to_npub()
-        .map_err(auth_error)?;
+    let actor = validate_request_auth(&state, &headers, &method, &uri, Some(&body))?;
     let actor = UserId::new(actor)?;
     let request: RevokeSharedFolderConnectionRequest = serde_json::from_slice(&body)
         .map_err(|_| ApiError::new(StatusCode::BAD_REQUEST, "invalid JSON request body"))?;
@@ -2035,9 +1919,7 @@ async fn organization_folder_mounts_handler(
     OriginalUri(uri): OriginalUri,
     AxumPath(vault_id): AxumPath<String>,
 ) -> Result<Json<Vec<MountedFolderResponse>>, ApiError> {
-    let actor = validate_request_auth(&state, &headers, &method, &uri, None)?
-        .to_npub()
-        .map_err(auth_error)?;
+    let actor = validate_request_auth(&state, &headers, &method, &uri, None)?;
     let actor = UserId::new(actor)?;
     let vault_id = VaultId::new(vault_id)?;
     let projections = {
@@ -2057,9 +1939,7 @@ async fn put_object_handler(
     AxumPath((vault_id, folder_id, object_id)): AxumPath<(String, String, String)>,
     body: Bytes,
 ) -> Result<Json<ObjectWriteResponse>, ApiError> {
-    let actor = validate_request_auth(&state, &headers, &method, &uri, Some(&body))?
-        .to_npub()
-        .map_err(auth_error)?;
+    let actor = validate_request_auth(&state, &headers, &method, &uri, Some(&body))?;
     let request: ObjectWriteRequest = serde_json::from_slice(&body)
         .map_err(|_| ApiError::new(StatusCode::BAD_REQUEST, "invalid JSON request body"))?;
     let operation = if request.base_revision.is_some() {
@@ -2081,9 +1961,7 @@ async fn move_object_handler(
     AxumPath((vault_id, folder_id, object_id)): AxumPath<(String, String, String)>,
     body: Bytes,
 ) -> Result<Json<ObjectWriteResponse>, ApiError> {
-    let actor = validate_request_auth(&state, &headers, &method, &uri, Some(&body))?
-        .to_npub()
-        .map_err(auth_error)?;
+    let actor = validate_request_auth(&state, &headers, &method, &uri, Some(&body))?;
     let request: ObjectWriteRequest = serde_json::from_slice(&body)
         .map_err(|_| ApiError::new(StatusCode::BAD_REQUEST, "invalid JSON request body"))?;
     accept_object_revision(
@@ -2106,9 +1984,7 @@ async fn delete_object_handler(
     AxumPath((vault_id, folder_id, object_id)): AxumPath<(String, String, String)>,
     body: Bytes,
 ) -> Result<Json<ObjectWriteResponse>, ApiError> {
-    let actor = validate_request_auth(&state, &headers, &method, &uri, Some(&body))?
-        .to_npub()
-        .map_err(auth_error)?;
+    let actor = validate_request_auth(&state, &headers, &method, &uri, Some(&body))?;
     let request: ObjectDeleteRequest = serde_json::from_slice(&body)
         .map_err(|_| ApiError::new(StatusCode::BAD_REQUEST, "invalid JSON request body"))?;
     accept_object_tombstone(state, vault_id, folder_id, object_id, actor, request).map(Json)
@@ -2121,9 +1997,7 @@ async fn get_object_handler(
     OriginalUri(uri): OriginalUri,
     AxumPath((vault_id, folder_id, object_id)): AxumPath<(String, String, String)>,
 ) -> Result<Json<ObjectResponse>, ApiError> {
-    let actor = validate_request_auth(&state, &headers, &method, &uri, None)?
-        .to_npub()
-        .map_err(auth_error)?;
+    let actor = validate_request_auth(&state, &headers, &method, &uri, None)?;
     let vault_id = VaultId::new(vault_id)?;
     let folder_id = FolderId::new(folder_id)?;
     let object_id = ObjectId::new(object_id)?;
@@ -2162,9 +2036,7 @@ async fn sync_bootstrap_handler(
     OriginalUri(uri): OriginalUri,
     AxumPath(vault_id): AxumPath<String>,
 ) -> Result<Json<SyncBootstrapResponse>, ApiError> {
-    let actor = validate_request_auth(&state, &headers, &method, &uri, None)?
-        .to_npub()
-        .map_err(auth_error)?;
+    let actor = validate_request_auth(&state, &headers, &method, &uri, None)?;
     let vault_id = VaultId::new(vault_id)?;
     let stored = {
         let store = state.store.lock().map_err(lock_error)?;
@@ -2213,9 +2085,7 @@ async fn sync_records_handler(
     AxumPath(vault_id): AxumPath<String>,
     Query(query): Query<SyncRecordsQuery>,
 ) -> Result<Json<SyncPullResponse>, ApiError> {
-    let actor = validate_request_auth(&state, &headers, &method, &uri, None)?
-        .to_npub()
-        .map_err(auth_error)?;
+    let actor = validate_request_auth(&state, &headers, &method, &uri, None)?;
     let vault_id = VaultId::new(vault_id)?;
     let stored = {
         let store = state.store.lock().map_err(lock_error)?;
@@ -2252,9 +2122,7 @@ async fn submit_sync_record_handler(
     AxumPath(vault_id): AxumPath<String>,
     body: Bytes,
 ) -> Result<Json<ObjectWriteResponse>, ApiError> {
-    let actor = validate_request_auth(&state, &headers, &method, &uri, Some(&body))?
-        .to_npub()
-        .map_err(auth_error)?;
+    let actor = validate_request_auth(&state, &headers, &method, &uri, Some(&body))?;
     let value: serde_json::Value = serde_json::from_slice(&body)
         .map_err(|_| ApiError::new(StatusCode::BAD_REQUEST, "invalid JSON request body"))?;
     let record_type = value
@@ -2289,90 +2157,6 @@ async fn submit_sync_record_handler(
             "unsupported recordType",
         )),
     }
-}
-
-fn validate_request_auth(
-    state: &ServerState,
-    headers: &HeaderMap,
-    method: &Method,
-    uri: &Uri,
-    body: Option<&[u8]>,
-) -> Result<NostrPublicKey, ApiError> {
-    let authorization = headers
-        .get(AUTHORIZATION)
-        .or_else(|| headers.get(NOSTR_AUTHORIZATION_HEADER))
-        .or_else(|| headers.get(FINITEBRAIN_NOSTR_HEADER))
-        .ok_or_else(|| auth_error_message("valid Nostr authorization is required"))?
-        .to_str()
-        .map_err(|_| auth_error_message("valid Nostr authorization is required"))?;
-    let encoded = authorization
-        .strip_prefix("Nostr ")
-        .ok_or_else(|| auth_error_message("valid Nostr authorization is required"))?;
-    let event_json = BASE64_STANDARD
-        .decode(encoded)
-        .map_err(|_| auth_error_message("valid Nostr authorization is required"))?;
-    let event_json = str::from_utf8(&event_json)
-        .map_err(|_| auth_error_message("valid Nostr authorization is required"))?;
-    let event = Event::from_json(event_json)
-        .map_err(|_| auth_error_message("valid Nostr authorization is required"))?;
-
-    let expected_url = absolute_url(&state.public_base_url, uri);
-    let mut expected = HttpAuthValidation::new(
-        method.as_str(),
-        expected_url,
-        state.auth_now_unix_seconds(),
-        state.max_auth_skew_seconds,
-    );
-    if let Some(body) = body {
-        expected = expected.with_body(body.to_vec());
-    }
-
-    let signer = finite_nostr::validate_http_auth_event(&event, &expected).map_err(auth_error)?;
-    enforce_auth_replay_cache(state, &event)?;
-    enforce_rate_limit(state, method, uri, &signer)?;
-    Ok(signer)
-}
-
-fn enforce_auth_replay_cache(state: &ServerState, event: &Event) -> Result<(), ApiError> {
-    let now = state.auth_now_unix_seconds();
-    let expires_at = now.saturating_add(state.max_auth_skew_seconds);
-    let event_id = event.id.to_string();
-    let mut cache = state.auth_replay_cache.lock().map_err(lock_error)?;
-    cache.retain(|_, expiry| *expiry >= now);
-    if cache.contains_key(&event_id) {
-        return Err(ApiError::new(
-            StatusCode::FORBIDDEN,
-            "replayed Nostr authorization event",
-        ));
-    }
-    cache.insert(event_id, expires_at);
-    Ok(())
-}
-
-fn enforce_rate_limit(
-    state: &ServerState,
-    method: &Method,
-    uri: &Uri,
-    signer: &NostrPublicKey,
-) -> Result<(), ApiError> {
-    let now = state.auth_now_unix_seconds();
-    let window = state.rate_limit.window_seconds.max(1);
-    let floor = now.saturating_sub(window);
-    let actor = signer
-        .to_npub()
-        .unwrap_or_else(|_| "unknown-nostr-public-key".to_owned());
-    let key = format!("{actor}:{}:{}", method.as_str(), uri.path());
-    let mut hits = state.rate_limit_hits.lock().map_err(lock_error)?;
-    let entries = hits.entry(key).or_default();
-    entries.retain(|timestamp| *timestamp > floor);
-    if entries.len() as u32 >= state.rate_limit.max_requests {
-        return Err(ApiError::new(
-            StatusCode::TOO_MANY_REQUESTS,
-            "protected route rate limit exceeded",
-        ));
-    }
-    entries.push(now);
-    Ok(())
 }
 
 fn accept_object_revision(
@@ -2986,27 +2770,8 @@ fn request_field(body: &[u8], field: &'static str) -> Result<String, ApiError> {
         .ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, format!("{field} is required")))
 }
 
-fn auth_error(error: NostrPrimitiveError) -> ApiError {
-    ApiError::new(StatusCode::FORBIDDEN, error.to_string())
-}
-
-fn auth_error_message(message: &'static str) -> ApiError {
-    ApiError::new(StatusCode::FORBIDDEN, message)
-}
-
 fn lock_error<T>(_error: T) -> ApiError {
     ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, "store lock poisoned")
-}
-
-fn absolute_url(public_base_url: &str, uri: &Uri) -> String {
-    let path_and_query = uri
-        .path_and_query()
-        .map_or(uri.path(), |path_and_query| path_and_query.as_str());
-    format!(
-        "{}{}",
-        public_base_url.trim_end_matches('/'),
-        path_and_query
-    )
 }
 
 fn grants_for_required(
@@ -3392,6 +3157,11 @@ mod tests {
     use super::*;
     use axum::body::{Body, to_bytes};
     use axum::http::Request;
+    use axum::http::header::{
+        ACCESS_CONTROL_ALLOW_METHODS, ACCESS_CONTROL_ALLOW_ORIGIN, AUTHORIZATION, ORIGIN,
+    };
+    use base64::Engine;
+    use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
     use finite_brain_core::{FolderKey, FolderObjectAad, encrypt_folder_object_with_nonce};
     use nostr::event::FinalizeEvent;
     use nostr::hashes::Hash;

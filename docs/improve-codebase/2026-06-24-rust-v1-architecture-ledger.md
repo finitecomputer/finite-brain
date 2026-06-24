@@ -7,7 +7,7 @@
 - Target repo: `finitecomputer/finite-brain`
 - Base branch: `staging`
 - Improvement branch: `feature/rust-portable-v1-core`
-- Status: candidate report produced; awaiting human candidate selection
+- Status: selected structural slice implemented and ready for review
 
 ## Discovery Input
 
@@ -47,17 +47,40 @@ server behavior already proven by the v1 parity gates.
 
 ## Human Gate
 
-The Improve Codebase loop requires the human to choose one candidate before
-implementation. Do not auto-implement the top recommendation without that
-selection.
+The human delegated the first implementation slice to Codex and approved the
+top recommendation:
 
-Recommended answer: choose **Deepen Protected Route Handling**.
+- Selected candidate: **Deepen Protected Route Handling**
+- Selection note: "you lead the way here the human gives you authority"
+
+## Implemented Slice
+
+The protected-route auth and CORS behavior now lives in
+`crates/finite-brain-server/src/protected_routes.rs`.
+
+This slice preserves behavior while moving the Nostr HTTP auth decoding,
+expected URL/body validation, replay cache, protected-route rate limit, and CORS
+allowlist response handling out of the route catalog in
+`crates/finite-brain-server/src/lib.rs`.
+
+Handlers now receive the normalized actor npub from `validate_request_auth`
+instead of handling `NostrPublicKey` conversion and auth-error mapping inline.
+That keeps route code focused on product operations like vault membership,
+folder grants, sharing, mounted folders, object writes, and sync records.
 
 ## Verification So Far
 
 ```sh
 git diff --check
 grep -E 'id="(protected-route-module|store-sharing-module|sync-projection-module|portability-module|top-recommendation)"' /tmp/architecture-review-finite-brain-20260624.html
+cargo fmt --check
+cargo test -p finite-brain-server protected_create -- --nocapture
+cargo test -p finite-brain-server cors_preflight_is_allowlist_driven -- --nocapture
+cargo test
+cargo clippy --all-targets -- -D warnings
+cargo build
+node --check crates/finite-brain-server/src/product-client.js
+node crates/finite-brain-server/src/product-client.test.js
 ```
 
 ## Parked Notes
