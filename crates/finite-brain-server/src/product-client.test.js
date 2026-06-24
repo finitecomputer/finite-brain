@@ -123,6 +123,49 @@ assert.match(folderRows[1].detail, /locked/);
     issuedAt: "2026-06-24T00:00:00.000Z",
   });
   assert.equal(keyring.openedGrants.length, 1);
+  await client.openFolderKeyGrantPlaintext(keyring, {
+    version: "finite-folder-key-grant-v1",
+    vaultId: "smoke",
+    folderId: "general",
+    keyVersion: 1,
+    issuerNpub: "npub-issuer",
+    recipientNpub: "npub-recipient",
+    folderKey,
+    issuedAt: "2026-06-24T00:00:00.000Z",
+  });
+  assert.equal(keyring.openedGrants.length, 1);
+
+  const devGrant = {
+    id: "dev-grant",
+    folderId: "general",
+    wrappedEventJson: JSON.stringify({
+      kind: 1059,
+      content: JSON.stringify({
+        version: "finite-folder-key-grant-v1",
+        vaultId: "smoke",
+        folderId: "general",
+        keyVersion: 1,
+        issuerNpub: "npub-issuer",
+        recipientNpub: "npub-recipient",
+        folderKey,
+        issuedAt: "2026-06-24T00:00:00.000Z",
+      }),
+    }),
+  };
+  assert.equal(
+    client.plaintextGrantFromExportGrant(devGrant, "npub-recipient").folderId,
+    "general"
+  );
+  assert.equal(client.plaintextGrantFromExportGrant(devGrant, "npub-other"), null);
+  const devKeyring = client.createSessionKeyring();
+  const devOpen = await client.openDevelopmentFolderKeyGrants(
+    devKeyring,
+    { keyGrants: [devGrant, { id: "opaque", wrappedEventJson: "{\"kind\":1059}" }] },
+    "npub-recipient"
+  );
+  assert.equal(devOpen.opened.length, 1);
+  assert.equal(devOpen.skipped.length, 1);
+  assert.equal(devKeyring.openedGrants.length, 1);
 
   const authorNpub = client.npubFromHex("00".repeat(32));
   assert.match(authorNpub, /^npub1/);
@@ -174,6 +217,37 @@ assert.match(folderRows[1].detail, /locked/);
   });
   assert.equal(openedSync.objects[0].status, "ready");
   assert.equal(openedSync.objects[0].title, "Hello");
+
+  const readerFolders = client.readerFolderRows(
+    {
+      folders: [
+        {
+          id: "general",
+          path: "General",
+          access: "all_members",
+          accessUserIds: [],
+          currentKeyVersion: 1,
+          setupIncomplete: false,
+          sharedFolderSource: false,
+        },
+        {
+          id: "restricted",
+          path: "Restricted",
+          access: "restricted",
+          accessUserIds: [],
+          currentKeyVersion: 1,
+          setupIncomplete: false,
+          sharedFolderSource: false,
+        },
+      ],
+    },
+    openedSync.objects
+  );
+  assert.equal(readerFolders[0].readableCount, 1);
+  assert.equal(readerFolders[0].pageCount, 1);
+  assert.equal(readerFolders[1].status, "locked");
+  const readerPages = client.readerPageRows("general", openedSync.objects);
+  assert.equal(readerPages[0].label, "Hello");
 
   const lockedPage = await client.openFolderObject(client.createSessionKeyring(), {
     vaultId: "smoke",

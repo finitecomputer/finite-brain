@@ -11,6 +11,9 @@ const FiniteBrainProductClient = (() => {
     preparedWriteTarget: null,
     okfPlan: null,
     projection: createClientProjection(),
+    readerBusy: false,
+    selectedFolderId: null,
+    selectedPageKey: null,
   };
 
   const $ = (id) => document.getElementById(id);
@@ -219,14 +222,61 @@ const FiniteBrainProductClient = (() => {
       throw new Error("unsupported Folder Key Grant version");
     }
     const opened = await importFolderKey(keyring, grantPlaintext);
-    keyring.openedGrants.push({
-      folderId: grantPlaintext.folderId,
-      issuerNpub: grantPlaintext.issuerNpub,
-      keyVersion: grantPlaintext.keyVersion,
-      recipientNpub: grantPlaintext.recipientNpub,
-      vaultId: grantPlaintext.vaultId,
-    });
+    const alreadyOpened = keyring.openedGrants.some(
+      (grant) =>
+        grant.folderId === grantPlaintext.folderId &&
+        grant.keyVersion === grantPlaintext.keyVersion &&
+        grant.recipientNpub === grantPlaintext.recipientNpub &&
+        grant.vaultId === grantPlaintext.vaultId
+    );
+    if (!alreadyOpened) {
+      keyring.openedGrants.push({
+        folderId: grantPlaintext.folderId,
+        issuerNpub: grantPlaintext.issuerNpub,
+        keyVersion: grantPlaintext.keyVersion,
+        recipientNpub: grantPlaintext.recipientNpub,
+        vaultId: grantPlaintext.vaultId,
+      });
+    }
     return opened;
+  }
+
+  function plaintextGrantFromExportGrant(grant, expectedRecipientNpub = null) {
+    if (!grant?.wrappedEventJson) return null;
+    let wrapped;
+    try {
+      wrapped = JSON.parse(grant.wrappedEventJson);
+    } catch (_) {
+      return null;
+    }
+    if (typeof wrapped.content !== "string") return null;
+    let plaintext;
+    try {
+      plaintext = JSON.parse(wrapped.content);
+    } catch (_) {
+      return null;
+    }
+    if (plaintext.version !== "finite-folder-key-grant-v1" || !plaintext.folderKey) return null;
+    if (expectedRecipientNpub && plaintext.recipientNpub !== expectedRecipientNpub) return null;
+    return plaintext;
+  }
+
+  async function openDevelopmentFolderKeyGrants(keyring, exportedVault, expectedRecipientNpub = null) {
+    const opened = [];
+    const skipped = [];
+    for (const grant of exportedVault?.keyGrants || []) {
+      const plaintext = plaintextGrantFromExportGrant(grant, expectedRecipientNpub);
+      if (!plaintext) {
+        skipped.push(grant.id || grant.folderId || "unknown-grant");
+        continue;
+      }
+      await openFolderKeyGrantPlaintext(keyring, plaintext);
+      opened.push({
+        folderId: plaintext.folderId,
+        keyVersion: plaintext.keyVersion,
+      });
+    }
+    return { opened, skipped };
   }
 
   function canonicalFolderObjectAad({ vaultId, folderId, objectId, keyVersion }) {
@@ -898,6 +948,90 @@ const FiniteBrainProductClient = (() => {
     return pages;
   }
 
+  function projectionPages() {
+    return [...state.projection.pages.entries()].map(([key, page]) => ({
+      key,
+      title: page.title || pageTitleFromText(page.text || "", page.objectId),
+      ...page,
+    }));
+  }
+
+  function readablePages() {
+    return projectionPages().filter((page) => page.status === "ready" && page.text);
+  }
+
+  function readerFolderRows(metadata, pages = projectionPages()) {
+    const pageCounts = new Map();
+    const readableCounts = new Map();
+    for (const page of pages) {
+      pageCounts.set(page.folderId, (pageCounts.get(page.folderId) || 0) + 1);
+      if (page.status === "ready" && page.text) {
+        readableCounts.set(page.folderId, (readableCounts.get(page.folderId) || 0) + 1);
+      }
+    }
+    return metadataFolderRows(metadata).map((folder) => ({
+      ...folder,
+      pageCount: pageCounts.get(folder.id) || 0,
+      readableCount: readableCounts.get(folder.id) || 0,
+    }));
+  }
+
+  function readerPageRows(folderId, pages = projectionPages()) {
+    return pages
+      .filter((page) => !folderId || page.folderId === folderId)
+      .sort((left, right) => left.title.localeCompare(right.title))
+      .map((page) => ({
+        ...page,
+        label: page.title,
+        detail:
+          page.status === "ready"
+            ? `revision ${page.revision}`
+            : `locked ${page.folderId}/${page.objectId}`,
+      }));
+  }
+
+  function selectDefaultReaderTargets() {
+    const folders = readerFolderRows(state.metadata);
+    const folderStillExists = folders.some((folder) => folder.id === state.selectedFolderId);
+    if (!folderStillExists) {
+      const folderWithReadablePages = folders.find((folder) => folder.readableCount > 0);
+      state.selectedFolderId = folderWithReadablePages?.id || folders[0]?.id || null;
+    }
+
+    const pages = readerPageRows(state.selectedFolderId);
+    const pageStillExists = pages.some((page) => page.key === state.selectedPageKey);
+    if (!pageStillExists) {
+      const readablePage = pages.find((page) => page.status === "ready");
+      state.selectedPageKey = readablePage?.key || pages[0]?.key || null;
+    }
+  }
+
+  function selectedReaderPage() {
+    if (!state.selectedPageKey) return null;
+    return projectionPages().find((page) => page.key === state.selectedPageKey) || null;
+  }
+
+  function selectReaderFolder(folderId) {
+    state.selectedFolderId = folderId;
+    const firstPage = readerPageRows(folderId).find((page) => page.status === "ready");
+    state.selectedPageKey = firstPage?.key || null;
+    $("pageFolderIdInput").value = folderId;
+    $("okfDestinationFolderInput").value = folderId;
+    render();
+  }
+
+  function selectReaderPage(pageKeyValue) {
+    state.selectedPageKey = pageKeyValue;
+    const page = selectedReaderPage();
+    if (page) {
+      $("pageFolderIdInput").value = page.folderId;
+      $("pageObjectIdInput").value = page.objectId;
+      $("pageBaseRevisionInput").value = String(page.revision || "");
+      if (page.text) $("pageDraftInput").value = page.text;
+    }
+    render();
+  }
+
   function existingPagesForImport() {
     const pages = [];
     for (const [key, draft] of state.projection.localDrafts.entries()) {
@@ -1006,6 +1140,74 @@ const FiniteBrainProductClient = (() => {
     $("activityLog").textContent = `${new Date().toISOString()} ${message}${suffix}`;
   }
 
+  function readerButton(label, detail, className, onClick) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = className;
+    button.textContent = label;
+    if (detail) {
+      const detailElement = document.createElement("span");
+      detailElement.className = "reader-list-detail";
+      detailElement.textContent = detail;
+      button.appendChild(detailElement);
+    }
+    button.addEventListener("click", onClick);
+    return button;
+  }
+
+  function renderReader() {
+    selectDefaultReaderTargets();
+    const folderRows = readerFolderRows(state.metadata);
+    const pageRows = readerPageRows(state.selectedFolderId);
+    const readableCount = readablePages().length;
+    const openedKeyCount = state.keyring?.openedGrants.length || 0;
+    setPill("readerFolderSummary", `${folderRows.length} folders`, folderRows.length ? "ready" : "muted");
+    setPill("readerPageSummary", `${readableCount} readable pages`, readableCount ? "ready" : "muted");
+    setPill("readerKeySummary", `${openedKeyCount} keys open`, openedKeyCount ? "ready" : "muted");
+
+    setList("readerFolderList", folderRows, "Load a Vault to browse folders", (item, row) => {
+      const detail = `${row.readableCount}/${row.pageCount} readable - ${row.access}`;
+      const button = readerButton(
+        row.path,
+        detail,
+        `reader-list-button ${row.status}${row.id === state.selectedFolderId ? " active" : ""}`,
+        () => selectReaderFolder(row.id)
+      );
+      item.appendChild(button);
+    });
+
+    setList("readerPageList", pageRows, "No Pages in this Folder yet", (item, row) => {
+      const button = readerButton(
+        row.label,
+        row.detail,
+        `reader-list-button ${row.status}${row.key === state.selectedPageKey ? " active" : ""}`,
+        () => selectReaderPage(row.key)
+      );
+      item.appendChild(button);
+    });
+
+    const page = selectedReaderPage();
+    if (!page) {
+      setText("readerPageTitle", state.selectedFolderId ? "No readable page selected" : "No folder selected");
+      setPill("readerPageMeta", "empty", "muted");
+      setText("readerPageContent", "Open an accessible vault to read decrypted Pages here.");
+      return;
+    }
+
+    setText("readerPageTitle", page.title || page.objectId);
+    setPill(
+      "readerPageMeta",
+      `${page.folderId} r${page.revision || 0}`,
+      page.status === "ready" ? "ready" : "warn"
+    );
+    setText(
+      "readerPageContent",
+      page.status === "ready" && page.text
+        ? page.text
+        : "This Page is present in sync, but its Folder Key is not open in this session."
+    );
+  }
+
   function render() {
     const signerTone =
       state.signerStatus === "connected"
@@ -1028,6 +1230,8 @@ const FiniteBrainProductClient = (() => {
     $("encryptDraftButton").disabled = !state.keyring;
     $("savePageButton").disabled = !state.preparedWrite || state.signerStatus !== "connected";
     $("syncBootstrapButton").disabled = state.signerStatus !== "connected" || !state.config;
+    $("openAccessibleVaultButton").disabled = state.readerBusy || !state.config;
+    $("refreshReaderButton").disabled = state.readerBusy || state.signerStatus !== "connected" || !state.metadata;
     $("planOkfImportButton").disabled = !state.metadata;
     $("executeOkfImportButton").disabled =
       !state.okfPlan || !state.keyring || state.signerStatus !== "connected";
@@ -1052,7 +1256,8 @@ const FiniteBrainProductClient = (() => {
     $("spineAuth").className = state.signerStatus === "connected" && state.config ? "done" : "waiting";
     $("spineVault").className = state.metadata ? "done" : "waiting";
     $("spineKeys").className = state.keyring?.openedGrants.length ? "done" : "waiting";
-    $("spinePages").className = state.preparedWrite ? "done" : "waiting";
+    $("spinePages").className = readablePages().length ? "done" : "waiting";
+    renderReader();
     renderOkfPlan();
   }
 
@@ -1157,6 +1362,51 @@ const FiniteBrainProductClient = (() => {
     state.metadata = metadata;
     log("Loaded Vault metadata.", metadata);
     render();
+  }
+
+  async function openAvailableDevelopmentGrants() {
+    if (!state.keyring) state.keyring = createSessionKeyring();
+    const exported = await protectedRequest(`/_admin/vaults/${encodeURIComponent(state.activeVaultId)}/export`);
+    const expectedRecipient = state.pubkeyHex ? npubFromHex(state.pubkeyHex) : null;
+    return openDevelopmentFolderKeyGrants(state.keyring, exported, expectedRecipient);
+  }
+
+  async function openAccessibleVaultReader() {
+    state.readerBusy = true;
+    render();
+    try {
+      if (state.signerStatus !== "connected") await connectSigner();
+      if (state.signerStatus !== "connected") throw new Error("Connect a NIP-07 signer first");
+      await loadVaultMetadata();
+      const grants = await openAvailableDevelopmentGrants();
+      await pullSyncBootstrap();
+      selectDefaultReaderTargets();
+      renderGraphView();
+      log("Opened accessible Vault reader.", {
+        openedDevelopmentKeys: grants.opened.length,
+        skippedOpaqueGrants: grants.skipped.length,
+        readablePages: readablePages().length,
+      });
+    } finally {
+      state.readerBusy = false;
+      render();
+    }
+  }
+
+  async function refreshReader() {
+    state.readerBusy = true;
+    render();
+    try {
+      await loadVaultMetadata();
+      if (state.keyring?.openedGrants.length) await pullSyncBootstrap();
+      selectDefaultReaderTargets();
+      log("Refreshed Vault reader.", {
+        readablePages: readablePages().length,
+      });
+    } finally {
+      state.readerBusy = false;
+      render();
+    }
   }
 
   function activePageInput() {
@@ -1406,6 +1656,22 @@ const FiniteBrainProductClient = (() => {
         render();
       });
     });
+    $("openAccessibleVaultButton").addEventListener("click", () => {
+      openAccessibleVaultReader().catch((error) => {
+        state.lastError = error.message;
+        log("Failed to open accessible Vault reader.", { error: error.message });
+        state.readerBusy = false;
+        render();
+      });
+    });
+    $("refreshReaderButton").addEventListener("click", () => {
+      refreshReader().catch((error) => {
+        state.lastError = error.message;
+        log("Failed to refresh Vault reader.", { error: error.message });
+        state.readerBusy = false;
+        render();
+      });
+    });
     $("openFolderKeyButton").addEventListener("click", () => {
       openEnteredFolderKey().catch((error) => {
         state.lastError = error.message;
@@ -1488,12 +1754,16 @@ const FiniteBrainProductClient = (() => {
     metadataFolderRows,
     metadataMountRows,
     npubFromHex,
+    openDevelopmentFolderKeyGrants,
     openFolderKeyGrantPlaintext,
     openFolderObject,
     openSyncObjects,
     parseOkfBundle,
+    plaintextGrantFromExportGrant,
     planOkfImport,
     prepareOkfImportWrites,
+    readerFolderRows,
+    readerPageRows,
     shortKey,
     start,
   };

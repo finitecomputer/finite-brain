@@ -74,6 +74,43 @@
             </ol>
           </article>
 
+          <article class="panel wide reader-panel">
+            <div class="reader-header">
+              <div>
+                <p class="eyebrow">Guided smoke test</p>
+                <h3>Vault Reader</h3>
+              </div>
+              <div class="action-row compact-actions">
+                <button id="openAccessibleVaultButton" class="primary-action" type="button">
+                  Open accessible vault
+                </button>
+                <button id="refreshReaderButton" type="button">Refresh</button>
+              </div>
+            </div>
+            <div class="reader-summary" aria-label="Reader state">
+              <span id="readerFolderSummary" class="pill muted">0 folders</span>
+              <span id="readerPageSummary" class="pill muted">0 pages</span>
+              <span id="readerKeySummary" class="pill muted">0 keys</span>
+            </div>
+            <div class="reader-layout">
+              <nav class="reader-column" aria-label="Accessible folders">
+                <h4>Folders</h4>
+                <ol id="readerFolderList" class="reader-list"></ol>
+              </nav>
+              <nav class="reader-column" aria-label="Readable pages">
+                <h4>Pages</h4>
+                <ol id="readerPageList" class="reader-list"></ol>
+              </nav>
+              <article class="reader-content" aria-label="Page content">
+                <div class="reader-content-title">
+                  <h4 id="readerPageTitle">No page selected</h4>
+                  <span id="readerPageMeta" class="pill muted">locked</span>
+                </div>
+                <pre id="readerPageContent">Open an accessible vault to read decrypted Pages here.</pre>
+              </article>
+            </div>
+          </article>
+
           <article class="panel">
             <h3>Vault State</h3>
             <dl class="facts">
@@ -101,7 +138,7 @@
             <ol id="mountList" class="plain-list"></ol>
           </article>
 
-          <article class="panel wide">
+          <article class="panel wide advanced-panel">
             <h3>Page Loop</h3>
             <div class="form-grid">
               <label>

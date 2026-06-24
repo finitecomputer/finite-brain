@@ -246,6 +246,10 @@ label,
   margin-top: 12px;
 }
 
+.compact-actions {
+  margin-top: 0;
+}
+
 .inline-control > input,
 .graph-controls > input {
   flex: 1 1 auto;
@@ -266,6 +270,129 @@ label,
 .graph-controls {
   max-width: 520px;
   width: 100%;
+}
+
+.reader-panel {
+  display: grid;
+  gap: 12px;
+}
+
+.reader-header,
+.reader-content-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.reader-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.reader-layout {
+  display: grid;
+  grid-template-columns: minmax(180px, 230px) minmax(220px, 280px) minmax(0, 1fr);
+  gap: 12px;
+  min-height: 420px;
+}
+
+.reader-column,
+.reader-content {
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #171a20;
+}
+
+.reader-column {
+  overflow: hidden;
+}
+
+.reader-column h4,
+.reader-content-title {
+  min-height: 42px;
+  border-bottom: 1px solid var(--line);
+  padding: 10px 12px;
+}
+
+.reader-column h4,
+.reader-content h4 {
+  margin: 0;
+  font-size: 13px;
+  letter-spacing: 0;
+}
+
+.reader-list {
+  display: grid;
+  gap: 4px;
+  max-height: 460px;
+  margin: 0;
+  overflow: auto;
+  padding: 8px;
+  list-style: none;
+}
+
+.reader-list li {
+  min-width: 0;
+}
+
+.reader-list-button {
+  justify-content: flex-start;
+  width: 100%;
+  min-height: 34px;
+  border-color: transparent;
+  background: transparent;
+  color: var(--muted);
+  font-weight: 700;
+  text-align: left;
+  white-space: normal;
+}
+
+.reader-list-button:hover,
+.reader-list-button.active {
+  border-color: var(--line);
+  background: var(--surface-strong);
+  color: var(--text);
+}
+
+.reader-list-button.locked {
+  color: var(--amber);
+}
+
+.reader-list-button.setup {
+  color: var(--red);
+}
+
+.reader-list-detail {
+  display: block;
+  margin-top: 3px;
+  color: var(--soft);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.reader-content {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  overflow: hidden;
+}
+
+.reader-content pre {
+  min-height: 0;
+  height: 100%;
+  margin: 0;
+  overflow: auto;
+  border: 0;
+  border-radius: 0;
+  background: #12151b;
+  color: var(--text);
+  font: 14px/1.6 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+.advanced-panel {
+  border-color: rgba(70, 80, 99, 0.72);
 }
 
 .graph-canvas {
@@ -465,8 +592,13 @@ pre {
 
 @media (max-width: 1120px) {
   .spine-panel,
-  .spine-list {
+  .spine-list,
+  .reader-layout {
     grid-template-columns: 1fr;
+  }
+
+  .reader-layout {
+    min-height: 0;
   }
 }
 
@@ -492,6 +624,7 @@ pre {
   .workspace-header,
   .brand,
   .section-title,
+  .reader-header,
   .graph-toolbar,
   .inline-control,
   .status-row {
