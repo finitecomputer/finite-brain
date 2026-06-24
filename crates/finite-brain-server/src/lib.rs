@@ -1126,6 +1126,11 @@ mod tests {
         assert!(client_body.contains("Connect signer"));
         assert!(client_body.contains("Open a Vault"));
         assert!(client_body.contains("readerFolderList"));
+        assert!(client_body.contains("searchSidebarPanel"));
+        assert!(client_body.contains("role=\"tablist\""));
+        assert!(client_body.contains("role=\"tabpanel\""));
+        assert!(client_body.contains("aria-label=\"Search readable Pages\""));
+        assert!(client_body.contains("aria-label=\"Filter graph\""));
         assert!(client_body.contains("accessFolderInspector"));
         assert!(client_body.contains("accessManageButton"));
         assert!(client_body.contains("accessShareButton"));

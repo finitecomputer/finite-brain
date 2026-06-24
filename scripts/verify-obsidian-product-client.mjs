@@ -138,15 +138,16 @@ function readCurrentObjects() {
 
 async function openFixturePages(client, manifest, objects) {
   const keyring = client.createSessionKeyring();
+  const adminNpub = manifest.seededAdminNpub || "npub-smoke-admin";
   for (const [folderId, folderKey] of Object.entries(manifest.folderKeys || {})) {
     await client.openFolderKeyGrantPlaintext(keyring, {
       version: "finite-folder-key-grant-v1",
       folderId,
       folderKey,
-      issuerNpub: manifest.seededAdminNpub,
+      issuerNpub: adminNpub,
       issuedAt: manifest.seededAt || new Date(0).toISOString(),
       keyVersion: 1,
-      recipientNpub: manifest.seededAdminNpub,
+      recipientNpub: adminNpub,
       vaultId,
     });
   }
@@ -174,6 +175,7 @@ function checkStaticShell() {
     "ribbonFilesButton",
     "ribbonGraphButton",
     "ribbonAccessButton",
+    "searchSidebarPanel",
     "readerFolderList",
     "contextMenu",
     "pageWorkspace",

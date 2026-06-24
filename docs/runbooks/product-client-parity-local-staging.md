@@ -93,7 +93,7 @@ node scripts/verify-obsidian-product-client.mjs
 The verifier checks that:
 
 - the static HTML/CSS/JS still expose the Obsidian shell, file sidebar,
-  context menu, graph pane, and Access inspector surfaces;
+  search panel, context menu, graph pane, and Access inspector surfaces;
 - the seeded smoke Vault has populated Folders and at least 50 encrypted Pages;
 - the Product Client opens all seeded Pages through Folder Key Grants;
 - Page navigation rows, Graph View projection, workspace state, and

@@ -1306,13 +1306,19 @@ pre {
 @media (max-width: 1180px) {
   .obsidian-shell {
     grid-template-columns: 38px minmax(230px, 290px) minmax(0, 1fr);
+    grid-template-rows: minmax(0, 1fr) minmax(220px, 40vh) 24px;
   }
 
   .right-sidebar {
-    display: none;
+    grid-column: 2 / span 2;
+    grid-row: 2;
+    display: grid;
+    border-top: 1px solid #303030;
+    border-left: 0;
   }
 
   .status-bar {
     grid-column: 2 / span 2;
+    grid-row: 3;
   }
 }

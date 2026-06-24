@@ -263,3 +263,33 @@
     protected fixture metadata directly. Fixture Page navigation and Graph
     projection are verified through the repeatable Node verifier using the same
     Product Client helpers and seeded Folder Key Grants.
+
+## Local CodeRabbit
+
+### Round 1
+
+- Command: `coderabbit review --agent --type all --base staging`
+- Result: completed through the free CLI allowance.
+- Report: `docs/feature-dev/2026-06-24-local-coderabbit-obsidian-product-prototype.md`
+- Findings: 11 valid findings addressed.
+- Fix areas:
+  - Empty decrypted Pages now count as readable.
+  - Folder collapse state is no longer undone by default selection.
+  - Draft object ids now satisfy the local object-id contract.
+  - Reader Page rows now get fallback titles consistently.
+  - Replay stats use the readable graph source count.
+  - Page/Graph tabs, search/filter inputs, and narrow-width right rail behavior
+    received accessibility/responsive polish.
+  - Smoke verifier and seeder were hardened for repeatable local fixture runs.
+- Post-fix verification:
+  - `node --check crates/finite-brain-server/src/product-client.js`
+  - `node --check scripts/seed-smoke-doc-pages.mjs`
+  - `node --check scripts/verify-obsidian-product-client.mjs`
+  - `node crates/finite-brain-server/src/product-client.test.js`
+  - `node scripts/seed-smoke-doc-pages.mjs`
+  - `node scripts/verify-obsidian-product-client.mjs`
+  - `cargo test -p finite-brain-server product_client_serves_spine_assets_and_config -- --nocapture`
+  - `cargo fmt --check`
+  - `cargo test --workspace`
+  - `cargo clippy --workspace --all-targets -- -D warnings`
+  - `git diff --check`

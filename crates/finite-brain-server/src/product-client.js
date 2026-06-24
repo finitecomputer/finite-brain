@@ -1116,7 +1116,7 @@ const FiniteBrainProductClient = (() => {
       });
     }
     for (const [key, page] of state.projection.pages.entries()) {
-      if (page.text) {
+      if (isReadablePage(page)) {
         const [folderId, objectId] = key.split("/");
         pages.push({
           folderId,
@@ -1132,14 +1132,22 @@ const FiniteBrainProductClient = (() => {
 
   function projectionPages() {
     return [...state.projection.pages.entries()].map(([key, page]) => ({
-      key,
-      title: page.title || pageTitleFromText(page.text || "", page.objectId),
       ...page,
+      key,
+      title: page.title || pageTitleFromText(page.text ?? "", page.objectId),
     }));
   }
 
+  function pageTextIsPresent(page) {
+    return page?.text !== undefined && page?.text !== null;
+  }
+
+  function isReadablePage(page) {
+    return page?.status === "ready" && pageTextIsPresent(page);
+  }
+
   function readablePages() {
-    return projectionPages().filter((page) => page.status === "ready" && page.text);
+    return projectionPages().filter(isReadablePage);
   }
 
   function readerFolderRows(metadata, pages = projectionPages()) {
@@ -1147,7 +1155,7 @@ const FiniteBrainProductClient = (() => {
     const readableCounts = new Map();
     for (const page of pages) {
       pageCounts.set(page.folderId, (pageCounts.get(page.folderId) || 0) + 1);
-      if (page.status === "ready" && page.text) {
+      if (isReadablePage(page)) {
         readableCounts.set(page.folderId, (readableCounts.get(page.folderId) || 0) + 1);
       }
     }
@@ -1161,15 +1169,19 @@ const FiniteBrainProductClient = (() => {
   function readerPageRows(folderId, pages = projectionPages()) {
     return pages
       .filter((page) => !folderId || page.folderId === folderId)
-      .sort((left, right) => left.title.localeCompare(right.title))
-      .map((page) => ({
-        ...page,
-        label: page.title,
-        detail:
-          page.status === "ready"
-            ? `revision ${page.revision}`
-            : `locked ${page.folderId}/${page.objectId}`,
-      }));
+      .map((page) => {
+        const title = page.title || pageTitleFromText(page.text ?? "", page.objectId);
+        return {
+          ...page,
+          title,
+          label: title,
+          detail:
+            page.status === "ready"
+              ? `revision ${page.revision}`
+              : `locked ${page.folderId}/${page.objectId}`,
+        };
+      })
+      .sort((left, right) => left.title.localeCompare(right.title));
   }
 
   function pageCountLabel(count) {
@@ -1190,11 +1202,13 @@ const FiniteBrainProductClient = (() => {
   function selectDefaultReaderTargets() {
     const folders = readerFolderRows(state.metadata);
     const folderStillExists = folders.some((folder) => folder.id === state.selectedFolderId);
+    let selectedFolderChanged = false;
     if (!folderStillExists) {
       const folderWithReadablePages = folders.find((folder) => folder.readableCount > 0);
       state.selectedFolderId = folderWithReadablePages?.id || folders[0]?.id || null;
+      selectedFolderChanged = Boolean(state.selectedFolderId);
     }
-    if (state.selectedFolderId) state.expandedFolderIds.add(state.selectedFolderId);
+    if (selectedFolderChanged) state.expandedFolderIds.add(state.selectedFolderId);
 
     const pages = readerPageRows(state.selectedFolderId);
     const pageStillExists = pages.some((page) => page.key === state.selectedPageKey);
@@ -1293,12 +1307,14 @@ const FiniteBrainProductClient = (() => {
     $("graphWorkspace").hidden = chrome.graphHidden;
     $("pageTabButton").className = chrome.pageTabClass;
     $("graphTabButton").className = chrome.graphTabClass;
+    $("pageTabButton").setAttribute("aria-selected", String(!chrome.pageHidden));
+    $("graphTabButton").setAttribute("aria-selected", String(!chrome.graphHidden));
     $("ribbonGraphButton").className = chrome.ribbonGraphClass;
     setText("workspaceTitle", workspaceTabTitle(state.metadata, page));
   }
 
   function nextDraftObjectId() {
-    return `obj_${Date.now().toString(36)}`;
+    return `obj_${Date.now().toString(36)}`.padEnd(16, "0").slice(0, 128);
   }
 
   function startNewPageDraft(folderIdOverride = null) {
@@ -1366,7 +1382,7 @@ const FiniteBrainProductClient = (() => {
       $("pageFolderIdInput").value = page.folderId;
       $("pageObjectIdInput").value = page.objectId;
       $("pageBaseRevisionInput").value = String(page.revision || "");
-      if (page.text) $("pageDraftInput").value = page.text;
+      if (pageTextIsPresent(page)) $("pageDraftInput").value = page.text;
     }
     render();
   }
@@ -1813,7 +1829,7 @@ const FiniteBrainProductClient = (() => {
     );
     setText(
       "readerPageContent",
-      page.status === "ready" && page.text
+      isReadablePage(page)
         ? page.text
         : "This Page is present in sync, but its Folder Key is not open in this session."
     );
@@ -2172,7 +2188,7 @@ const FiniteBrainProductClient = (() => {
       sequence += 1;
     }
     for (const [key, page] of state.projection.pages.entries()) {
-      if (!page.text) continue;
+      if (!isReadablePage(page)) continue;
       const [folderId, objectId] = key.split("/");
       changes.push({
         sequence,
@@ -2193,7 +2209,7 @@ const FiniteBrainProductClient = (() => {
     });
     if (frames.length) {
       drawGraph(frames[frames.length - 1].graph);
-      setGraphStats(frames[frames.length - 1].graph, frames[frames.length - 1].nodeCount);
+      setGraphStats(frames[frames.length - 1].graph, decryptedPagesForGraph().length);
     }
     log("Built graph replay frames.", frames.map((frame) => ({
       edgeCount: frame.edgeCount,
@@ -2452,6 +2468,7 @@ const FiniteBrainProductClient = (() => {
     mergeSyncProjection,
     metadataFolderRows,
     metadataMountRows,
+    nextDraftObjectId,
     normalizeSidebarMode,
     npubFromHex,
     openDevelopmentFolderKeyGrants,

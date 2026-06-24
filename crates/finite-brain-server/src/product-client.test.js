@@ -370,6 +370,35 @@ assert.equal(client.accessPanelState("manage", folderRows[1]).title, "Manage Res
   assert.equal(pageMenu.find((item) => item.action === "delete-page").disabled, true);
   const readerPages = client.readerPageRows("general", openedSync.objects);
   assert.equal(readerPages[0].label, "Hello");
+  const emptyReadablePage = {
+    folderId: "general",
+    objectId: "obj_empty_page01",
+    revision: 1,
+    status: "ready",
+    text: "",
+  };
+  const readerFoldersWithEmptyPage = client.readerFolderRows(
+    {
+      folders: [
+        {
+          id: "general",
+          path: "General",
+          access: "all_members",
+          accessUserIds: [],
+          currentKeyVersion: 1,
+          setupIncomplete: false,
+          sharedFolderSource: false,
+        },
+      ],
+    },
+    [...openedSync.objects, emptyReadablePage]
+  );
+  assert.equal(readerFoldersWithEmptyPage[0].pageCount, 2);
+  assert.equal(readerFoldersWithEmptyPage[0].readableCount, 2);
+  const emptyReaderPage = client.readerPageRows("general", [emptyReadablePage])[0];
+  assert.equal(emptyReaderPage.label, "obj_empty_page01");
+  assert.match(client.nextDraftObjectId(), /^obj_[A-Za-z0-9_-]{12,124}$/);
+  assert.ok(client.nextDraftObjectId().length >= 16);
 
   const lockedPage = await client.openFolderObject(client.createSessionKeyring(), {
     vaultId: "smoke",

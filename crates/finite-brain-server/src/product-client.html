@@ -57,7 +57,13 @@
             <span>Search</span>
             <span id="searchResultCount" class="pill muted">0</span>
           </div>
-          <input id="sidebarSearchInput" placeholder="Search readable Pages" autocomplete="off" spellcheck="false" />
+          <input
+            id="sidebarSearchInput"
+            aria-label="Search readable Pages"
+            placeholder="Search readable Pages"
+            autocomplete="off"
+            spellcheck="false"
+          />
           <ol id="sidebarSearchResults" class="obsidian-file-tree search-results"></ol>
         </section>
 
@@ -89,18 +95,39 @@
       </aside>
 
       <main class="obsidian-workspace">
-        <header class="tab-strip" aria-label="Workspace tabs">
-          <button id="pageTabButton" class="workspace-tab active" type="button">
+        <header class="tab-strip" role="tablist" aria-label="Workspace tabs">
+          <button
+            id="pageTabButton"
+            class="workspace-tab active"
+            type="button"
+            role="tab"
+            aria-controls="pageWorkspace"
+            aria-selected="true"
+          >
             <span id="workspaceTitle">Open a Vault</span>
           </button>
-          <button id="graphTabButton" class="workspace-tab" type="button">Graph View</button>
+          <button
+            id="graphTabButton"
+            class="workspace-tab"
+            type="button"
+            role="tab"
+            aria-controls="graphWorkspace"
+            aria-selected="false"
+          >
+            Graph View
+          </button>
           <div class="tab-spacer"></div>
           <span id="configState" class="pill muted">config</span>
           <span id="vaultState" class="pill muted">vault</span>
           <span id="accessState" class="pill muted">access</span>
         </header>
 
-        <section id="pageWorkspace" class="workspace-view page-workspace" aria-label="Page workspace">
+        <section
+          id="pageWorkspace"
+          class="workspace-view page-workspace"
+          role="tabpanel"
+          aria-labelledby="pageTabButton"
+        >
           <article class="page-surface">
             <header class="page-header">
               <div>
@@ -127,7 +154,13 @@ Start writing here.</textarea>
           </article>
         </section>
 
-        <section id="graphWorkspace" class="workspace-view graph-workspace" aria-label="Graph workspace" hidden>
+        <section
+          id="graphWorkspace"
+          class="workspace-view graph-workspace"
+          role="tabpanel"
+          aria-labelledby="graphTabButton"
+          hidden
+        >
           <header class="graph-topbar">
             <div>
               <p class="eyebrow">Local graph</p>
@@ -135,7 +168,13 @@ Start writing here.</textarea>
             </div>
             <span id="graphStats" class="pill muted">0 nodes / 0 links</span>
             <div class="graph-controls">
-              <input id="graphFilterInput" placeholder="Filter graph" autocomplete="off" spellcheck="false" />
+              <input
+                id="graphFilterInput"
+                aria-label="Filter graph"
+                placeholder="Filter graph"
+                autocomplete="off"
+                spellcheck="false"
+              />
               <button id="renderGraphButton" class="primary-action" type="button">Render graph</button>
               <button id="replayGraphButton" type="button">Replay</button>
             </div>
@@ -210,7 +249,13 @@ Start writing here.</textarea>
             </label>
             <label>
               Folder key
-              <input id="folderKeyInput" placeholder="base64 raw AES-256 key" autocomplete="off" spellcheck="false" />
+              <input
+                id="folderKeyInput"
+                aria-label="Folder Key as base64 raw AES-256 key"
+                placeholder="base64 raw AES-256 key"
+                autocomplete="off"
+                spellcheck="false"
+              />
             </label>
           </div>
           <div class="action-row">
