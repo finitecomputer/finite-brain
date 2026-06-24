@@ -132,6 +132,40 @@ Start writing here.</textarea>
             </div>
           </article>
 
+          <article class="panel wide">
+            <h3>OKF Import</h3>
+            <div class="form-grid okf-controls">
+              <label>
+                Destination Folder
+                <input id="okfDestinationFolderInput" value="general" autocomplete="off" spellcheck="false" />
+              </label>
+              <label>
+                Conflict mode
+                <select id="okfConflictModeInput">
+                  <option value="skip">Skip existing Pages</option>
+                  <option value="copy">Create imported copies</option>
+                  <option value="overwrite">Overwrite existing Pages</option>
+                </select>
+              </label>
+            </div>
+            <label class="page-editor-label">
+              OKF bundle JSON
+              <textarea id="okfBundleInput" rows="7" spellcheck="false">{
+  "pages": [
+    {
+      "path": "content/General/imported-page.md",
+      "content": "# Imported Page\n\nImported through the Product Client."
+    }
+  ]
+}</textarea>
+            </label>
+            <div class="action-row">
+              <button id="planOkfImportButton" type="button">Plan OKF import</button>
+              <button id="executeOkfImportButton" type="button">Import encrypted Pages</button>
+            </div>
+            <ol id="okfPlanList" class="plain-list replay-list"></ol>
+          </article>
+
           <article class="panel wide graph-panel">
             <div class="graph-toolbar">
               <h3>Graph View</h3>

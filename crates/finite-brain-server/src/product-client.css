@@ -26,7 +26,8 @@ body {
 }
 
 button,
-input {
+input,
+select {
   font: inherit;
 }
 
@@ -54,7 +55,8 @@ button:disabled {
   opacity: 0.55;
 }
 
-input {
+input,
+select {
   min-width: 0;
   width: 100%;
   border: 1px solid var(--line);
@@ -62,6 +64,10 @@ input {
   background: #17191d;
   color: var(--text);
   padding: 8px 10px;
+}
+
+select {
+  appearance: none;
 }
 
 textarea {
@@ -182,6 +188,10 @@ label,
   display: grid;
   grid-template-columns: repeat(4, minmax(130px, 1fr));
   gap: 10px;
+}
+
+.okf-controls {
+  grid-template-columns: repeat(2, minmax(180px, 1fr));
 }
 
 .page-editor-label {
@@ -321,6 +331,16 @@ label,
 .spine-list li.done {
   border-color: rgba(67, 212, 131, 0.35);
   color: var(--green);
+}
+
+.plain-list li.ready-row {
+  border-color: rgba(67, 212, 131, 0.35);
+  color: var(--text);
+}
+
+.plain-list li.warn-row {
+  border-color: rgba(244, 184, 74, 0.45);
+  color: var(--amber);
 }
 
 .facts {

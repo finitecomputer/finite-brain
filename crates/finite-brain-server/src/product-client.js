@@ -9,6 +9,7 @@ const FiniteBrainProductClient = (() => {
     lastError: null,
     preparedWrite: null,
     preparedWriteTarget: null,
+    okfPlan: null,
     projection: createClientProjection(),
   };
 
@@ -424,6 +425,353 @@ const FiniteBrainProductClient = (() => {
     return [...links].filter(Boolean);
   }
 
+  function normalizeSafeRelativePath(value, label = "path") {
+    const normalized = String(value || "")
+      .trim()
+      .replace(/^\.\/+/, "");
+    if (
+      !normalized ||
+      normalized.startsWith("/") ||
+      normalized.includes("\\") ||
+      normalized.split("/").some((segment) => !segment || segment === "." || segment === "..") ||
+      [".finitebrain", "_admin", ".git"].includes(normalized.split("/")[0])
+    ) {
+      throw new Error(`${label} must be a safe relative path`);
+    }
+    return normalized;
+  }
+
+  function targetPathFromBundlePath(path) {
+    const safePath = normalizeSafeRelativePath(path, "OKF object path");
+    const parts = safePath.split("/");
+    if (parts[0] === "content" && parts.length >= 3) return parts.slice(2).join("/");
+    return safePath;
+  }
+
+  function parseOkfBundle(input, options = {}) {
+    const source = typeof input === "string" ? JSON.parse(input) : input;
+    if (!source || typeof source !== "object") throw new Error("OKF bundle must be a JSON object");
+
+    const files = new Map();
+    const sourceFiles = source.files || source;
+    for (const [path, content] of Object.entries(sourceFiles || {})) {
+      if (typeof content === "string" && (path.endsWith(".md") || path === "okf-vault.json")) {
+        files.set(normalizeSafeRelativePath(path, "OKF file path"), content);
+      }
+    }
+
+    const manifest =
+      source.manifest ||
+      (files.has("okf-vault.json") ? JSON.parse(files.get("okf-vault.json")) : null);
+    const pages = [];
+    if (Array.isArray(source.pages)) {
+      source.pages.forEach((page, index) => {
+        const sourcePath = normalizeSafeRelativePath(
+          page.sourcePath || page.path || page.targetPath || `import/page-${index + 1}.md`,
+          "OKF page source path"
+        );
+        const targetPath = normalizeSafeRelativePath(
+          page.targetPath || page.pagePath || targetPathFromBundlePath(page.path || sourcePath),
+          "OKF page target path"
+        );
+        const markdown = page.markdown ?? page.content;
+        if (typeof markdown !== "string") throw new Error(`OKF page ${sourcePath} is missing content`);
+        pages.push({
+          sourceFolderId: page.folderId || null,
+          sourceObjectId: page.objectId || null,
+          sourcePath,
+          folderId: options.destinationFolderId || page.targetFolderId || page.folderId || "general",
+          targetPath,
+          markdown,
+          contentType: page.contentType || "text/markdown",
+          links: extractPageLinks(markdown),
+        });
+      });
+    } else if (manifest?.objects) {
+      for (const object of manifest.objects) {
+        const sourcePath = normalizeSafeRelativePath(object.path, "OKF manifest object path");
+        const markdown = files.get(sourcePath);
+        if (typeof markdown !== "string") throw new Error(`OKF file missing for ${sourcePath}`);
+        pages.push({
+          sourceFolderId: object.folderId || null,
+          sourceObjectId: object.objectId || null,
+          sourcePath,
+          folderId: options.destinationFolderId || object.targetFolderId || object.folderId || "general",
+          targetPath: normalizeSafeRelativePath(
+            object.targetPath || object.pagePath || targetPathFromBundlePath(sourcePath),
+            "OKF page target path"
+          ),
+          markdown,
+          contentType: object.contentType || "text/markdown",
+          links: extractPageLinks(markdown),
+        });
+      }
+    } else {
+      for (const [sourcePath, markdown] of files.entries()) {
+        if (sourcePath === "okf-vault.json" || sourcePath.startsWith("_wiki/")) continue;
+        pages.push({
+          sourceFolderId: null,
+          sourceObjectId: null,
+          sourcePath,
+          folderId: options.destinationFolderId || "general",
+          targetPath: targetPathFromBundlePath(sourcePath),
+          markdown,
+          contentType: "text/markdown",
+          links: extractPageLinks(markdown),
+        });
+      }
+    }
+
+    return {
+      version: manifest?.version || source.version || "finite-okf-vault-import-v1",
+      pages,
+      omissions: manifest?.omissions || source.omissions || [],
+    };
+  }
+
+  function normalizeExistingPageRecord(record) {
+    const folderId = record.folderId || "general";
+    const path =
+      record.path ||
+      record.pagePath ||
+      record.targetPath ||
+      (record.title ? `${slugForObjectId(record.title)}.md` : `${record.objectId}.md`);
+    return {
+      folderId,
+      objectId: record.objectId,
+      revision: Number(record.revision || 0),
+      targetPath: normalizeSafeRelativePath(path, "existing Page path"),
+    };
+  }
+
+  function targetKey(folderId, targetPath) {
+    return `${folderId}\n${targetPath}`;
+  }
+
+  function slugForObjectId(value) {
+    return String(value || "page")
+      .trim()
+      .toLowerCase()
+      .replace(/\.md$/i, "")
+      .replace(/[^a-z0-9_-]+/g, "_")
+      .replace(/^_+|_+$/g, "")
+      .slice(0, 88) || "page";
+  }
+
+  function validObjectId(value) {
+    return /^[A-Za-z0-9_-]{16,128}$/.test(value || "") && !String(value).includes(".");
+  }
+
+  function objectIdForTargetPath(targetPath, occupiedObjectIds) {
+    const base = `obj_${slugForObjectId(targetPath)}`.padEnd(16, "0").slice(0, 112);
+    let candidate = base;
+    let index = 2;
+    while (occupiedObjectIds.has(candidate) || !validObjectId(candidate)) {
+      candidate = `${base}_${index}`.slice(0, 128);
+      index += 1;
+    }
+    occupiedObjectIds.add(candidate);
+    return candidate;
+  }
+
+  function uniqueImportedCopyPath(folderId, targetPath, occupiedTargets) {
+    const safePath = normalizeSafeRelativePath(targetPath, "copy target path");
+    const [stem, extension] = safePath.toLowerCase().endsWith(".md")
+      ? [safePath.slice(0, -3), ".md"]
+      : [safePath, ""];
+    for (let index = 1; index <= 1000; index += 1) {
+      const suffix = index === 1 ? " imported" : ` imported ${index}`;
+      const candidate = normalizeSafeRelativePath(`${stem}${suffix}${extension}`, "copy target path");
+      if (!occupiedTargets.has(targetKey(folderId, candidate))) return candidate;
+    }
+    throw new Error(`Could not allocate copy path for ${targetPath}`);
+  }
+
+  function resolveRelativePath(fromPath, target) {
+    if (!target || target.startsWith("#") || /^https?:\/\//i.test(target) || target.startsWith("mailto:")) {
+      return null;
+    }
+    const cleanTarget = target.split("#")[0];
+    if (cleanTarget.startsWith("/") || cleanTarget.includes("\\")) return null;
+    const parts = fromPath.split("/");
+    parts.pop();
+    for (const segment of cleanTarget.split("/")) {
+      if (!segment || segment === ".") continue;
+      if (segment === "..") {
+        if (!parts.length) return null;
+        parts.pop();
+      } else {
+        parts.push(segment);
+      }
+    }
+    try {
+      return normalizeSafeRelativePath(parts.join("/"), "OKF link target");
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function relativePathBetween(fromPath, toPath) {
+    const from = fromPath.split("/");
+    from.pop();
+    const to = toPath.split("/");
+    let common = 0;
+    while (common < from.length && common < to.length && from[common] === to[common]) common += 1;
+    return [...Array(from.length - common).fill(".."), ...to.slice(common)].join("/") || toPath;
+  }
+
+  function rewriteOkfMarkdownLinks(markdown, sourcePath, targetPath, sourcePathToEntry) {
+    return String(markdown || "").replace(/\[([^\]]+)\]\(([^)]+)\)/g, (original, label, href) => {
+      const resolved = resolveRelativePath(sourcePath, href);
+      if (!resolved) return original;
+      const target = sourcePathToEntry.get(resolved);
+      if (!target || target.action === "skip") return original;
+      return `[${label}](${relativePathBetween(targetPath, target.targetPath)})`;
+    });
+  }
+
+  function planOkfImport(bundleOrInput, existingPages = [], options = {}) {
+    const bundle = bundleOrInput?.pages ? bundleOrInput : parseOkfBundle(bundleOrInput, options);
+    const mode = options.conflictMode || "skip";
+    if (!["skip", "copy", "overwrite"].includes(mode)) {
+      throw new Error("OKF conflict mode must be skip, copy, or overwrite");
+    }
+
+    const existingByPath = new Map();
+    const occupiedTargets = new Set();
+    const occupiedObjectIds = new Set();
+    for (const page of existingPages.map(normalizeExistingPageRecord)) {
+      existingByPath.set(targetKey(page.folderId, page.targetPath), page);
+      occupiedTargets.add(targetKey(page.folderId, page.targetPath));
+      if (page.objectId) occupiedObjectIds.add(page.objectId);
+    }
+
+    const entries = [];
+    for (const page of bundle.pages) {
+      const folderId = page.folderId || options.destinationFolderId || "general";
+      let targetPath = normalizeSafeRelativePath(page.targetPath, "OKF page target path");
+      const existing = existingByPath.get(targetKey(folderId, targetPath));
+      let action = "create";
+      let objectId = null;
+      let baseRevision = null;
+      if (existing) {
+        if (mode === "skip") {
+          action = "skip";
+          objectId = existing.objectId || null;
+        }
+        if (mode === "copy") {
+          action = "copy";
+          targetPath = uniqueImportedCopyPath(folderId, targetPath, occupiedTargets);
+          objectId = objectIdForTargetPath(targetPath, occupiedObjectIds);
+        }
+        if (mode === "overwrite") {
+          action = "overwrite";
+          objectId = existing.objectId;
+          baseRevision = existing.revision;
+        }
+      } else {
+        objectId = objectIdForTargetPath(targetPath, occupiedObjectIds);
+      }
+      occupiedTargets.add(targetKey(folderId, targetPath));
+      entries.push({
+        action,
+        baseRevision,
+        contentType: page.contentType || "text/markdown",
+        folderId,
+        links: [...(page.links || extractPageLinks(page.markdown))],
+        markdown: page.markdown,
+        objectId,
+        sourcePath: page.sourcePath,
+        targetPath,
+      });
+    }
+
+    const sourcePathToEntry = new Map(entries.map((entry) => [entry.sourcePath, entry]));
+    for (const entry of entries) {
+      if (entry.action !== "skip") {
+        entry.markdown = rewriteOkfMarkdownLinks(
+          entry.markdown,
+          entry.sourcePath,
+          entry.targetPath,
+          sourcePathToEntry
+        );
+        entry.links = extractPageLinks(entry.markdown);
+      }
+    }
+
+    return {
+      mode,
+      entries,
+      summary: {
+        create: entries.filter((entry) => entry.action === "create").length,
+        copy: entries.filter((entry) => entry.action === "copy").length,
+        overwrite: entries.filter((entry) => entry.action === "overwrite").length,
+        skip: entries.filter((entry) => entry.action === "skip").length,
+      },
+    };
+  }
+
+  function folderKeyVersionForImport(folderId, options = {}) {
+    if (options.keyVersionByFolderId instanceof Map && options.keyVersionByFolderId.has(folderId)) {
+      return options.keyVersionByFolderId.get(folderId);
+    }
+    if (options.keyVersionByFolderId?.[folderId]) return options.keyVersionByFolderId[folderId];
+    if (typeof options.currentKeyVersion === "function") return options.currentKeyVersion(folderId);
+    return options.keyVersion || 1;
+  }
+
+  async function prepareOkfImportWrites(keyring, plan, options) {
+    if (!keyring) throw new Error("Open destination Folder Keys before importing OKF");
+    if (!options?.vaultId) throw new Error("OKF import requires a destination Vault");
+    if (!options?.authorNpub) throw new Error("OKF import requires a connected signer");
+    if (typeof options.signEvent !== "function") throw new Error("OKF import requires event signing");
+
+    const writes = [];
+    const skipped = [];
+    let nonceIndex = 0;
+    for (const entry of plan.entries) {
+      if (entry.action === "skip") {
+        skipped.push(entry);
+        continue;
+      }
+      const keyVersion = folderKeyVersionForImport(entry.folderId, options);
+      const keyId = folderKeyId(options.vaultId, entry.folderId, keyVersion);
+      if (!keyring.keys.has(keyId)) {
+        throw new Error(
+          `Folder Key is not open for ${entry.folderId}; OKF import cannot write locked destination Folder`
+        );
+      }
+      const nonceBytes =
+        typeof options.nonceFactory === "function" ? options.nonceFactory(nonceIndex, entry) : undefined;
+      nonceIndex += 1;
+      const body = await buildPageWriteRequest(keyring, {
+        authorNpub: options.authorNpub,
+        baseRevision: entry.baseRevision,
+        createdAtUnix: options.createdAtUnix,
+        folderId: entry.folderId,
+        keyVersion,
+        nonceBytes,
+        objectId: entry.objectId,
+        operation: entry.action === "overwrite" ? "update" : "create",
+        plaintext: entry.markdown,
+        signEvent: options.signEvent,
+        vaultId: options.vaultId,
+      });
+      writes.push({
+        action: entry.action,
+        body,
+        folderId: entry.folderId,
+        objectId: entry.objectId,
+        path: `/_admin/vaults/${encodeURIComponent(options.vaultId)}/folders/${encodeURIComponent(
+          entry.folderId
+        )}/objects/${encodeURIComponent(entry.objectId)}`,
+        sourcePath: entry.sourcePath,
+        targetPath: entry.targetPath,
+      });
+    }
+    return { skipped, writes };
+  }
+
   function buildGraphProjection(pages, filterText = "") {
     const filter = normalizePageReference(filterText);
     const visiblePages = [...pages].filter((page) => page.status === "ready");
@@ -515,6 +863,31 @@ const FiniteBrainProductClient = (() => {
           title: page.title,
         });
       }
+    }
+    return pages;
+  }
+
+  function existingPagesForImport() {
+    const pages = [];
+    for (const [key, draft] of state.projection.localDrafts.entries()) {
+      const [folderId, objectId] = key.split("/");
+      pages.push({
+        folderId,
+        objectId,
+        revision: draft.baseRevision || 0,
+        path: draft.path || `${objectId}.md`,
+        title: pageTitleFromText(draft.text, objectId),
+      });
+    }
+    for (const [key, page] of state.projection.pages.entries()) {
+      const [folderId, objectId] = key.split("/");
+      pages.push({
+        folderId,
+        objectId,
+        revision: page.revision || 0,
+        path: page.path || `${objectId}.md`,
+        title: page.title || pageTitleFromText(page.text || "", objectId),
+      });
     }
     return pages;
   }
@@ -623,6 +996,9 @@ const FiniteBrainProductClient = (() => {
     $("encryptDraftButton").disabled = !state.keyring;
     $("savePageButton").disabled = !state.preparedWrite || state.signerStatus !== "connected";
     $("syncBootstrapButton").disabled = state.signerStatus !== "connected" || !state.config;
+    $("planOkfImportButton").disabled = !state.metadata;
+    $("executeOkfImportButton").disabled =
+      !state.okfPlan || !state.keyring || state.signerStatus !== "connected";
     $("vaultIdInput").value = state.activeVaultId;
 
     setText("workspaceTitle", state.metadata?.name || "Open a Vault");
@@ -645,6 +1021,7 @@ const FiniteBrainProductClient = (() => {
     $("spineVault").className = state.metadata ? "done" : "waiting";
     $("spineKeys").className = state.keyring?.openedGrants.length ? "done" : "waiting";
     $("spinePages").className = state.preparedWrite ? "done" : "waiting";
+    renderOkfPlan();
   }
 
   function utf8Base64(text) {
@@ -833,6 +1210,7 @@ const FiniteBrainProductClient = (() => {
       folderId: target.folderId,
       objectId: target.objectId,
       revision: result.revision,
+      path: `${target.objectId}.md`,
       status: "ready",
       text: $("pageDraftInput").value,
     });
@@ -910,6 +1288,75 @@ const FiniteBrainProductClient = (() => {
     })));
   }
 
+  function renderOkfPlan() {
+    const plan = state.okfPlan;
+    if (!plan) {
+      setList("okfPlanList", [], "No OKF import planned", () => {});
+      return;
+    }
+    setList("okfPlanList", plan.entries, "No OKF import actions", (item, entry) => {
+      item.textContent = `${entry.action}: ${entry.sourcePath} -> ${entry.folderId}/${entry.targetPath}`;
+      item.className = entry.action === "skip" ? "warn-row" : "ready-row";
+    });
+  }
+
+  function folderKeyVersionMap() {
+    return new Map(
+      (state.metadata?.folders || []).map((folder) => [folder.id, folder.currentKeyVersion || 1])
+    );
+  }
+
+  function planEnteredOkfImport() {
+    const destinationFolderId = $("okfDestinationFolderInput").value.trim() || activePageInput().folderId;
+    const bundle = parseOkfBundle($("okfBundleInput").value, { destinationFolderId });
+    state.okfPlan = planOkfImport(bundle, existingPagesForImport(), {
+      conflictMode: $("okfConflictModeInput").value,
+      destinationFolderId,
+    });
+    log("Planned OKF import.", state.okfPlan.summary);
+    render();
+  }
+
+  async function executePlannedOkfImport() {
+    if (!state.okfPlan) throw new Error("Plan an OKF import before executing it");
+    if (!state.keyring) throw new Error("Open destination Folder Keys before importing OKF");
+    if (!state.pubkeyHex) throw new Error("Connect a signer before importing OKF");
+    const authorNpub = npubFromHex(state.pubkeyHex);
+    const prepared = await prepareOkfImportWrites(state.keyring, state.okfPlan, {
+      authorNpub,
+      currentKeyVersion: (folderId) => folderKeyVersionMap().get(folderId) || 1,
+      signEvent: (event) => window.nostr.signEvent(event),
+      vaultId: state.activeVaultId,
+    });
+    const results = [];
+    for (const write of prepared.writes) {
+      const result = await protectedRequest(write.path, {
+        method: "PUT",
+        body: JSON.stringify(write.body),
+      });
+      state.projection.pages.set(pageKey(write.folderId, write.objectId), {
+        folderId: write.folderId,
+        objectId: write.objectId,
+        path: write.targetPath,
+        revision: result.revision,
+        status: "ready",
+        text: state.okfPlan.entries.find((entry) => entry.objectId === write.objectId)?.markdown || "",
+        title: pageTitleFromText(
+          state.okfPlan.entries.find((entry) => entry.objectId === write.objectId)?.markdown || "",
+          write.targetPath
+        ),
+      });
+      results.push({ ...result, targetPath: write.targetPath });
+    }
+    state.okfPlan = null;
+    log("Executed OKF import through encrypted secure object routes.", {
+      imported: results.length,
+      skipped: prepared.skipped.length,
+      results,
+    });
+    render();
+  }
+
   function bind() {
     $("connectSignerButton").addEventListener("click", () => {
       connectSigner().catch((error) => {
@@ -969,6 +1416,22 @@ const FiniteBrainProductClient = (() => {
         log("Failed to build replay.", { error: error.message });
       }
     });
+    $("planOkfImportButton").addEventListener("click", () => {
+      try {
+        planEnteredOkfImport();
+      } catch (error) {
+        state.lastError = error.message;
+        log("Failed to plan OKF import.", { error: error.message });
+        render();
+      }
+    });
+    $("executeOkfImportButton").addEventListener("click", () => {
+      executePlannedOkfImport().catch((error) => {
+        state.lastError = error.message;
+        log("Failed to execute OKF import.", { error: error.message });
+        render();
+      });
+    });
   }
 
   async function start() {
@@ -993,6 +1456,9 @@ const FiniteBrainProductClient = (() => {
     npubFromHex,
     openFolderKeyGrantPlaintext,
     openFolderObject,
+    parseOkfBundle,
+    planOkfImport,
+    prepareOkfImportWrites,
     shortKey,
     start,
   };

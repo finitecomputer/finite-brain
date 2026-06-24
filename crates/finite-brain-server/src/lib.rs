@@ -3432,6 +3432,8 @@ mod tests {
         assert!(client_body.contains("Open a Vault"));
         assert!(client_body.contains("Page Loop"));
         assert!(client_body.contains("Save Page"));
+        assert!(client_body.contains("OKF Import"));
+        assert!(client_body.contains("Plan OKF import"));
         assert!(client_body.contains("Graph View"));
         assert!(client_body.contains("Render graph"));
         assert!(client_body.contains("/client/app.js"));
@@ -3475,6 +3477,7 @@ mod tests {
         let css_body = std::str::from_utf8(&css_body).expect("client css utf8");
         assert!(css_body.contains(".app-shell"));
         assert!(css_body.contains(".spine-list"));
+        assert!(css_body.contains(".okf-controls"));
 
         let js_response = router
             .clone()
@@ -3487,12 +3490,14 @@ mod tests {
             .await
             .expect("client js response");
         assert_eq!(js_response.status(), StatusCode::OK);
-        let js_body = to_bytes(js_response.into_body(), 48 * 1024)
+        let js_body = to_bytes(js_response.into_body(), 64 * 1024)
             .await
             .expect("client js body");
         let js_body = std::str::from_utf8(&js_body).expect("client js utf8");
         assert!(js_body.contains("window.FiniteBrainProductClient"));
         assert!(js_body.contains("deriveSignerState"));
+        assert!(js_body.contains("parseOkfBundle"));
+        assert!(js_body.contains("prepareOkfImportWrites"));
         assert!(js_body.contains("buildAuthEventTemplate"));
         assert!(js_body.contains("buildPageWriteRequest"));
         assert!(js_body.contains("buildGraphProjection"));

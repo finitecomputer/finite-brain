@@ -187,6 +187,134 @@ assert.match(folderRows[1].detail, /locked/);
     ["roadmap", "specs/okf"]
   );
 
+  const okfInput = {
+    manifest: {
+      version: "finite-okf-vault-export-v1",
+      objects: [
+        {
+          folderId: "source-concepts",
+          objectId: "obj_source_alpha1",
+          path: "content/Concepts/alpha.md",
+          contentType: "text/markdown",
+          contentHash: "hash-alpha",
+        },
+        {
+          folderId: "source-concepts",
+          objectId: "obj_source_beta01",
+          path: "content/Concepts/beta.md",
+          contentType: "text/markdown",
+          contentHash: "hash-beta",
+        },
+      ],
+      omissions: [{ folderId: "secret", displayPath: "Secret", reason: "inaccessible" }],
+    },
+    files: {
+      "content/Concepts/alpha.md": "# Alpha\n\nSee [Beta](beta.md) and [[Loose Wiki]].",
+      "content/Concepts/beta.md": "# Beta\n\nImported target.",
+    },
+  };
+  const parsedOkf = client.parseOkfBundle(JSON.stringify(okfInput), {
+    destinationFolderId: "general",
+  });
+  assert.equal(parsedOkf.pages.length, 2);
+  assert.equal(parsedOkf.pages[0].folderId, "general");
+  assert.equal(parsedOkf.pages[0].targetPath, "alpha.md");
+  assert.deepEqual(Array.from(parsedOkf.pages[0].links), ["loose wiki", "beta"]);
+  assert.equal(parsedOkf.omissions[0].reason, "inaccessible");
+
+  const skipPlan = client.planOkfImport(
+    parsedOkf,
+    [
+      {
+        folderId: "general",
+        objectId: "obj_existing_alpha_01",
+        path: "alpha.md",
+        revision: 3,
+      },
+      {
+        folderId: "general",
+        objectId: "obj_existing_beta_01",
+        path: "beta.md",
+        revision: 7,
+      },
+    ],
+    { conflictMode: "skip" }
+  );
+  assert.equal(skipPlan.summary.skip, 2);
+  assert.equal(skipPlan.entries.every((entry) => entry.action === "skip"), true);
+
+  const copyPlan = client.planOkfImport(
+    parsedOkf,
+    [
+      {
+        folderId: "general",
+        objectId: "obj_existing_beta_01",
+        path: "beta.md",
+        revision: 7,
+      },
+    ],
+    { conflictMode: "copy" }
+  );
+  const copyAlpha = copyPlan.entries.find((entry) => entry.targetPath === "alpha.md");
+  const copyBeta = copyPlan.entries.find((entry) => entry.action === "copy");
+  assert.equal(copyPlan.summary.create, 1);
+  assert.equal(copyPlan.summary.copy, 1);
+  assert.equal(copyBeta.targetPath, "beta imported.md");
+  assert.match(copyAlpha.markdown, /\[Beta\]\(beta imported\.md\)/);
+
+  const overwritePlan = client.planOkfImport(
+    parsedOkf,
+    [
+      {
+        folderId: "general",
+        objectId: "obj_existing_alpha_01",
+        path: "alpha.md",
+        revision: 3,
+      },
+    ],
+    { conflictMode: "overwrite" }
+  );
+  assert.equal(overwritePlan.entries[0].action, "overwrite");
+  assert.equal(overwritePlan.entries[0].baseRevision, 3);
+  assert.equal(overwritePlan.entries[0].objectId, "obj_existing_alpha_01");
+
+  await assert.rejects(
+    () =>
+      client.prepareOkfImportWrites(client.createSessionKeyring(), copyPlan, {
+        authorNpub,
+        signEvent: async (template) => template,
+        vaultId: "smoke",
+      }),
+    /Folder Key is not open for general/
+  );
+
+  const preparedImport = await client.prepareOkfImportWrites(keyring, copyPlan, {
+    authorNpub,
+    createdAtUnix: 1780000001,
+    nonceFactory: (index) => new Uint8Array(12).fill(index + 1),
+    signEvent: async (template) => ({
+      ...template,
+      id: `import-event-${template.created_at}`,
+      pubkey: "00".repeat(32),
+      sig: "import-signature",
+    }),
+    vaultId: "smoke",
+  });
+  assert.equal(preparedImport.writes.length, 2);
+  assert.equal(preparedImport.skipped.length, 0);
+  assert.match(preparedImport.writes[0].path, /\/_admin\/vaults\/smoke\/folders\/general\/objects\/obj_/);
+  assert.equal(preparedImport.writes[0].body.revisionEvent.kind, 30078);
+
+  const openedImportedAlpha = await client.openFolderObject(keyring, {
+    vaultId: "smoke",
+    folderId: preparedImport.writes[0].folderId,
+    objectId: preparedImport.writes[0].objectId,
+    revision: 1,
+    ciphertext: preparedImport.writes[0].body.ciphertext,
+  });
+  assert.equal(openedImportedAlpha.status, "ready");
+  assert.match(openedImportedAlpha.text, /\[Beta\]\(beta imported\.md\)/);
+
   const graph = client.buildGraphProjection([
     {
       folderId: "general",
