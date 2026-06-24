@@ -39,10 +39,10 @@ In another shell:
 
 ```sh
 curl -fsS http://127.0.0.1:4015/health
-curl -fsS http://127.0.0.1:4015/client | rg 'FiniteBrain|Product Client|OKF'
+curl -fsS http://127.0.0.1:4015/client | rg 'FiniteBrain|obsidian-shell|Graph View|OKF'
 curl -fsS http://127.0.0.1:4015/client/config.json
-curl -fsS http://127.0.0.1:4015/client/app.js | rg 'buildAuthEventTemplate|buildPageWriteRequest|buildGraphProjection|buildReplayFrames|parseOkfBundle|prepareOkfImportWrites'
-curl -fsS http://127.0.0.1:4015/client/app.css | rg 'app-shell|graph|okf'
+curl -fsS http://127.0.0.1:4015/client/app.js | rg 'buildAuthEventTemplate|buildPageWriteRequest|buildGraphProjection|buildReplayFrames|parseOkfBundle|prepareOkfImportWrites|accessBadgesForFolder'
+curl -fsS http://127.0.0.1:4015/client/app.css | rg 'obsidian-shell|graph|access-inspector|okf'
 ```
 
 Expected result:
@@ -62,6 +62,10 @@ Run these before marking Product Client parity ready for staging review:
 ```sh
 node --check crates/finite-brain-server/src/product-client.js
 node crates/finite-brain-server/src/product-client.test.js
+node --check scripts/seed-smoke-doc-pages.mjs
+node --check scripts/verify-obsidian-product-client.mjs
+node scripts/seed-smoke-doc-pages.mjs
+node scripts/verify-obsidian-product-client.mjs
 cargo fmt --check
 cargo test
 cargo clippy --all-targets -- -D warnings
@@ -78,7 +82,24 @@ cargo test -p finite-brain-server cors_preflight_is_allowlist_driven -- --nocapt
 
 ## Browser Smoke
 
-Open the local Product Client:
+Seed the docs-rich smoke fixture and run the repeatable prototype smoke before
+manual browser inspection:
+
+```sh
+node scripts/seed-smoke-doc-pages.mjs
+node scripts/verify-obsidian-product-client.mjs
+```
+
+The verifier checks that:
+
+- the static HTML/CSS/JS still expose the Obsidian shell, file sidebar,
+  search panel, context menu, graph pane, and Access inspector surfaces;
+- the seeded smoke Vault has populated Folders and at least 50 encrypted Pages;
+- the Product Client opens all seeded Pages through Folder Key Grants;
+- Page navigation rows, Graph View projection, workspace state, and
+  access/share panel projection work against the fixture.
+
+Then open the local Product Client:
 
 ```text
 http://127.0.0.1:4015/client
@@ -93,6 +114,8 @@ Expected Product Client behavior:
 - Can prepare encrypted signed Page writes through secure object routes.
 - Can pull sync and preserve unresolved dirty local edits.
 - Can build Graph View and Replay from decrypted local Page indexes.
+- Shows Obsidian-like Files, Search, Access, Page, and Graph surfaces with
+  right-click Folder/Page actions.
 - Can parse OKF bundles, plan conflicts, rewrite copied relative links, and
   upload imported Pages through encrypted object writes.
 

@@ -11,6 +11,16 @@ const FiniteBrainProductClient = (() => {
     preparedWriteTarget: null,
     okfPlan: null,
     projection: createClientProjection(),
+    readerBusy: false,
+    selectedFolderId: null,
+    selectedPageKey: null,
+    activeWorkspaceView: "page",
+    activeSidebarMode: "files",
+    activeAccessFolderId: null,
+    activeAccessIntent: "inspect",
+    readerMode: "reading",
+    expandedFolderIds: new Set(),
+    contextMenuTarget: null,
   };
 
   const $ = (id) => document.getElementById(id);
@@ -20,6 +30,7 @@ const FiniteBrainProductClient = (() => {
   const APP_EVENT_KIND = 30078;
   const MAX_OBJECT_ID_ATTEMPTS = 1000;
   const BECH32_CHARSET = "qpzry9x8gf2tvdw0s3jn54khce6mua7l";
+  const graphViewport = { height: 560, width: 900 };
 
   function shortKey(value) {
     if (!value) return "-";
@@ -52,29 +63,153 @@ const FiniteBrainProductClient = (() => {
     };
   }
 
+  function normalizeAccessValue(access) {
+    const value = String(access || "unknown")
+      .trim()
+      .replace(/([a-z0-9])([A-Z])/g, "$1_$2")
+      .replace(/[-\s]+/g, "_")
+      .toLowerCase();
+    return value || "unknown";
+  }
+
+  function folderAccessValue(folder) {
+    return normalizeAccessValue(folder?.access ?? folder?.accessMode ?? folder?.access_mode);
+  }
+
+  function folderAccessUsers(folder) {
+    return folder?.accessUserIds || folder?.access_user_ids || [];
+  }
+
   function folderStatus(folder) {
-    if (folder.setupIncomplete) return "setup";
-    if (folder.access === "restricted" && (folder.accessUserIds || []).length === 0) {
+    if (folder?.setupIncomplete ?? folder?.setup_incomplete) return "setup";
+    if (folderAccessValue(folder) === "restricted" && folderAccessUsers(folder).length === 0) {
       return "locked";
     }
     return "ready";
   }
 
+  function folderAccessLabel(access) {
+    const normalized = normalizeAccessValue(access);
+    return (
+      {
+        admin_only: "admin only",
+        all_members: "all members",
+        owner: "owner",
+        restricted: "restricted",
+      }[normalized] || normalized.replaceAll("_", " ")
+    );
+  }
+
   function metadataFolderRows(metadata) {
     return (metadata?.folders || []).map((folder) => {
+      const access = folderAccessValue(folder);
       const status = folderStatus(folder);
+      const accessLabel = folderAccessLabel(access);
       const flags = [];
-      if (folder.sharedFolderSource) flags.push("source");
-      if (folder.setupIncomplete) flags.push("setup needed");
+      if (folder.sharedFolderSource ?? folder.shared_folder_source) flags.push("source");
+      if (folder.setupIncomplete ?? folder.setup_incomplete) flags.push("setup needed");
       if (status === "locked") flags.push("locked");
+      const currentKeyVersion = folder.currentKeyVersion ?? folder.current_key_version ?? 1;
       return {
+        access,
+        accessLabel,
+        accessUserIds: folderAccessUsers(folder),
+        currentKeyVersion,
         id: folder.id,
         path: folder.path,
+        setupIncomplete: Boolean(folder.setupIncomplete ?? folder.setup_incomplete),
+        sharedFolderSource: Boolean(folder.sharedFolderSource ?? folder.shared_folder_source),
         status,
-        label: `${folder.path} - ${folder.access} - key v${folder.currentKeyVersion}`,
+        label: `${folder.path} - ${accessLabel} - key v${currentKeyVersion}`,
         detail: flags.join(", "),
       };
     });
+  }
+
+  function accessBadgesForFolder(row, openedFolderIds = new Set()) {
+    if (!row) return [];
+    const badges = [];
+    if (row.access === "admin_only") {
+      badges.push({ kind: "access", label: "admin", tone: "warn" });
+    } else if (row.access === "restricted") {
+      badges.push({ kind: "access", label: "restricted", tone: "warn" });
+    } else if (row.access === "all_members") {
+      badges.push({ kind: "access", label: "all", tone: "muted" });
+    } else {
+      badges.push({ kind: "access", label: row.accessLabel || "access", tone: "muted" });
+    }
+    if (row.sharedFolderSource) badges.push({ kind: "shared", label: "shared", tone: "ready" });
+    if (row.setupIncomplete) badges.push({ kind: "setup", label: "setup", tone: "error" });
+    if (row.status === "locked" || (row.pageCount > 0 && row.readableCount === 0)) {
+      badges.push({ kind: "locked", label: "locked", tone: "warn" });
+    }
+    if (openedFolderIds.has(row.id)) badges.push({ kind: "key", label: "key open", tone: "ready" });
+    badges.push({ kind: "version", label: `v${row.currentKeyVersion || 1}`, tone: "muted" });
+    return badges;
+  }
+
+  function sidebarAccessBadgesForFolder(row, openedFolderIds = new Set()) {
+    const visibleKinds = new Set(["access", "shared", "setup", "locked"]);
+    return accessBadgesForFolder(row, openedFolderIds).filter((badge) => {
+      if (badge.kind === "access") return row.access !== "all_members";
+      return visibleKinds.has(badge.kind);
+    });
+  }
+
+  function accessActionRoute(action, target) {
+    if (!target?.folderId) return null;
+    if (action === "share-folder") {
+      return { folderId: target.folderId, intent: "share", sidebarMode: "access" };
+    }
+    if (action === "manage-access") {
+      return { folderId: target.folderId, intent: "manage", sidebarMode: "access" };
+    }
+    if (action === "inspect-access") {
+      return { folderId: target.folderId, intent: "inspect", sidebarMode: "access" };
+    }
+    return null;
+  }
+
+  function accessPanelState(intent, row) {
+    if (!row) {
+      return {
+        detail: "Load a Vault and select a Folder to inspect access.",
+        primaryLabel: "Manage",
+        secondaryLabel: "Share",
+        status: "empty",
+        title: "No Folder selected",
+        tone: "muted",
+      };
+    }
+    const pageDetail = readerFolderDetail(row);
+    if (intent === "share") {
+      return {
+        detail: `${pageDetail}. Share flow is surfaced here; backend invite creation is still a safe placeholder in this prototype.`,
+        primaryLabel: "Share",
+        secondaryLabel: "Manage",
+        status: "share",
+        title: `Share ${row.path}`,
+        tone: "ready",
+      };
+    }
+    if (intent === "manage") {
+      return {
+        detail: `${pageDetail}. Access management is visible here; grant changes are not executed from this prototype panel yet.`,
+        primaryLabel: "Manage",
+        secondaryLabel: "Share",
+        status: "manage",
+        title: `Manage ${row.path}`,
+        tone: row.status === "ready" ? "ready" : "warn",
+      };
+    }
+    return {
+      detail: pageDetail,
+      primaryLabel: "Manage",
+      secondaryLabel: "Share",
+      status: row.accessLabel,
+      title: row.path,
+      tone: row.status === "ready" ? "ready" : "warn",
+    };
   }
 
   function metadataMountRows(metadata) {
@@ -219,14 +354,61 @@ const FiniteBrainProductClient = (() => {
       throw new Error("unsupported Folder Key Grant version");
     }
     const opened = await importFolderKey(keyring, grantPlaintext);
-    keyring.openedGrants.push({
-      folderId: grantPlaintext.folderId,
-      issuerNpub: grantPlaintext.issuerNpub,
-      keyVersion: grantPlaintext.keyVersion,
-      recipientNpub: grantPlaintext.recipientNpub,
-      vaultId: grantPlaintext.vaultId,
-    });
+    const alreadyOpened = keyring.openedGrants.some(
+      (grant) =>
+        grant.folderId === grantPlaintext.folderId &&
+        grant.keyVersion === grantPlaintext.keyVersion &&
+        grant.recipientNpub === grantPlaintext.recipientNpub &&
+        grant.vaultId === grantPlaintext.vaultId
+    );
+    if (!alreadyOpened) {
+      keyring.openedGrants.push({
+        folderId: grantPlaintext.folderId,
+        issuerNpub: grantPlaintext.issuerNpub,
+        keyVersion: grantPlaintext.keyVersion,
+        recipientNpub: grantPlaintext.recipientNpub,
+        vaultId: grantPlaintext.vaultId,
+      });
+    }
     return opened;
+  }
+
+  function plaintextGrantFromExportGrant(grant, expectedRecipientNpub = null) {
+    if (!grant?.wrappedEventJson) return null;
+    let wrapped;
+    try {
+      wrapped = JSON.parse(grant.wrappedEventJson);
+    } catch (_) {
+      return null;
+    }
+    if (typeof wrapped.content !== "string") return null;
+    let plaintext;
+    try {
+      plaintext = JSON.parse(wrapped.content);
+    } catch (_) {
+      return null;
+    }
+    if (plaintext.version !== "finite-folder-key-grant-v1" || !plaintext.folderKey) return null;
+    if (expectedRecipientNpub && plaintext.recipientNpub !== expectedRecipientNpub) return null;
+    return plaintext;
+  }
+
+  async function openDevelopmentFolderKeyGrants(keyring, exportedVault, expectedRecipientNpub = null) {
+    const opened = [];
+    const skipped = [];
+    for (const grant of exportedVault?.keyGrants || []) {
+      const plaintext = plaintextGrantFromExportGrant(grant, expectedRecipientNpub);
+      if (!plaintext) {
+        skipped.push(grant.id || grant.folderId || "unknown-grant");
+        continue;
+      }
+      await openFolderKeyGrantPlaintext(keyring, plaintext);
+      opened.push({
+        folderId: plaintext.folderId,
+        keyVersion: plaintext.keyVersion,
+      });
+    }
+    return { opened, skipped };
   }
 
   function canonicalFolderObjectAad({ vaultId, folderId, objectId, keyVersion }) {
@@ -451,6 +633,115 @@ const FiniteBrainProductClient = (() => {
       if (!/^https?:\/\//i.test(target)) links.add(normalizePageReference(target));
     }
     return [...links].filter(Boolean);
+  }
+
+  function inlineLinkSegments(text) {
+    const source = String(text || "");
+    const segments = [];
+    const pattern = /\[\[([^\]|#]+)(?:#[^\]|]*)?(?:\|([^\]]+))?\]\]|\[([^\]]+)\]\(([^)]+)\)/g;
+    let cursor = 0;
+    for (const match of source.matchAll(pattern)) {
+      if (match.index > cursor) {
+        segments.push({ kind: "text", text: source.slice(cursor, match.index) });
+      }
+      if (match[1]) {
+        segments.push({
+          kind: "internal",
+          target: normalizePageReference(match[1]),
+          text: String(match[2] || match[1]).trim(),
+        });
+      } else {
+        const target = String(match[4] || "").trim();
+        const external = /^https?:\/\//i.test(target);
+        segments.push({
+          kind: external ? "external" : "internal",
+          target: external ? target : normalizePageReference(target.split("#")[0]),
+          text: String(match[3] || target).trim(),
+        });
+      }
+      cursor = match.index + match[0].length;
+    }
+    if (cursor < source.length) {
+      segments.push({ kind: "text", text: source.slice(cursor) });
+    }
+    return segments.filter((segment) => segment.text || segment.target);
+  }
+
+  function markdownPreviewBlocks(markdown) {
+    const lines = String(markdown || "").replace(/\r\n/g, "\n").split("\n");
+    const blocks = [];
+    let paragraph = [];
+
+    function flushParagraph() {
+      if (!paragraph.length) return;
+      blocks.push({ text: paragraph.join(" "), type: "paragraph" });
+      paragraph = [];
+    }
+
+    for (let index = 0; index < lines.length; index += 1) {
+      const line = lines[index];
+      const trimmed = line.trim();
+      if (!trimmed) {
+        flushParagraph();
+        continue;
+      }
+      if (/^```/.test(trimmed)) {
+        flushParagraph();
+        const code = [];
+        index += 1;
+        while (index < lines.length && !/^```/.test(lines[index].trim())) {
+          code.push(lines[index]);
+          index += 1;
+        }
+        blocks.push({ text: code.join("\n"), type: "code" });
+        continue;
+      }
+      const heading = trimmed.match(/^(#{1,3})\s+(.+)$/);
+      if (heading) {
+        flushParagraph();
+        blocks.push({ level: heading[1].length, text: heading[2].trim(), type: "heading" });
+        continue;
+      }
+      if (/^[-*]\s+/.test(trimmed)) {
+        flushParagraph();
+        const items = [];
+        while (index < lines.length && /^[-*]\s+/.test(lines[index].trim())) {
+          items.push(lines[index].trim().replace(/^[-*]\s+/, ""));
+          index += 1;
+        }
+        index -= 1;
+        blocks.push({ items, type: "list" });
+        continue;
+      }
+      if (/^>\s?/.test(trimmed)) {
+        flushParagraph();
+        const quotes = [];
+        while (index < lines.length && /^>\s?/.test(lines[index].trim())) {
+          quotes.push(lines[index].trim().replace(/^>\s?/, ""));
+          index += 1;
+        }
+        index -= 1;
+        blocks.push({ text: quotes.join(" "), type: "quote" });
+        continue;
+      }
+      if (/^---+$/.test(trimmed)) {
+        flushParagraph();
+        blocks.push({ type: "rule" });
+        continue;
+      }
+      paragraph.push(trimmed);
+    }
+    flushParagraph();
+    return blocks;
+  }
+
+  function pageStatsForText(text) {
+    const clean = String(text || "").trim();
+    const words = clean ? clean.split(/\s+/).filter(Boolean).length : 0;
+    return {
+      links: extractPageLinks(clean).length,
+      words,
+    };
   }
 
   function normalizeSafeRelativePath(value, label = "path") {
@@ -846,6 +1137,57 @@ const FiniteBrainProductClient = (() => {
     };
   }
 
+  function graphStats(graph, readablePageCount = graph.nodes.length) {
+    return {
+      edgeCount: graph.edges.length,
+      filteredOutCount: Math.max(0, readablePageCount - graph.nodes.length),
+      nodeCount: graph.nodes.length,
+    };
+  }
+
+  function graphLayout(graph, options = {}) {
+    const width = Number(options.width || graphViewport.width);
+    const height = Number(options.height || graphViewport.height);
+    const margin = Number(options.margin || 76);
+    const centerX = width / 2;
+    const centerY = height / 2;
+    const positions = new Map();
+    if (!graph.nodes.length) return positions;
+
+    const degree = new Map(graph.nodes.map((node) => [node.id, 0]));
+    for (const edge of graph.edges) {
+      degree.set(edge.source, (degree.get(edge.source) || 0) + 1);
+      degree.set(edge.target, (degree.get(edge.target) || 0) + 1);
+    }
+    const orderedNodes = [...graph.nodes].sort((left, right) => {
+      const degreeDelta = (degree.get(right.id) || 0) - (degree.get(left.id) || 0);
+      if (degreeDelta) return degreeDelta;
+      return left.title.localeCompare(right.title);
+    });
+    const radiusX = Math.max(70, width / 2 - margin);
+    const radiusY = Math.max(70, height / 2 - margin);
+    if (orderedNodes.length === 1) {
+      positions.set(orderedNodes[0].id, { x: centerX, y: centerY });
+      return positions;
+    }
+    const hasHub = orderedNodes.length > 4 && (degree.get(orderedNodes[0].id) || 0) > 1;
+    orderedNodes.forEach((node, index) => {
+      const isHub = hasHub && index === 0;
+      if (isHub) {
+        positions.set(node.id, { x: centerX, y: centerY });
+        return;
+      }
+      const ringIndex = hasHub ? index - 1 : index;
+      const ringCount = hasHub ? orderedNodes.length - 1 : orderedNodes.length;
+      const angle = (Math.PI * 2 * ringIndex) / ringCount - Math.PI / 2;
+      positions.set(node.id, {
+        x: Math.round(centerX + Math.cos(angle) * radiusX),
+        y: Math.round(centerY + Math.sin(angle) * radiusY),
+      });
+    });
+    return positions;
+  }
+
   function buildReplayFrames(changes) {
     const ordered = [...changes].sort((left, right) => (left.sequence || 0) - (right.sequence || 0));
     const seen = new Set();
@@ -884,7 +1226,7 @@ const FiniteBrainProductClient = (() => {
       });
     }
     for (const [key, page] of state.projection.pages.entries()) {
-      if (page.text) {
+      if (isReadablePage(page)) {
         const [folderId, objectId] = key.split("/");
         pages.push({
           folderId,
@@ -896,6 +1238,316 @@ const FiniteBrainProductClient = (() => {
       }
     }
     return pages;
+  }
+
+  function projectionPages() {
+    return [...state.projection.pages.entries()].map(([key, page]) => ({
+      ...page,
+      key,
+      title: page.title || pageTitleFromText(page.text ?? "", page.objectId),
+    }));
+  }
+
+  function pageTextIsPresent(page) {
+    return page?.text !== undefined && page?.text !== null;
+  }
+
+  function isReadablePage(page) {
+    return page?.status === "ready" && pageTextIsPresent(page);
+  }
+
+  function readablePages() {
+    return projectionPages().filter(isReadablePage);
+  }
+
+  function readerFolderRows(metadata, pages = projectionPages()) {
+    const pageCounts = new Map();
+    const readableCounts = new Map();
+    for (const page of pages) {
+      pageCounts.set(page.folderId, (pageCounts.get(page.folderId) || 0) + 1);
+      if (isReadablePage(page)) {
+        readableCounts.set(page.folderId, (readableCounts.get(page.folderId) || 0) + 1);
+      }
+    }
+    return metadataFolderRows(metadata).map((folder) => ({
+      ...folder,
+      pageCount: pageCounts.get(folder.id) || 0,
+      readableCount: readableCounts.get(folder.id) || 0,
+    }));
+  }
+
+  function readerPageRows(folderId, pages = projectionPages()) {
+    return pages
+      .filter((page) => !folderId || page.folderId === folderId)
+      .map((page) => {
+        const title = page.title || pageTitleFromText(page.text ?? "", page.objectId);
+        return {
+          ...page,
+          title,
+          label: title,
+          detail:
+            page.status === "ready"
+              ? `revision ${page.revision}`
+              : `locked ${page.folderId}/${page.objectId}`,
+        };
+      })
+      .sort((left, right) => left.title.localeCompare(right.title));
+  }
+
+  function pageLinkContext(page, pages = readablePages()) {
+    if (!isReadablePage(page)) return { backlinks: [], outgoing: [] };
+    const keyForPage = (candidate) => candidate.key || pageKey(candidate.folderId, candidate.objectId);
+    const readable = [...pages].filter(isReadablePage);
+    const referencesForPage = (candidate) =>
+      [
+        candidate.title || pageTitleFromText(candidate.text ?? "", candidate.objectId),
+        candidate.path || `${candidate.objectId}.md`,
+        String(candidate.path || `${candidate.objectId}.md`).split("/").pop(),
+      ]
+        .map(normalizePageReference)
+        .filter(Boolean);
+    const byReference = new Map();
+    for (const candidate of readable) {
+      for (const reference of referencesForPage(candidate)) {
+        if (!byReference.has(reference)) byReference.set(reference, candidate);
+      }
+    }
+    const currentKey = keyForPage(page);
+    const currentReferences = new Set(referencesForPage(page));
+    const outgoing = extractPageLinks(page.text).map((targetRef) => {
+      const target = byReference.get(targetRef);
+      if (!target) {
+        return {
+          detail: "unresolved",
+          key: null,
+          label: targetRef,
+          status: "missing",
+        };
+      }
+      return {
+        detail: target.folderId,
+        key: keyForPage(target),
+        label: target.title || pageTitleFromText(target.text ?? "", target.objectId),
+        status: "resolved",
+      };
+    });
+    const backlinks = readable
+      .filter((candidate) => keyForPage(candidate) !== currentKey)
+      .filter((candidate) =>
+        extractPageLinks(candidate.text).some((targetRef) => currentReferences.has(targetRef))
+      )
+      .map((candidate) => ({
+        detail: candidate.folderId,
+        key: keyForPage(candidate),
+        label: candidate.title || pageTitleFromText(candidate.text ?? "", candidate.objectId),
+        status: "resolved",
+      }))
+      .sort((left, right) => left.label.localeCompare(right.label));
+    return { backlinks, outgoing };
+  }
+
+  function pageCountLabel(count) {
+    return `${count} ${count === 1 ? "page" : "pages"}`;
+  }
+
+  function readerFolderDetail(row) {
+    if (!row.pageCount) return `No pages yet - ${row.accessLabel}`;
+    if (row.readableCount === row.pageCount) {
+      return `${pageCountLabel(row.pageCount)} readable - ${row.accessLabel}`;
+    }
+    if (!row.readableCount) {
+      return `${pageCountLabel(row.pageCount)} present, Folder Key not open - ${row.accessLabel}`;
+    }
+    return `${row.readableCount}/${row.pageCount} readable - ${row.accessLabel}`;
+  }
+
+  function selectDefaultReaderTargets() {
+    const folders = readerFolderRows(state.metadata);
+    const folderStillExists = folders.some((folder) => folder.id === state.selectedFolderId);
+    let selectedFolderChanged = false;
+    if (!folderStillExists) {
+      const folderWithReadablePages = folders.find((folder) => folder.readableCount > 0);
+      state.selectedFolderId = folderWithReadablePages?.id || folders[0]?.id || null;
+      selectedFolderChanged = Boolean(state.selectedFolderId);
+    }
+    if (selectedFolderChanged) state.expandedFolderIds.add(state.selectedFolderId);
+
+    const pages = readerPageRows(state.selectedFolderId);
+    const pageStillExists = pages.some((page) => page.key === state.selectedPageKey);
+    if (!pageStillExists) {
+      const readablePage = pages.find((page) => page.status === "ready");
+      state.selectedPageKey = readablePage?.key || pages[0]?.key || null;
+    }
+  }
+
+  function selectedReaderPage() {
+    if (!state.selectedPageKey) return null;
+    return projectionPages().find((page) => page.key === state.selectedPageKey) || null;
+  }
+
+  function workspaceTabTitle(metadata, page) {
+    return page?.title || metadata?.name || "Open a Vault";
+  }
+
+  function normalizeSidebarMode(mode) {
+    return ["files", "search", "access"].includes(mode) ? mode : "files";
+  }
+
+  function searchPageRows(query, pages = readablePages()) {
+    const needle = String(query || "").trim().toLowerCase();
+    if (!needle) return [];
+    return pages
+      .filter((page) => {
+        const haystack = [page.title, page.path, page.folderId, page.text].filter(Boolean).join("\n").toLowerCase();
+        return haystack.includes(needle);
+      })
+      .sort((left, right) =>
+        (left.title || left.objectId).localeCompare(right.title || right.objectId)
+      )
+      .map((page) => ({
+        ...page,
+        label: page.title || page.objectId,
+        detail: `${page.folderId}/${page.path || `${page.objectId}.md`}`,
+      }));
+  }
+
+  function contextMenuItemsForTarget(target) {
+    if (!target) return [];
+    if (target.type === "page") {
+      return [
+        { action: "open-page", label: "Open Page" },
+        { action: "new-page", label: "New Page in Folder" },
+        { action: "open-graph", label: "Show in Graph View" },
+        { separator: true },
+        { action: "copy-page-id", label: "Copy Page ID" },
+        { action: "copy-folder-id", label: "Copy Folder ID" },
+        { separator: true },
+        { action: "delete-page", label: "Delete Page", disabled: true, danger: true },
+      ];
+    }
+    return [
+      { action: "open-folder", label: "Open Folder" },
+      { action: "new-page", label: "New Page" },
+      { action: "new-folder", label: "New Folder Inside" },
+      { separator: true },
+      { action: "copy-folder-id", label: "Copy Folder ID" },
+      { action: "manage-access", label: "Manage Access" },
+      { action: "share-folder", label: "Share Folder" },
+      { separator: true },
+      { action: "delete-folder", label: "Delete Folder", disabled: true, danger: true },
+    ];
+  }
+
+  function setSidebarMode(mode) {
+    state.activeSidebarMode = normalizeSidebarMode(mode);
+    closeContextMenu();
+    render();
+  }
+
+  function setWorkspaceView(view) {
+    state.activeWorkspaceView = view === "graph" ? "graph" : "page";
+    if (state.activeWorkspaceView === "graph") renderGraphView();
+    render();
+  }
+
+  function workspaceChromeState(view) {
+    const pageActive = view !== "graph";
+    return {
+      graphHidden: pageActive,
+      graphTabClass: `workspace-tab${pageActive ? "" : " active"}`,
+      pageHidden: !pageActive,
+      pageTabClass: `workspace-tab${pageActive ? " active" : ""}`,
+      ribbonGraphClass: `ribbon-button${pageActive ? "" : " active"}`,
+      shellView: pageActive ? "page" : "graph",
+    };
+  }
+
+  function renderWorkspaceChrome(page = selectedReaderPage()) {
+    const chrome = workspaceChromeState(state.activeWorkspaceView);
+    document.querySelector(".obsidian-shell").dataset.workspaceView = chrome.shellView;
+    $("pageWorkspace").hidden = chrome.pageHidden;
+    $("graphWorkspace").hidden = chrome.graphHidden;
+    $("pageTabButton").className = chrome.pageTabClass;
+    $("graphTabButton").className = chrome.graphTabClass;
+    $("pageTabButton").setAttribute("aria-selected", String(!chrome.pageHidden));
+    $("graphTabButton").setAttribute("aria-selected", String(!chrome.graphHidden));
+    $("ribbonGraphButton").className = chrome.ribbonGraphClass;
+    setPressed("ribbonGraphButton", !chrome.graphHidden);
+    setText("workspaceTitle", workspaceTabTitle(state.metadata, page));
+  }
+
+  function nextDraftObjectId() {
+    return `obj_${Date.now().toString(36)}`.padEnd(16, "0").slice(0, 128);
+  }
+
+  function startNewPageDraft(folderIdOverride = null) {
+    const folderId = folderIdOverride || state.selectedFolderId || "general";
+    const objectId = nextDraftObjectId();
+    state.selectedFolderId = folderId;
+    state.selectedPageKey = null;
+    state.preparedWrite = null;
+    state.preparedWriteTarget = null;
+    state.activeWorkspaceView = "page";
+    state.expandedFolderIds.add(folderId);
+    $("pageFolderIdInput").value = folderId;
+    $("okfDestinationFolderInput").value = folderId;
+    $("pageObjectIdInput").value = objectId;
+    $("pageBaseRevisionInput").value = "";
+    $("pageDraftInput").value = "# New Page\n\nStart writing here.";
+    log("Started a new Page draft.", { folderId, objectId });
+    render();
+  }
+
+  function selectReaderFolder(folderId, options = {}) {
+    state.selectedFolderId = folderId;
+    state.expandedFolderIds.add(folderId);
+    if (options.selectFirstPage !== false) {
+      const firstPage = readerPageRows(folderId).find((page) => page.status === "ready");
+      state.selectedPageKey = firstPage?.key || null;
+    }
+    state.activeWorkspaceView = "page";
+    $("pageFolderIdInput").value = folderId;
+    $("okfDestinationFolderInput").value = folderId;
+    render();
+  }
+
+  function selectAccessFolder(folderId, intent = "inspect") {
+    state.activeAccessFolderId = folderId;
+    state.activeAccessIntent = intent;
+    selectReaderFolder(folderId, { selectFirstPage: false });
+  }
+
+  function toggleReaderFolder(folderId) {
+    const isExpanded = state.expandedFolderIds.has(folderId);
+    state.selectedFolderId = folderId;
+    $("pageFolderIdInput").value = folderId;
+    $("okfDestinationFolderInput").value = folderId;
+    if (isExpanded) {
+      state.expandedFolderIds.delete(folderId);
+      state.selectedPageKey = null;
+    } else {
+      state.expandedFolderIds.add(folderId);
+      const firstPage = readerPageRows(folderId).find((page) => page.status === "ready");
+      state.selectedPageKey = firstPage?.key || null;
+    }
+    state.activeWorkspaceView = "page";
+    closeContextMenu();
+    render();
+  }
+
+  function selectReaderPage(pageKeyValue) {
+    state.selectedPageKey = pageKeyValue;
+    state.activeWorkspaceView = "page";
+    const page = selectedReaderPage();
+    if (page) {
+      state.selectedFolderId = page.folderId;
+      state.expandedFolderIds.add(page.folderId);
+      $("pageFolderIdInput").value = page.folderId;
+      $("pageObjectIdInput").value = page.objectId;
+      $("pageBaseRevisionInput").value = String(page.revision || "");
+      if (pageTextIsPresent(page)) $("pageDraftInput").value = page.text;
+    }
+    render();
   }
 
   function existingPagesForImport() {
@@ -923,28 +1575,48 @@ const FiniteBrainProductClient = (() => {
     return pages;
   }
 
-  function drawGraph(graph) {
+  function graphEmptyStateCopy(options = {}) {
+    const filterText = String(options.filterText || "").trim();
+    const readablePageCount = Number(options.readablePageCount || 0);
+    if (readablePageCount <= 0) {
+      return {
+        title: "No readable graph yet",
+        copy: "Open a vault with readable Pages to render the local link graph.",
+      };
+    }
+    if (filterText) {
+      return {
+        title: "No matching Pages",
+        copy: "Clear or change the graph filter to bring readable Pages back into view.",
+      };
+    }
+    return {
+      title: "No graph links yet",
+      copy: "Readable Pages are open, but no Page links are available for this graph projection.",
+    };
+  }
+
+  function drawGraph(graph, options = {}) {
     const svg = $("graphCanvas");
+    const emptyState = $("graphEmptyState");
     svg.replaceChildren();
+    svg.setAttribute("viewBox", `0 0 ${graphViewport.width} ${graphViewport.height}`);
     if (!graph.nodes.length) {
-      const empty = document.createElementNS("http://www.w3.org/2000/svg", "text");
-      empty.setAttribute("x", "24");
-      empty.setAttribute("y", "44");
-      empty.textContent = "No accessible decrypted Pages match this graph.";
-      svg.appendChild(empty);
+      if (emptyState) {
+        const copy = graphEmptyStateCopy(options);
+        setText("graphEmptyTitle", copy.title);
+        setText("graphEmptyCopy", copy.copy);
+        emptyState.hidden = false;
+      }
       return;
     }
-    const centerX = 360;
-    const centerY = 160;
-    const radius = Math.min(118, 34 + graph.nodes.length * 12);
-    const positions = new Map();
-    graph.nodes.forEach((node, index) => {
-      const angle = (Math.PI * 2 * index) / graph.nodes.length - Math.PI / 2;
-      positions.set(node.id, {
-        x: centerX + Math.cos(angle) * radius,
-        y: centerY + Math.sin(angle) * radius,
-      });
-    });
+    if (emptyState) emptyState.hidden = true;
+    const positions = graphLayout(graph);
+    const edgeDegree = new Map(graph.nodes.map((node) => [node.id, 0]));
+    for (const edge of graph.edges) {
+      edgeDegree.set(edge.source, (edgeDegree.get(edge.source) || 0) + 1);
+      edgeDegree.set(edge.target, (edgeDegree.get(edge.target) || 0) + 1);
+    }
     for (const edge of graph.edges) {
       const source = positions.get(edge.source);
       const target = positions.get(edge.target);
@@ -963,10 +1635,12 @@ const FiniteBrainProductClient = (() => {
       circle.setAttribute("class", graph.edges.some((edge) => edge.source === node.id) ? "node focus" : "node");
       circle.setAttribute("cx", String(position.x));
       circle.setAttribute("cy", String(position.y));
-      circle.setAttribute("r", "12");
+      circle.setAttribute("r", String(Math.min(18, 9 + (edgeDegree.get(node.id) || 0) * 1.5)));
+      circle.setAttribute("data-folder-id", node.folderId);
       svg.appendChild(circle);
 
       const label = document.createElementNS("http://www.w3.org/2000/svg", "text");
+      label.setAttribute("class", "node-label");
       label.setAttribute("x", String(position.x + 16));
       label.setAttribute("y", String(position.y + 4));
       label.textContent = node.title;
@@ -980,8 +1654,173 @@ const FiniteBrainProductClient = (() => {
     element.className = `pill ${tone || "muted"}`;
   }
 
+  function openedGrantFolderIds() {
+    return new Set((state.keyring?.openedGrants || []).map((grant) => grant.folderId));
+  }
+
+  function appendAccessBadges(parent, badges) {
+    if (!badges.length) return;
+    const row = document.createElement("span");
+    row.className = "access-badge-row";
+    for (const badge of badges) {
+      const element = document.createElement("span");
+      element.className = `access-badge ${badge.tone || "muted"}`;
+      element.textContent = badge.label;
+      row.appendChild(element);
+    }
+    parent.appendChild(row);
+  }
+
+  function renderAccessBadgeRow(id, badges) {
+    const row = $(id);
+    row.replaceChildren();
+    for (const badge of badges) {
+      const element = document.createElement("span");
+      element.className = `access-badge ${badge.tone || "muted"}`;
+      element.textContent = badge.label;
+      row.appendChild(element);
+    }
+  }
+
   function setText(id, text) {
     $(id).textContent = text;
+  }
+
+  function setPressed(id, pressed) {
+    $(id).setAttribute("aria-pressed", String(Boolean(pressed)));
+  }
+
+  function appendInlineSegments(parent, text) {
+    for (const segment of inlineLinkSegments(text)) {
+      if (segment.kind === "text") {
+        parent.appendChild(document.createTextNode(segment.text));
+        continue;
+      }
+      const link = document.createElement("span");
+      link.className = segment.kind === "external" ? "external-link" : "internal-link";
+      link.textContent = segment.text || segment.target;
+      if (segment.target) link.dataset.target = segment.target;
+      parent.appendChild(link);
+    }
+  }
+
+  function renderMarkdownPreview(container, markdown) {
+    container.replaceChildren();
+    for (const block of markdownPreviewBlocks(markdown)) {
+      if (block.type === "heading") {
+        const heading = document.createElement(`h${block.level}`);
+        appendInlineSegments(heading, block.text);
+        container.appendChild(heading);
+        continue;
+      }
+      if (block.type === "list") {
+        const list = document.createElement("ul");
+        for (const itemText of block.items) {
+          const item = document.createElement("li");
+          appendInlineSegments(item, itemText);
+          list.appendChild(item);
+        }
+        container.appendChild(list);
+        continue;
+      }
+      if (block.type === "quote") {
+        const quote = document.createElement("blockquote");
+        appendInlineSegments(quote, block.text);
+        container.appendChild(quote);
+        continue;
+      }
+      if (block.type === "code") {
+        const pre = document.createElement("pre");
+        const code = document.createElement("code");
+        code.textContent = block.text;
+        pre.appendChild(code);
+        container.appendChild(pre);
+        continue;
+      }
+      if (block.type === "rule") {
+        container.appendChild(document.createElement("hr"));
+        continue;
+      }
+      const paragraph = document.createElement("p");
+      appendInlineSegments(paragraph, block.text);
+      container.appendChild(paragraph);
+    }
+  }
+
+  function setNoteEmptyState(isEmpty) {
+    $("readerPageContent").className = isEmpty ? "note-content note-content-empty" : "note-content";
+  }
+
+  function renderPageContent(page) {
+    const content = $("readerPageContent");
+    content.replaceChildren();
+    if (!page) {
+      content.className = "note-content note-content-empty";
+      content.textContent = "Open an accessible vault to read decrypted Pages here.";
+      return;
+    }
+    if (!isReadablePage(page)) {
+      content.className = "note-content note-content-empty";
+      content.textContent = "This Page is present in sync, but its Folder Key is not open in this session.";
+      return;
+    }
+    if (state.readerMode === "source") {
+      content.className = "note-content note-source";
+      content.textContent = page.text || "";
+      return;
+    }
+    content.className = "note-content note-markdown";
+    renderMarkdownPreview(content, page.text || "");
+  }
+
+  function renderPageStatus(page) {
+    const readableCount = readablePages().length;
+    const openedKeyCount = state.keyring?.openedGrants.length || 0;
+    setText(
+      "vaultStatusDetail",
+      `${state.activeVaultId || "vault"} | ${readableCount} readable Pages | ${openedKeyCount} keys open`
+    );
+    if (!isReadablePage(page)) {
+      setText("pageStatusDetail", "No readable page selected.");
+      return;
+    }
+    const stats = pageStatsForText(page.text);
+    const path = page.path || `${page.objectId}.md`;
+    setText(
+      "pageStatusDetail",
+      `${page.folderId}/${path} | ${stats.words} words | ${stats.links} links`
+    );
+  }
+
+  function renderLinkContext(page) {
+    const context = pageLinkContext(page, readablePages());
+    const renderLinkRow = (item, row) => {
+      const button = readerButton(
+        row.label,
+        row.detail,
+        `link-button ${row.status}${row.key === state.selectedPageKey ? " active" : ""}`,
+        () => {
+          if (row.key) selectReaderPage(row.key);
+        }
+      );
+      button.disabled = !row.key;
+      item.appendChild(button);
+    };
+    setList("outgoingLinkList", context.outgoing, "No outgoing links", renderLinkRow);
+    setList("backlinkList", context.backlinks, "No backlinks", renderLinkRow);
+  }
+
+  function setGraphStats(graph, readablePageCount) {
+    const stats = graphStats(graph, readablePageCount);
+    const filtered =
+      stats.filteredOutCount > 0 ? ` / ${stats.filteredOutCount} hidden by filter` : "";
+    setPill(
+      "graphStats",
+      `${stats.nodeCount} ${stats.nodeCount === 1 ? "node" : "nodes"} / ${stats.edgeCount} ${
+        stats.edgeCount === 1 ? "link" : "links"
+      }${filtered}`,
+      stats.nodeCount ? "ready" : "muted"
+    );
   }
 
   function setList(id, rows, emptyText, renderRow) {
@@ -1006,6 +1845,318 @@ const FiniteBrainProductClient = (() => {
     $("activityLog").textContent = `${new Date().toISOString()} ${message}${suffix}`;
   }
 
+  function closeContextMenu() {
+    state.contextMenuTarget = null;
+    const menu = $("contextMenu");
+    if (!menu) return;
+    menu.hidden = true;
+    menu.replaceChildren();
+  }
+
+  function positionContextMenu(menu, x, y, itemCount) {
+    const estimatedWidth = 240;
+    const estimatedHeight = Math.max(40, itemCount * 34 + 14);
+    const maxLeft = Math.max(8, window.innerWidth - estimatedWidth - 8);
+    const maxTop = Math.max(8, window.innerHeight - estimatedHeight - 8);
+    menu.style.left = `${Math.min(Math.max(8, x), maxLeft)}px`;
+    menu.style.top = `${Math.min(Math.max(8, y), maxTop)}px`;
+  }
+
+  function writeClipboard(text) {
+    if (navigator.clipboard?.writeText) return navigator.clipboard.writeText(text);
+    return Promise.resolve();
+  }
+
+  function handleContextMenuAction(item, target) {
+    if (item.disabled) return;
+    closeContextMenu();
+    if (item.action === "open-folder") {
+      selectReaderFolder(target.folderId);
+      return;
+    }
+    if (item.action === "open-page") {
+      selectReaderPage(target.pageKey);
+      return;
+    }
+    if (item.action === "new-page") {
+      startNewPageDraft(target.folderId);
+      return;
+    }
+    if (item.action === "new-folder") {
+      log("New child Folder is queued for the Folder creation slice.", {
+        parentFolderId: target.folderId,
+      });
+      return;
+    }
+    if (item.action === "open-graph") {
+      $("graphFilterInput").value = target.title || target.objectId || "";
+      setWorkspaceView("graph");
+      return;
+    }
+    if (item.action === "copy-page-id") {
+      writeClipboard(target.objectId).catch(() => {});
+      log("Copied Page ID.", { objectId: target.objectId });
+      return;
+    }
+    if (item.action === "copy-folder-id") {
+      writeClipboard(target.folderId).catch(() => {});
+      log("Copied Folder ID.", { folderId: target.folderId });
+      return;
+    }
+    const accessRoute = accessActionRoute(item.action, target);
+    if (accessRoute) {
+      state.activeAccessFolderId = accessRoute.folderId;
+      state.activeAccessIntent = accessRoute.intent;
+      state.selectedFolderId = accessRoute.folderId;
+      state.expandedFolderIds.add(accessRoute.folderId);
+      $("pageFolderIdInput").value = accessRoute.folderId;
+      $("okfDestinationFolderInput").value = accessRoute.folderId;
+      setSidebarMode(accessRoute.sidebarMode);
+      log(accessRoute.intent === "share" ? "Opened Folder share panel." : "Opened Folder access panel.", {
+        folderId: accessRoute.folderId,
+        intent: accessRoute.intent,
+      });
+      return;
+    }
+  }
+
+  function openContextMenu(target, x, y) {
+    const menu = $("contextMenu");
+    if (!menu) return;
+    state.contextMenuTarget = target;
+    menu.replaceChildren();
+    const items = contextMenuItemsForTarget(target);
+    for (const item of items) {
+      if (item.separator) {
+        const separator = document.createElement("div");
+        separator.className = "context-menu-separator";
+        menu.appendChild(separator);
+        continue;
+      }
+      const button = document.createElement("button");
+      button.type = "button";
+      button.textContent = item.label;
+      button.disabled = Boolean(item.disabled);
+      button.className = item.danger ? "danger" : "";
+      button.addEventListener("click", () => handleContextMenuAction(item, target));
+      menu.appendChild(button);
+    }
+    menu.hidden = false;
+    positionContextMenu(menu, x, y, items.length);
+  }
+
+  function readerButton(label, detail, className, onClick) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = className;
+    button.textContent = label;
+    if (detail) {
+      const detailElement = document.createElement("span");
+      detailElement.className = "reader-list-detail";
+      detailElement.textContent = detail;
+      button.appendChild(detailElement);
+    }
+    button.addEventListener("click", onClick);
+    return button;
+  }
+
+  function appendObsidianDetail(button, detail) {
+    if (!detail) return;
+    const detailElement = document.createElement("span");
+    detailElement.className = "obsidian-file-detail";
+    detailElement.textContent = detail;
+    button.appendChild(detailElement);
+  }
+
+  function obsidianTreeButton(label, detail, className, onClick, options = {}) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = className;
+    button.textContent = label;
+    appendObsidianDetail(button, detail);
+    button.addEventListener("click", onClick);
+    if (options.contextTarget) {
+      button.addEventListener("contextmenu", (event) => {
+        event.preventDefault();
+        openContextMenu(options.contextTarget, event.clientX, event.clientY);
+      });
+    }
+    return button;
+  }
+
+  function renderSidebarMode() {
+    const mode = normalizeSidebarMode(state.activeSidebarMode);
+    state.activeSidebarMode = mode;
+    $("filesSidebarPanel").hidden = mode !== "files";
+    $("searchSidebarPanel").hidden = mode !== "search";
+    $("accessSidebarPanel").hidden = mode !== "access";
+    $("ribbonFilesButton").className = `ribbon-button${mode === "files" ? " active" : ""}`;
+    $("ribbonSearchButton").className = `ribbon-button${mode === "search" ? " active" : ""}`;
+    $("ribbonAccessButton").className = `ribbon-button${mode === "access" ? " active" : ""}`;
+    setPressed("ribbonFilesButton", mode === "files");
+    setPressed("ribbonSearchButton", mode === "search");
+    setPressed("ribbonAccessButton", mode === "access");
+  }
+
+  function renderSearchPanel() {
+    const query = $("sidebarSearchInput").value;
+    const rows = searchPageRows(query);
+    setPill("searchResultCount", `${rows.length}`, rows.length ? "ready" : "muted");
+    setList(
+      "sidebarSearchResults",
+      rows,
+      query.trim() ? "No matching readable Pages" : "No search query",
+      (item, row) => {
+        const button = obsidianTreeButton(
+          row.label,
+          row.detail,
+          `obsidian-page-button ${row.key === state.selectedPageKey ? " active" : ""}`,
+          () => selectReaderPage(row.key),
+          {
+            contextTarget: {
+              type: "page",
+              folderId: row.folderId,
+              objectId: row.objectId,
+              pageKey: row.key,
+              title: row.title,
+            },
+          }
+        );
+        item.appendChild(button);
+      }
+    );
+  }
+
+  function renderAccessPanel() {
+    const rows = readerFolderRows(state.metadata);
+    const openedFolders = openedGrantFolderIds();
+    const activeFolderId = state.activeAccessFolderId || state.selectedFolderId;
+    const activeRow = rows.find((row) => row.id === activeFolderId) || rows[0] || null;
+    if (activeRow && !state.activeAccessFolderId && !state.selectedFolderId) {
+      state.activeAccessFolderId = activeRow.id;
+    }
+    const panel = accessPanelState(state.activeAccessIntent, activeRow);
+    setPill("accessFolderCount", `${rows.length}`, rows.length ? "ready" : "muted");
+    setText("accessFolderTitle", panel.title);
+    setPill("accessFolderStatus", panel.status, panel.tone);
+    setText("accessFolderDetail", panel.detail);
+    setText("accessManageButton", "Manage");
+    setText("accessShareButton", "Share");
+    $("accessManageButton").disabled = !activeRow;
+    $("accessShareButton").disabled = !activeRow;
+    renderAccessBadgeRow("accessBadgeRow", accessBadgesForFolder(activeRow, openedFolders));
+    setList("accessFolderList", rows, "Load a Vault to inspect access", (item, row) => {
+      const button = obsidianTreeButton(
+        row.path,
+        `${row.accessLabel} - key v${row.currentKeyVersion || 1}${row.detail ? ` - ${row.detail}` : ""}`,
+        `obsidian-folder-button ${row.status}${row.id === activeRow?.id ? " active" : ""}`,
+        () => selectAccessFolder(row.id),
+        {
+          contextTarget: {
+            type: "folder",
+            folderId: row.id,
+            path: row.path,
+          },
+        }
+      );
+      appendAccessBadges(button, accessBadgesForFolder(row, openedFolders));
+      item.appendChild(button);
+    });
+  }
+
+  function renderReader() {
+    selectDefaultReaderTargets();
+    const folderRows = readerFolderRows(state.metadata);
+    const pageRows = readerPageRows(state.selectedFolderId);
+    const readableCount = readablePages().length;
+    const openedKeyCount = state.keyring?.openedGrants.length || 0;
+    setPill("readerFolderSummary", `${folderRows.length} folders`, folderRows.length ? "ready" : "muted");
+    setPill("readerPageSummary", `${readableCount} readable pages`, readableCount ? "ready" : "muted");
+    setPill("readerKeySummary", `${openedKeyCount} keys open`, openedKeyCount ? "ready" : "muted");
+
+    setList("readerFolderList", folderRows, "Load a Vault to browse folders", (item, row) => {
+      const expanded = state.expandedFolderIds.has(row.id);
+      const button = obsidianTreeButton(
+        row.path,
+        readerFolderDetail(row),
+        `obsidian-folder-button ${row.status}${expanded ? " expanded" : ""}${
+          row.id === state.selectedFolderId ? " active" : ""
+        }`,
+        () => toggleReaderFolder(row.id),
+        {
+          contextTarget: {
+            type: "folder",
+            folderId: row.id,
+            path: row.path,
+          },
+        }
+      );
+      appendAccessBadges(button, sidebarAccessBadgesForFolder(row, openedGrantFolderIds()));
+      item.appendChild(button);
+      const childPages = readerPageRows(row.id);
+      if (expanded && childPages.length) {
+        const childList = document.createElement("ol");
+        childList.className = "obsidian-page-children";
+        for (const pageRow of childPages) {
+          const childItem = document.createElement("li");
+          const pageButton = obsidianTreeButton(
+            pageRow.label,
+            pageRow.status === "ready" ? "" : "Locked",
+            `obsidian-page-button ${pageRow.status}${pageRow.key === state.selectedPageKey ? " active" : ""}`,
+            () => selectReaderPage(pageRow.key),
+            {
+              contextTarget: {
+                type: "page",
+                folderId: pageRow.folderId,
+                objectId: pageRow.objectId,
+                pageKey: pageRow.key,
+                title: pageRow.title,
+              },
+            }
+          );
+          childItem.appendChild(pageButton);
+          childList.appendChild(childItem);
+        }
+        item.appendChild(childList);
+      }
+    });
+
+    setList("readerPageList", pageRows, "No Pages in this Folder yet", (item, row) => {
+      const button = readerButton(
+        row.label,
+        row.detail,
+        `reader-list-button ${row.status}${row.key === state.selectedPageKey ? " active" : ""}`,
+        () => selectReaderPage(row.key)
+      );
+      item.appendChild(button);
+    });
+
+    const page = selectedReaderPage();
+    $("readerModeButton").textContent = state.readerMode === "source" ? "Source" : "Reading";
+    setPressed("readerModeButton", state.readerMode === "source");
+    $("readerModeButton").disabled = !isReadablePage(page);
+    if (!page) {
+      setText("readerPageTitle", state.selectedFolderId ? "No readable page selected" : "No folder selected");
+      setPill("readerPageMeta", "empty", "muted");
+      renderPageContent(null);
+      renderLinkContext(null);
+      renderPageStatus(null);
+      renderWorkspaceChrome(null);
+      return;
+    }
+
+    setText("readerPageTitle", page.title || page.objectId);
+    setPill(
+      "readerPageMeta",
+      `${page.folderId} r${page.revision || 0}`,
+      page.status === "ready" ? "ready" : "warn"
+    );
+    renderPageContent(page);
+    renderLinkContext(page);
+    renderPageStatus(page);
+    renderWorkspaceChrome(page);
+  }
+
   function render() {
     const signerTone =
       state.signerStatus === "connected"
@@ -1028,6 +2179,8 @@ const FiniteBrainProductClient = (() => {
     $("encryptDraftButton").disabled = !state.keyring;
     $("savePageButton").disabled = !state.preparedWrite || state.signerStatus !== "connected";
     $("syncBootstrapButton").disabled = state.signerStatus !== "connected" || !state.config;
+    $("openAccessibleVaultButton").disabled = state.readerBusy || !state.config;
+    $("refreshReaderButton").disabled = state.readerBusy || state.signerStatus !== "connected" || !state.metadata;
     $("planOkfImportButton").disabled = !state.metadata;
     $("executeOkfImportButton").disabled =
       !state.okfPlan || !state.keyring || state.signerStatus !== "connected";
@@ -1052,7 +2205,11 @@ const FiniteBrainProductClient = (() => {
     $("spineAuth").className = state.signerStatus === "connected" && state.config ? "done" : "waiting";
     $("spineVault").className = state.metadata ? "done" : "waiting";
     $("spineKeys").className = state.keyring?.openedGrants.length ? "done" : "waiting";
-    $("spinePages").className = state.preparedWrite ? "done" : "waiting";
+    $("spinePages").className = readablePages().length ? "done" : "waiting";
+    renderSidebarMode();
+    renderReader();
+    renderSearchPanel();
+    renderAccessPanel();
     renderOkfPlan();
   }
 
@@ -1157,6 +2314,51 @@ const FiniteBrainProductClient = (() => {
     state.metadata = metadata;
     log("Loaded Vault metadata.", metadata);
     render();
+  }
+
+  async function openAvailableDevelopmentGrants() {
+    if (!state.keyring) state.keyring = createSessionKeyring();
+    const exported = await protectedRequest(`/_admin/vaults/${encodeURIComponent(state.activeVaultId)}/export`);
+    const expectedRecipient = state.pubkeyHex ? npubFromHex(state.pubkeyHex) : null;
+    return openDevelopmentFolderKeyGrants(state.keyring, exported, expectedRecipient);
+  }
+
+  async function openAccessibleVaultReader() {
+    state.readerBusy = true;
+    render();
+    try {
+      if (state.signerStatus !== "connected") await connectSigner();
+      if (state.signerStatus !== "connected") throw new Error("Connect a NIP-07 signer first");
+      await loadVaultMetadata();
+      const grants = await openAvailableDevelopmentGrants();
+      await pullSyncBootstrap();
+      selectDefaultReaderTargets();
+      renderGraphView();
+      log("Opened accessible Vault reader.", {
+        openedDevelopmentKeys: grants.opened.length,
+        skippedOpaqueGrants: grants.skipped.length,
+        readablePages: readablePages().length,
+      });
+    } finally {
+      state.readerBusy = false;
+      render();
+    }
+  }
+
+  async function refreshReader() {
+    state.readerBusy = true;
+    render();
+    try {
+      await loadVaultMetadata();
+      if (state.keyring?.openedGrants.length) await pullSyncBootstrap();
+      selectDefaultReaderTargets();
+      log("Refreshed Vault reader.", {
+        readablePages: readablePages().length,
+      });
+    } finally {
+      state.readerBusy = false;
+      render();
+    }
   }
 
   function activePageInput() {
@@ -1269,12 +2471,25 @@ const FiniteBrainProductClient = (() => {
   }
 
   function renderGraphView() {
-    const graph = buildGraphProjection(decryptedPagesForGraph(), $("graphFilterInput").value);
-    drawGraph(graph);
+    const pages = decryptedPagesForGraph();
+    const filterText = $("graphFilterInput").value;
+    const graph = buildGraphProjection(pages, filterText);
+    drawGraph(graph, { filterText, readablePageCount: pages.length });
+    setGraphStats(graph, pages.length);
     log("Rendered graph from decrypted client index.", {
       edges: graph.edges.length,
       nodes: graph.nodes.length,
     });
+  }
+
+  function fitGraphView() {
+    $("graphCanvas").setAttribute("viewBox", `0 0 ${graphViewport.width} ${graphViewport.height}`);
+    log("Fit graph view to readable graph bounds.");
+  }
+
+  function resetGraphView() {
+    $("graphFilterInput").value = "";
+    renderGraphView();
   }
 
   function renderReplayFrames() {
@@ -1295,7 +2510,7 @@ const FiniteBrainProductClient = (() => {
       sequence += 1;
     }
     for (const [key, page] of state.projection.pages.entries()) {
-      if (!page.text) continue;
+      if (!isReadablePage(page)) continue;
       const [folderId, objectId] = key.split("/");
       changes.push({
         sequence,
@@ -1314,7 +2529,10 @@ const FiniteBrainProductClient = (() => {
     setList("replayList", frames, "No replay frames", (item, frame) => {
       item.textContent = `#${frame.sequence} ${frame.action}: ${frame.nodeCount} nodes, ${frame.edgeCount} edges`;
     });
-    if (frames.length) drawGraph(frames[frames.length - 1].graph);
+    if (frames.length) {
+      drawGraph(frames[frames.length - 1].graph, { readablePageCount: decryptedPagesForGraph().length });
+      setGraphStats(frames[frames.length - 1].graph, decryptedPagesForGraph().length);
+    }
     log("Built graph replay frames.", frames.map((frame) => ({
       edgeCount: frame.edgeCount,
       nodeCount: frame.nodeCount,
@@ -1406,6 +2624,71 @@ const FiniteBrainProductClient = (() => {
         render();
       });
     });
+    $("openAccessibleVaultButton").addEventListener("click", () => {
+      openAccessibleVaultReader().catch((error) => {
+        state.lastError = error.message;
+        log("Failed to open accessible Vault reader.", { error: error.message });
+        state.readerBusy = false;
+        render();
+      });
+    });
+    $("refreshReaderButton").addEventListener("click", () => {
+      refreshReader().catch((error) => {
+        state.lastError = error.message;
+        log("Failed to refresh Vault reader.", { error: error.message });
+        state.readerBusy = false;
+        render();
+      });
+    });
+    $("pageTabButton").addEventListener("click", () => {
+      setWorkspaceView("page");
+    });
+    $("graphTabButton").addEventListener("click", () => {
+      setWorkspaceView("graph");
+    });
+    $("readerModeButton").addEventListener("click", () => {
+      state.readerMode = state.readerMode === "source" ? "reading" : "source";
+      render();
+    });
+    $("ribbonGraphButton").addEventListener("click", () => {
+      setWorkspaceView("graph");
+    });
+    $("ribbonFilesButton").addEventListener("click", () => {
+      setSidebarMode("files");
+    });
+    $("ribbonSearchButton").addEventListener("click", () => {
+      setSidebarMode("search");
+    });
+    $("ribbonAccessButton").addEventListener("click", () => {
+      setSidebarMode("access");
+    });
+    $("accessManageButton").addEventListener("click", () => {
+      const folderId = state.activeAccessFolderId || state.selectedFolderId;
+      if (!folderId) return;
+      state.activeAccessIntent = "manage";
+      state.activeAccessFolderId = folderId;
+      log("Access management is visible in the prototype panel.", { folderId });
+      render();
+    });
+    $("accessShareButton").addEventListener("click", () => {
+      const folderId = state.activeAccessFolderId || state.selectedFolderId;
+      if (!folderId) return;
+      state.activeAccessIntent = "share";
+      state.activeAccessFolderId = folderId;
+      log("Share flow is visible in the prototype panel.", { folderId });
+      render();
+    });
+    $("sidebarSearchInput").addEventListener("input", () => {
+      renderSearchPanel();
+    });
+    $("obsidianNewPageButton").addEventListener("click", () => {
+      startNewPageDraft();
+    });
+    $("obsidianNewFolderButton").addEventListener("click", () => {
+      log("New Folder will be wired through the Folder creation flow in the access/share slice.", {
+        parentFolderId: state.selectedFolderId || null,
+      });
+    });
     $("openFolderKeyButton").addEventListener("click", () => {
       openEnteredFolderKey().catch((error) => {
         state.lastError = error.message;
@@ -1442,6 +2725,17 @@ const FiniteBrainProductClient = (() => {
         log("Failed to render graph.", { error: error.message });
       }
     });
+    $("graphFilterInput").addEventListener("keydown", (event) => {
+      if (event.key !== "Enter") return;
+      event.preventDefault();
+      renderGraphView();
+    });
+    $("fitGraphButton").addEventListener("click", () => {
+      fitGraphView();
+    });
+    $("resetGraphButton").addEventListener("click", () => {
+      resetGraphView();
+    });
     $("replayGraphButton").addEventListener("click", () => {
       try {
         renderReplayFrames();
@@ -1466,6 +2760,13 @@ const FiniteBrainProductClient = (() => {
         render();
       });
     });
+    document.addEventListener("click", (event) => {
+      const menu = $("contextMenu");
+      if (!menu.hidden && !menu.contains(event.target)) closeContextMenu();
+    });
+    document.addEventListener("keydown", (event) => {
+      if (event.key === "Escape") closeContextMenu();
+    });
   }
 
   async function start() {
@@ -1475,27 +2776,49 @@ const FiniteBrainProductClient = (() => {
   }
 
   return {
+    accessActionRoute,
+    accessBadgesForFolder,
+    accessPanelState,
     buildPageWriteRequest,
     buildAuthEventTemplate,
     buildGraphProjection,
     buildReplayFrames,
+    contextMenuItemsForTarget,
     createClientProjection,
     createSessionKeyring,
     deriveSignerState,
     encryptFolderObject,
     extractPageLinks,
+    graphEmptyStateCopy,
+    graphLayout,
+    graphStats,
+    inlineLinkSegments,
+    markdownPreviewBlocks,
     mergeSyncProjection,
     metadataFolderRows,
     metadataMountRows,
+    nextDraftObjectId,
+    normalizeSidebarMode,
     npubFromHex,
+    openDevelopmentFolderKeyGrants,
     openFolderKeyGrantPlaintext,
     openFolderObject,
     openSyncObjects,
     parseOkfBundle,
+    pageLinkContext,
+    pageStatsForText,
+    plaintextGrantFromExportGrant,
     planOkfImport,
     prepareOkfImportWrites,
+    readerFolderDetail,
+    readerFolderRows,
+    readerPageRows,
+    searchPageRows,
+    sidebarAccessBadgesForFolder,
     shortKey,
     start,
+    workspaceChromeState,
+    workspaceTabTitle,
   };
 })();
 

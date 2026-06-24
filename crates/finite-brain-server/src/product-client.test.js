@@ -94,6 +94,31 @@ assert.equal(folderRows[0].status, "ready");
 assert.equal(folderRows[1].status, "locked");
 assert.match(folderRows[1].detail, /source/);
 assert.match(folderRows[1].detail, /locked/);
+const badgeLabels = (badges) => Array.from(badges, (badge) => badge.label);
+assert.deepEqual(
+  badgeLabels(client.accessBadgesForFolder(folderRows[1], new Set(["restricted"]))),
+  ["restricted", "shared", "locked", "key open", "v3"]
+);
+assert.deepEqual(
+  badgeLabels(client.sidebarAccessBadgesForFolder(folderRows[0])),
+  []
+);
+assert.deepEqual(
+  badgeLabels(client.sidebarAccessBadgesForFolder(folderRows[1])),
+  ["restricted", "shared", "locked"]
+);
+assert.equal(
+  JSON.stringify(client.accessActionRoute("share-folder", { folderId: "restricted" })),
+  JSON.stringify({ folderId: "restricted", intent: "share", sidebarMode: "access" })
+);
+assert.equal(
+  JSON.stringify(client.accessActionRoute("manage-access", { folderId: "restricted" })),
+  JSON.stringify({ folderId: "restricted", intent: "manage", sidebarMode: "access" })
+);
+assert.equal(client.accessActionRoute("delete-folder", { folderId: "restricted" }), null);
+assert.equal(client.accessPanelState("share", folderRows[1]).status, "share");
+assert.match(client.accessPanelState("share", folderRows[1]).detail, /safe placeholder/);
+assert.equal(client.accessPanelState("manage", folderRows[1]).title, "Manage Restricted");
 
 (async () => {
   const event = await client.buildAuthEventTemplate(
@@ -123,6 +148,49 @@ assert.match(folderRows[1].detail, /locked/);
     issuedAt: "2026-06-24T00:00:00.000Z",
   });
   assert.equal(keyring.openedGrants.length, 1);
+  await client.openFolderKeyGrantPlaintext(keyring, {
+    version: "finite-folder-key-grant-v1",
+    vaultId: "smoke",
+    folderId: "general",
+    keyVersion: 1,
+    issuerNpub: "npub-issuer",
+    recipientNpub: "npub-recipient",
+    folderKey,
+    issuedAt: "2026-06-24T00:00:00.000Z",
+  });
+  assert.equal(keyring.openedGrants.length, 1);
+
+  const devGrant = {
+    id: "dev-grant",
+    folderId: "general",
+    wrappedEventJson: JSON.stringify({
+      kind: 1059,
+      content: JSON.stringify({
+        version: "finite-folder-key-grant-v1",
+        vaultId: "smoke",
+        folderId: "general",
+        keyVersion: 1,
+        issuerNpub: "npub-issuer",
+        recipientNpub: "npub-recipient",
+        folderKey,
+        issuedAt: "2026-06-24T00:00:00.000Z",
+      }),
+    }),
+  };
+  assert.equal(
+    client.plaintextGrantFromExportGrant(devGrant, "npub-recipient").folderId,
+    "general"
+  );
+  assert.equal(client.plaintextGrantFromExportGrant(devGrant, "npub-other"), null);
+  const devKeyring = client.createSessionKeyring();
+  const devOpen = await client.openDevelopmentFolderKeyGrants(
+    devKeyring,
+    { keyGrants: [devGrant, { id: "opaque", wrappedEventJson: "{\"kind\":1059}" }] },
+    "npub-recipient"
+  );
+  assert.equal(devOpen.opened.length, 1);
+  assert.equal(devOpen.skipped.length, 1);
+  assert.equal(devKeyring.openedGrants.length, 1);
 
   const authorNpub = client.npubFromHex("00".repeat(32));
   assert.match(authorNpub, /^npub1/);
@@ -175,6 +243,176 @@ assert.match(folderRows[1].detail, /locked/);
   assert.equal(openedSync.objects[0].status, "ready");
   assert.equal(openedSync.objects[0].title, "Hello");
 
+  const readerFolders = client.readerFolderRows(
+    {
+      folders: [
+        {
+          id: "general",
+          path: "General",
+          access: "all_members",
+          accessUserIds: [],
+          currentKeyVersion: 1,
+          setupIncomplete: false,
+          sharedFolderSource: false,
+        },
+        {
+          id: "restricted",
+          path: "Restricted",
+          access: "restricted",
+          accessUserIds: [],
+          currentKeyVersion: 1,
+          setupIncomplete: false,
+          sharedFolderSource: false,
+        },
+      ],
+    },
+    openedSync.objects
+  );
+  assert.equal(readerFolders[0].readableCount, 1);
+  assert.equal(readerFolders[0].pageCount, 1);
+  assert.equal(readerFolders[0].access, "all_members");
+  assert.equal(readerFolders[0].accessLabel, "all members");
+  assert.equal(readerFolders[1].status, "locked");
+  assert.equal(readerFolders[1].accessLabel, "restricted");
+  const compatibilityRows = client.metadataFolderRows({
+    folders: [
+      {
+        id: "architecture",
+        path: "Architecture",
+        access_mode: "all_members",
+        access_user_ids: [],
+        current_key_version: 2,
+        setup_incomplete: false,
+        shared_folder_source: false,
+      },
+      {
+        id: "vault-ops",
+        path: "vault-ops",
+        accessMode: "AdminOnly",
+        accessUserIds: [],
+        currentKeyVersion: 1,
+        setupIncomplete: false,
+        sharedFolderSource: false,
+      },
+    ],
+  });
+  assert.equal(compatibilityRows[0].access, "all_members");
+  assert.equal(compatibilityRows[0].accessLabel, "all members");
+  assert.equal(compatibilityRows[0].currentKeyVersion, 2);
+  assert.equal(compatibilityRows[1].access, "admin_only");
+  assert.equal(compatibilityRows[1].accessLabel, "admin only");
+  assert.equal(
+    client.readerFolderDetail(readerFolders[0]),
+    "1 page readable - all members"
+  );
+  assert.equal(
+    client.readerFolderDetail({
+      accessLabel: "all members",
+      pageCount: 0,
+      readableCount: 0,
+    }),
+    "No pages yet - all members"
+  );
+  assert.equal(
+    client.readerFolderDetail({
+      accessLabel: "restricted",
+      pageCount: 2,
+      readableCount: 0,
+    }),
+    "2 pages present, Folder Key not open - restricted"
+  );
+  assert.equal(client.workspaceTabTitle(null, null), "Open a Vault");
+  assert.equal(client.workspaceTabTitle({ name: "Smoke" }, null), "Smoke");
+  assert.equal(
+    client.workspaceTabTitle({ name: "Smoke" }, { title: "Folder Object Crypto" }),
+    "Folder Object Crypto"
+  );
+  assert.equal(client.workspaceChromeState("page").shellView, "page");
+  assert.equal(client.workspaceChromeState("page").pageHidden, false);
+  assert.equal(client.workspaceChromeState("page").graphHidden, true);
+  assert.equal(client.workspaceChromeState("graph").shellView, "graph");
+  assert.equal(client.workspaceChromeState("graph").pageHidden, true);
+  assert.equal(client.workspaceChromeState("graph").graphHidden, false);
+  assert.match(client.workspaceChromeState("graph").graphTabClass, /active/);
+  assert.equal(client.graphEmptyStateCopy().title, "No readable graph yet");
+  assert.equal(
+    client.graphEmptyStateCopy({ readablePageCount: 3 }).copy,
+    "Readable Pages are open, but no Page links are available for this graph projection."
+  );
+  assert.equal(
+    client.graphEmptyStateCopy({ filterText: "folder key", readablePageCount: 3 }).title,
+    "No matching Pages"
+  );
+  assert.equal(
+    client.graphEmptyStateCopy({ filterText: "folder key", readablePageCount: 0 }).title,
+    "No readable graph yet"
+  );
+  assert.equal(client.normalizeSidebarMode("search"), "search");
+  assert.equal(client.normalizeSidebarMode("access"), "access");
+  assert.equal(client.normalizeSidebarMode("bogus"), "files");
+  const searchRows = client.searchPageRows("folder key", [
+    {
+      folderId: "crypto",
+      objectId: "page-a",
+      path: "folder-keys.md",
+      status: "ready",
+      text: "# Folder Keys\n\nReadable key material stays client-side.",
+      title: "Folder Keys",
+    },
+    {
+      folderId: "sync",
+      objectId: "page-b",
+      path: "sync.md",
+      status: "ready",
+      text: "# Sync\n\nCursor notes.",
+      title: "Sync",
+    },
+  ]);
+  assert.equal(searchRows.length, 1);
+  assert.equal(searchRows[0].detail, "crypto/folder-keys.md");
+  const folderMenu = client.contextMenuItemsForTarget({ type: "folder", folderId: "crypto" });
+  assert.equal(folderMenu.some((item) => item.action === "new-page"), true);
+  assert.equal(folderMenu.some((item) => item.action === "share-folder"), true);
+  assert.equal(folderMenu.find((item) => item.action === "delete-folder").disabled, true);
+  const pageMenu = client.contextMenuItemsForTarget({
+    type: "page",
+    folderId: "crypto",
+    objectId: "page-a",
+  });
+  assert.equal(pageMenu.some((item) => item.action === "open-graph"), true);
+  assert.equal(pageMenu.find((item) => item.action === "delete-page").disabled, true);
+  const readerPages = client.readerPageRows("general", openedSync.objects);
+  assert.equal(readerPages[0].label, "Hello");
+  const emptyReadablePage = {
+    folderId: "general",
+    objectId: "obj_empty_page01",
+    revision: 1,
+    status: "ready",
+    text: "",
+  };
+  const readerFoldersWithEmptyPage = client.readerFolderRows(
+    {
+      folders: [
+        {
+          id: "general",
+          path: "General",
+          access: "all_members",
+          accessUserIds: [],
+          currentKeyVersion: 1,
+          setupIncomplete: false,
+          sharedFolderSource: false,
+        },
+      ],
+    },
+    [...openedSync.objects, emptyReadablePage]
+  );
+  assert.equal(readerFoldersWithEmptyPage[0].pageCount, 2);
+  assert.equal(readerFoldersWithEmptyPage[0].readableCount, 2);
+  const emptyReaderPage = client.readerPageRows("general", [emptyReadablePage])[0];
+  assert.equal(emptyReaderPage.label, "obj_empty_page01");
+  assert.match(client.nextDraftObjectId(), /^obj_[A-Za-z0-9_-]{12,124}$/);
+  assert.ok(client.nextDraftObjectId().length >= 16);
+
   const lockedPage = await client.openFolderObject(client.createSessionKeyring(), {
     vaultId: "smoke",
     folderId: "general",
@@ -222,6 +460,123 @@ assert.match(folderRows[1].detail, /locked/);
   assert.deepEqual(
     Array.from(client.extractPageLinks("[[Roadmap]] [Spec](Specs/OKF.md) [Web](https://example.com)")),
     ["roadmap", "specs/okf"]
+  );
+  assert.equal(
+    JSON.stringify(client.inlineLinkSegments("Read [[Roadmap]] and [Spec](Specs/OKF.md).")),
+    JSON.stringify([
+      { kind: "text", text: "Read " },
+      { kind: "internal", target: "roadmap", text: "Roadmap" },
+      { kind: "text", text: " and " },
+      { kind: "internal", target: "specs/okf", text: "Spec" },
+      { kind: "text", text: "." },
+    ])
+  );
+  assert.equal(
+    JSON.stringify(client.inlineLinkSegments("Read [[Roadmap#Now|Q3 roadmap]].")),
+    JSON.stringify([
+      { kind: "text", text: "Read " },
+      { kind: "internal", target: "roadmap", text: "Q3 roadmap" },
+      { kind: "text", text: "." },
+    ])
+  );
+  assert.equal(
+    JSON.stringify(client.markdownPreviewBlocks("# Title\n\n- One\n- Two\n\n> Note\n\n```js\nconst ok = true;\n```")),
+    JSON.stringify([
+      { level: 1, text: "Title", type: "heading" },
+      { items: ["One", "Two"], type: "list" },
+      { text: "Note", type: "quote" },
+      { text: "const ok = true;", type: "code" },
+    ])
+  );
+  assert.equal(JSON.stringify(client.pageStatsForText("# Title\n\nSee [[Roadmap]] and words.")), JSON.stringify({
+    links: 1,
+    words: 6,
+  }));
+  const linkContext = client.pageLinkContext(
+    {
+      folderId: "general",
+      key: "general/alpha",
+      objectId: "alpha",
+      status: "ready",
+      text: "# Alpha\n\nSee [[Beta]] and [[Missing]].",
+      title: "Alpha",
+    },
+    [
+      {
+        folderId: "general",
+        key: "general/alpha",
+        objectId: "alpha",
+        status: "ready",
+        text: "# Alpha\n\nSee [[Beta]] and [[Missing]].",
+        title: "Alpha",
+      },
+      {
+        folderId: "general",
+        key: "general/beta",
+        objectId: "beta",
+        status: "ready",
+        text: "# Beta\n\nBack to [[Alpha]].",
+        title: "Beta",
+      },
+      {
+        folderId: "restricted",
+        key: "restricted/locked",
+        objectId: "locked",
+        status: "locked",
+        text: "# Locked\n\n[[Alpha]]",
+        title: "Locked",
+      },
+    ]
+  );
+  assert.equal(
+    JSON.stringify(linkContext.outgoing.map((row) => [row.label, row.status])),
+    JSON.stringify([
+      ["Beta", "resolved"],
+      ["missing", "missing"],
+    ])
+  );
+  assert.equal(
+    JSON.stringify(linkContext.backlinks.map((row) => [row.label, row.key])),
+    JSON.stringify([["Beta", "general/beta"]])
+  );
+  const pathLinkContext = client.pageLinkContext(
+    {
+      folderId: "docs",
+      key: "docs/intro",
+      objectId: "intro",
+      path: "docs/intro.md",
+      status: "ready",
+      text: "# Intro\n\nSee [Deep Dive](deep-dive.md).",
+      title: "Intro",
+    },
+    [
+      {
+        folderId: "docs",
+        key: "docs/intro",
+        objectId: "intro",
+        path: "docs/intro.md",
+        status: "ready",
+        text: "# Intro\n\nSee [Deep Dive](deep-dive.md).",
+        title: "Intro",
+      },
+      {
+        folderId: "docs",
+        key: "docs/deep-dive",
+        objectId: "deep-dive",
+        path: "docs/deep-dive.md",
+        status: "ready",
+        text: "# Deep Dive\n\nBack to [Intro](intro.md).",
+        title: "Deep Dive",
+      },
+    ]
+  );
+  assert.equal(
+    JSON.stringify(pathLinkContext.outgoing.map((row) => [row.label, row.status])),
+    JSON.stringify([["Deep Dive", "resolved"]])
+  );
+  assert.equal(
+    JSON.stringify(pathLinkContext.backlinks.map((row) => [row.label, row.key])),
+    JSON.stringify([["Deep Dive", "docs/deep-dive"]])
   );
 
   const okfInput = {
@@ -403,6 +758,10 @@ assert.match(folderRows[1].detail, /locked/);
   );
   assert.equal(graph.edges.length, 2);
   assert.equal(graph.edges.some((edge) => edge.id.includes("page-hidden")), false);
+  const graphMetrics = client.graphStats(graph, 3);
+  assert.equal(graphMetrics.edgeCount, 2);
+  assert.equal(graphMetrics.filteredOutCount, 1);
+  assert.equal(graphMetrics.nodeCount, 2);
 
   const filteredGraph = client.buildGraphProjection(
     [
@@ -425,6 +784,30 @@ assert.match(folderRows[1].detail, /locked/);
     Array.from(filteredGraph.nodes.map((node) => node.title).sort()),
     ["Alpha", "Beta"]
   );
+  const layout = client.graphLayout(graph, { height: 260, margin: 40, width: 320 });
+  assert.equal(layout.size, 2);
+  for (const position of layout.values()) {
+    assert.equal(position.x >= 40 && position.x <= 280, true);
+    assert.equal(position.y >= 40 && position.y <= 220, true);
+  }
+  assert.equal(
+    JSON.stringify(Array.from(client.graphLayout(graph, { height: 260, margin: 40, width: 320 }).entries())),
+    JSON.stringify(Array.from(layout.entries()))
+  );
+  const hubGraph = client.buildGraphProjection([
+    {
+      folderId: "general",
+      objectId: "hub",
+      status: "ready",
+      text: "# Hub\n\n[[One]] [[Two]] [[Three]] [[Four]]",
+    },
+    { folderId: "general", objectId: "one", status: "ready", text: "# One" },
+    { folderId: "general", objectId: "two", status: "ready", text: "# Two" },
+    { folderId: "general", objectId: "three", status: "ready", text: "# Three" },
+    { folderId: "general", objectId: "four", status: "ready", text: "# Four" },
+  ]);
+  const hubLayout = client.graphLayout(hubGraph, { height: 300, margin: 60, width: 400 });
+  assert.equal(JSON.stringify(hubLayout.get("general/hub")), JSON.stringify({ x: 200, y: 150 }));
 
   const replay = client.buildReplayFrames([
     {
