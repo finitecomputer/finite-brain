@@ -18,6 +18,7 @@ const FiniteBrainProductClient = (() => {
   const FOLDER_OBJECT_VERSION = "finite-folder-object-v1";
   const REVISION_VERSION = "finite-folder-object-revision-v1";
   const APP_EVENT_KIND = 30078;
+  const MAX_OBJECT_ID_ATTEMPTS = 1000;
   const BECH32_CHARSET = "qpzry9x8gf2tvdw0s3jn54khce6mua7l";
 
   function shortKey(value) {
@@ -567,6 +568,9 @@ const FiniteBrainProductClient = (() => {
     let candidate = base;
     let index = 2;
     while (occupiedObjectIds.has(candidate) || !validObjectId(candidate)) {
+      if (index > MAX_OBJECT_ID_ATTEMPTS) {
+        throw new Error(`could not allocate import object id for ${targetPath}`);
+      }
       candidate = `${base}_${index}`.slice(0, 128);
       index += 1;
     }

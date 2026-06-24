@@ -558,7 +558,7 @@ pub fn export_okf_bundle(input: OkfExportInput) -> Result<OkfBundle, Portability
         .map(|omission| OkfOmissionManifestEntry {
             folder_id: omission.folder_id.to_string(),
             display_path: omission.display_path.to_string(),
-            reason: omission.reason,
+            reason: safe_locked_reason(&omission.reason).to_owned(),
         })
         .collect::<Vec<_>>();
 
@@ -1445,7 +1445,7 @@ mod tests {
             omissions: vec![OkfOmittedFolder {
                 folder_id: FolderId::new("board").unwrap(),
                 display_path: SafeRelativePath::new("folder_path", "Board").unwrap(),
-                reason: "inaccessible".to_owned(),
+                reason: "missing key for Board/secret-plan.md".to_owned(),
             }],
         })
         .unwrap();
@@ -1459,6 +1459,7 @@ mod tests {
         let all_exported_text = bundle.files.values().cloned().collect::<String>();
         assert!(!all_exported_text.contains("secret-plan"));
         assert_eq!(bundle.manifest.omissions[0].folder_id, "board");
+        assert_eq!(bundle.manifest.omissions[0].reason, "inaccessible");
         assert!(
             bundle
                 .manifest

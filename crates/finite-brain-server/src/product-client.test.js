@@ -48,6 +48,16 @@ vm.runInNewContext(source, context, { filename: "product-client.js" });
 
 const client = context.window.FiniteBrainProductClient;
 
+function objectIdCandidateBaseForTest(value) {
+  return `obj_${String(value || "page")
+    .trim()
+    .toLowerCase()
+    .replace(/\.md$/i, "")
+    .replace(/[^a-z0-9_-]+/g, "_")
+    .replace(/^_+|_+$/g, "")
+    .slice(0, 88) || "page"}`.padEnd(16, "0").slice(0, 112);
+}
+
 assert.equal(client.deriveSignerState(null).status, "unavailable");
 assert.equal(client.deriveSignerState({ getPublicKey() {} }).status, "unsupported");
 assert.equal(
@@ -261,6 +271,31 @@ assert.match(folderRows[1].detail, /locked/);
   assert.equal(copyPlan.summary.copy, 1);
   assert.equal(copyBeta.targetPath, "beta imported.md");
   assert.match(copyAlpha.markdown, /\[Beta\]\(beta imported\.md\)/);
+
+  const saturatedObjectIdBase = objectIdCandidateBaseForTest("beta imported.md");
+  const saturatedObjectPages = Array.from({ length: 1000 }, (_, index) => ({
+    folderId: "general",
+    objectId: index === 0 ? saturatedObjectIdBase : `${saturatedObjectIdBase}_${index + 1}`,
+    path: `collision-${index}.md`,
+    revision: 1,
+  }));
+  assert.throws(
+    () =>
+      client.planOkfImport(
+        parsedOkf,
+        [
+          {
+            folderId: "general",
+            objectId: "obj_existing_beta_01",
+            path: "beta.md",
+            revision: 7,
+          },
+          ...saturatedObjectPages,
+        ],
+        { conflictMode: "copy" }
+      ),
+    /could not allocate import object id for beta imported\.md/
+  );
 
   const overwritePlan = client.planOkfImport(
     parsedOkf,
