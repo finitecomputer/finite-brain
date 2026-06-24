@@ -60,7 +60,7 @@
 ## PR And Handoff
 
 - PR URL: `https://github.com/finitecomputer/finite-brain/pull/15`
-- Commit SHA: pending
+- Commit SHA: `4614860`
 - Review notes: context patch is evidence-backed and does not introduce implementation changes.
 - Feature Dev handoff: none.
 - Improve Codebase handoff: route-doc generation and next structural slice.

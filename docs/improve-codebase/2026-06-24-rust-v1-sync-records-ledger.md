@@ -86,7 +86,7 @@
 ## PR And Follow-Up
 
 - PR URL: `https://github.com/finitecomputer/finite-brain/pull/15`
-- Commit SHA: pending
+- Commit SHA: `4614860`
 - Checks: targeted store tests, full Rust tests, clippy, build, JS checks, and diff hygiene passed.
 - Review notes: no standards/spec findings.
 - Follow-up issues: none created; parked candidates remain in this ledger.
