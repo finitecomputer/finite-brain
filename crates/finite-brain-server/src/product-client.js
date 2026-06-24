@@ -398,6 +398,33 @@ const FiniteBrainProductClient = (() => {
     return next;
   }
 
+  async function openSyncObjects(keyring, sync) {
+    if (!keyring) return sync;
+    const objects = await Promise.all(
+      (sync.objects || []).map(async (object) => {
+        if (object.deleted) return object;
+        try {
+          const opened = await openFolderObject(keyring, object);
+          return {
+            ...object,
+            ...opened,
+            title: opened.text ? pageTitleFromText(opened.text, object.objectId) : object.title,
+          };
+        } catch (error) {
+          return {
+            ...object,
+            error: error.message,
+            status: "locked",
+          };
+        }
+      })
+    );
+    return {
+      ...sync,
+      objects,
+    };
+  }
+
   function pageTitleFromText(text, fallback) {
     const heading = String(text || "").match(/^#\s+(.+)$/m);
     return heading ? heading[1].trim() : fallback;
@@ -1230,9 +1257,11 @@ const FiniteBrainProductClient = (() => {
   async function pullSyncBootstrap() {
     const path = `/_admin/vaults/${encodeURIComponent(state.activeVaultId)}/sync/bootstrap`;
     const sync = await protectedRequest(path);
-    state.projection = mergeSyncProjection(state.projection, sync);
+    const openedSync = await openSyncObjects(state.keyring, sync);
+    state.projection = mergeSyncProjection(state.projection, openedSync);
     log("Pulled sync bootstrap into local projection.", {
       conflicts: state.projection.conflicts,
+      decryptedPages: openedSync.objects.filter((object) => object.status === "ready").length,
       pages: state.projection.pages.size,
       seenEvents: state.projection.seenEventIds.size,
     });
@@ -1461,6 +1490,7 @@ const FiniteBrainProductClient = (() => {
     npubFromHex,
     openFolderKeyGrantPlaintext,
     openFolderObject,
+    openSyncObjects,
     parseOkfBundle,
     planOkfImport,
     prepareOkfImportWrites,

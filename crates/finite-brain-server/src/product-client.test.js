@@ -161,6 +161,20 @@ assert.match(folderRows[1].detail, /locked/);
   assert.equal(openedPage.status, "ready");
   assert.equal(openedPage.text, "# Hello\n\nEncrypted locally.");
 
+  const openedSync = await client.openSyncObjects(keyring, {
+    objects: [
+      {
+        vaultId: "smoke",
+        folderId: "general",
+        objectId: "obj_000000000001",
+        revision: 1,
+        ciphertext: write.ciphertext,
+      },
+    ],
+  });
+  assert.equal(openedSync.objects[0].status, "ready");
+  assert.equal(openedSync.objects[0].title, "Hello");
+
   const lockedPage = await client.openFolderObject(client.createSessionKeyring(), {
     vaultId: "smoke",
     folderId: "general",
@@ -169,6 +183,19 @@ assert.match(folderRows[1].detail, /locked/);
     ciphertext: write.ciphertext,
   });
   assert.equal(lockedPage.status, "locked");
+
+  const lockedSync = await client.openSyncObjects(client.createSessionKeyring(), {
+    objects: [
+      {
+        vaultId: "smoke",
+        folderId: "general",
+        objectId: "obj_000000000001",
+        revision: 1,
+        ciphertext: write.ciphertext,
+      },
+    ],
+  });
+  assert.equal(lockedSync.objects[0].status, "locked");
 
   const projection = client.createClientProjection();
   projection.localDrafts.set("general/obj_000000000001", {
