@@ -98,7 +98,7 @@ Out of scope:
 
 | Issue | Fixed point | Worker session | Commit | Review result | Checks |
 | --- | --- | --- | --- | --- | --- |
-| `finite-brain#17` | `29b1486` | Orchestrator direct implementation | pending commit | Standards/spec direct review passed; route/static asset diff follows existing Smoke UI route pattern, Product Client is distinct from Smoke UI, deterministic JS seams cover signer state, auth event template, and Folder locked-state projection | `node --check crates/finite-brain-server/src/product-client.js`; `node crates/finite-brain-server/src/product-client.test.js`; `cargo fmt --check`; `cargo test -p finite-brain-server product_client_serves_spine_assets_and_config -- --nocapture`; `cargo test`; `cargo clippy --all-targets -- -D warnings`; `cargo build`; `git diff --check`; local curl smoke |
+| `finite-brain#17` | `29b1486` | Orchestrator direct implementation | `cc2b1e5ec5af93681f1ee96a7e6841ec3f053426` | Standards/spec direct review passed; route/static asset diff follows existing Smoke UI route pattern, Product Client is distinct from Smoke UI, deterministic JS seams cover signer state, auth event template, and Folder locked-state projection | `node --check crates/finite-brain-server/src/product-client.js`; `node crates/finite-brain-server/src/product-client.test.js`; `cargo fmt --check`; `cargo test -p finite-brain-server product_client_serves_spine_assets_and_config -- --nocapture`; `cargo test`; `cargo clippy --all-targets -- -D warnings`; `cargo build`; `git diff --check`; local curl smoke |
 
 ## Resolved Decisions
 
