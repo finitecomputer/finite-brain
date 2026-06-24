@@ -19,3 +19,12 @@
 - Targeted Rust product-client asset test.
 - Local smoke server at `http://127.0.0.1:4015/client`.
 - Seeded smoke DB should show accessible folders and decrypted FiniteBrain pages after the guided reader flow.
+
+## Fixture Fill
+
+- Added `scripts/seed-smoke-doc-pages.mjs` to populate the local smoke SQLite
+  vault with FiniteBrain docs-themed encrypted Pages across every seeded
+  Folder.
+- The script uses the Product Client crypto helpers and `/tmp` smoke Folder Key
+  manifest so fixture Pages decrypt through the same client path as normal
+  Folder Objects.
