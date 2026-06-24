@@ -654,3 +654,534 @@ pre {
     align-items: flex-start;
   }
 }
+
+.obsidian-shell {
+  display: grid;
+  grid-template-columns: 38px minmax(250px, 320px) minmax(0, 1fr) minmax(230px, 280px);
+  grid-template-rows: minmax(0, 1fr) 24px;
+  min-height: 100vh;
+  background: #1f1f1f;
+  color: #d8d8d8;
+}
+
+.app-ribbon {
+  grid-row: 1 / span 2;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  border-right: 1px solid #303030;
+  background: #242424;
+  padding: 10px 5px;
+}
+
+.ribbon-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  min-height: 28px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: #a8a8a8;
+  font-size: 12px;
+  font-weight: 800;
+  padding: 0;
+  text-decoration: none;
+}
+
+.ribbon-button:hover,
+.ribbon-button.active {
+  background: #333333;
+  color: #f1f1f1;
+}
+
+.ribbon-link {
+  margin-top: auto;
+}
+
+.file-sidebar,
+.right-sidebar {
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  border-right: 1px solid #303030;
+  background: #252525;
+}
+
+.file-sidebar {
+  display: grid;
+  grid-template-rows: auto auto auto minmax(0, 1fr) auto;
+}
+
+.vault-header,
+.sidebar-toolbar,
+.sidebar-footer,
+.tab-strip,
+.status-bar {
+  display: flex;
+  align-items: center;
+}
+
+.vault-header {
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 50px;
+  border-bottom: 1px solid #303030;
+  padding: 10px 12px;
+}
+
+.vault-header h1 {
+  font-size: 15px;
+}
+
+.vault-control-strip {
+  display: grid;
+  gap: 8px;
+  border-bottom: 1px solid #303030;
+  padding: 10px 12px;
+}
+
+.vault-control-strip .inline-control {
+  gap: 6px;
+}
+
+.vault-control-strip input {
+  min-height: 30px;
+}
+
+.vault-control-strip button,
+.sidebar-toolbar button,
+.icon-text-button {
+  min-height: 30px;
+  border-radius: 5px;
+  padding: 5px 9px;
+}
+
+.sidebar-toolbar {
+  gap: 6px;
+  border-bottom: 1px solid #303030;
+  padding: 8px 10px;
+}
+
+.sidebar-toolbar button {
+  flex: 0 0 auto;
+  width: 30px;
+  padding: 0;
+  color: transparent;
+  font-size: 0;
+}
+
+.sidebar-toolbar button::before {
+  color: #b9b9b9;
+  font-size: 14px;
+  font-weight: 800;
+}
+
+#obsidianNewPageButton::before {
+  content: "+";
+}
+
+#obsidianNewFolderButton::before {
+  content: "F+";
+  font-size: 11px;
+}
+
+#refreshReaderButton::before {
+  content: "R";
+}
+
+.file-explorer {
+  min-height: 0;
+  overflow: auto;
+  padding: 8px 0;
+}
+
+.sidebar-mode-panel {
+  min-height: 0;
+}
+
+.sidebar-tool-panel {
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr);
+  gap: 8px;
+  overflow: hidden;
+  padding: 8px 0;
+}
+
+.sidebar-tool-panel[hidden] {
+  display: none;
+}
+
+.sidebar-tool-panel input {
+  width: calc(100% - 24px);
+  min-height: 30px;
+  margin: 0 12px;
+}
+
+.search-results,
+.access-list {
+  overflow: auto;
+}
+
+.sidebar-section-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 4px 12px 8px;
+  color: #a7a7a7;
+  font-size: 12px;
+  font-weight: 750;
+  text-transform: uppercase;
+}
+
+.obsidian-file-tree,
+.obsidian-file-tree ol {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.obsidian-file-tree li {
+  min-width: 0;
+}
+
+.obsidian-folder-button,
+.obsidian-page-button {
+  position: relative;
+  justify-content: flex-start;
+  width: calc(100% - 12px);
+  min-height: 28px;
+  margin: 1px 6px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: #c9c9c9;
+  font-size: 13px;
+  font-weight: 650;
+  padding: 5px 8px 5px 22px;
+  text-align: left;
+}
+
+.obsidian-page-button {
+  width: calc(100% - 30px);
+  margin-left: 24px;
+  color: #aeb4c0;
+  font-weight: 600;
+  padding-left: 20px;
+}
+
+.obsidian-folder-button::before,
+.obsidian-page-button::before {
+  position: absolute;
+  left: 7px;
+  color: #8e8e8e;
+  font-size: 10px;
+  line-height: 1;
+}
+
+.obsidian-folder-button::before {
+  content: ">";
+}
+
+.obsidian-folder-button.expanded::before {
+  content: "v";
+}
+
+.obsidian-page-button::before {
+  content: "-";
+}
+
+.obsidian-folder-button:hover,
+.obsidian-folder-button.active,
+.obsidian-page-button:hover,
+.obsidian-page-button.active {
+  background: #363636;
+  color: #f1f1f1;
+}
+
+.obsidian-folder-button.locked,
+.obsidian-folder-button.setup {
+  color: #f1c36f;
+}
+
+.obsidian-file-detail {
+  display: block;
+  margin-top: 2px;
+  color: #8d8d8d;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.obsidian-page-children {
+  padding-bottom: 4px;
+}
+
+.obsidian-file-row-actions {
+  margin-left: auto;
+  color: #858585;
+  font-size: 13px;
+  letter-spacing: 0;
+}
+
+.context-menu {
+  position: fixed;
+  z-index: 30;
+  display: grid;
+  min-width: 220px;
+  max-width: min(280px, calc(100vw - 16px));
+  border: 1px solid #484848;
+  border-radius: 8px;
+  background: #262626;
+  box-shadow: 0 16px 38px rgba(0, 0, 0, 0.42);
+  padding: 6px;
+}
+
+.context-menu[hidden] {
+  display: none;
+}
+
+.context-menu button {
+  justify-content: flex-start;
+  min-height: 30px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: #d6d6d6;
+  font-weight: 650;
+  padding: 6px 9px;
+}
+
+.context-menu button:hover {
+  background: #3a3a3a;
+  color: #ffffff;
+}
+
+.context-menu button:disabled {
+  color: #777777;
+  opacity: 1;
+}
+
+.context-menu .danger {
+  color: #f09090;
+}
+
+.context-menu-separator {
+  height: 1px;
+  margin: 5px 4px;
+  background: #3b3b3b;
+}
+
+.hidden-list {
+  display: none;
+}
+
+.sidebar-footer {
+  flex-wrap: wrap;
+  gap: 6px;
+  border-top: 1px solid #303030;
+  padding: 8px 10px;
+}
+
+.obsidian-workspace {
+  display: grid;
+  grid-template-rows: 40px minmax(0, 1fr);
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  background: #202020;
+}
+
+.tab-strip {
+  gap: 4px;
+  border-bottom: 1px solid #303030;
+  background: #262626;
+  padding: 0 8px;
+}
+
+.workspace-tab {
+  justify-content: flex-start;
+  max-width: 280px;
+  min-height: 32px;
+  border: 0;
+  border-radius: 7px 7px 0 0;
+  background: transparent;
+  color: #a8a8a8;
+  padding: 7px 12px;
+}
+
+.workspace-tab.active {
+  background: #202020;
+  color: #f1f1f1;
+}
+
+.tab-spacer {
+  flex: 1 1 auto;
+}
+
+.workspace-view {
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.page-workspace {
+  padding: 0;
+}
+
+.page-surface {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  height: 100%;
+}
+
+.page-header,
+.graph-topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  border-bottom: 1px solid #303030;
+  padding: 14px 22px;
+}
+
+.page-header h2,
+.graph-topbar h2 {
+  margin: 0;
+  font-size: 18px;
+  letter-spacing: 0;
+}
+
+.note-content {
+  min-height: 0;
+  height: 100%;
+  margin: 0;
+  overflow: auto;
+  border: 0;
+  border-radius: 0;
+  background: #202020;
+  color: #dedede;
+  font: 15px/1.65 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  padding: 28px min(9vw, 96px);
+  white-space: pre-wrap;
+}
+
+.editor-drawer {
+  border-top: 1px solid #303030;
+  background: #242424;
+  padding: 8px 14px 12px;
+}
+
+.editor-drawer > summary {
+  cursor: pointer;
+  color: #b7b7b7;
+  font-weight: 750;
+}
+
+.graph-workspace {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+}
+
+.graph-topbar {
+  min-height: 58px;
+}
+
+.graph-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.graph-controls input {
+  width: 220px;
+}
+
+.graph-canvas {
+  width: 100%;
+  min-height: 0;
+  height: 100%;
+  border: 0;
+  border-radius: 0;
+  background: #202020;
+}
+
+.right-sidebar {
+  display: grid;
+  grid-template-rows: auto auto auto minmax(0, 1fr);
+  border-left: 1px solid #303030;
+  border-right: 0;
+}
+
+.right-panel {
+  border-bottom: 1px solid #303030;
+  padding: 12px;
+}
+
+.right-panel h2 {
+  margin: 0 0 10px;
+  color: #d8d8d8;
+  font-size: 13px;
+}
+
+.right-sidebar .facts {
+  grid-template-columns: 1fr;
+}
+
+.right-sidebar .facts div {
+  border-right: 0;
+}
+
+.dev-console {
+  overflow: auto;
+}
+
+.dev-console[open] {
+  max-height: 48vh;
+}
+
+.activity-panel {
+  min-height: 0;
+  overflow: hidden;
+}
+
+.activity-panel pre {
+  max-height: none;
+  height: calc(100% - 34px);
+  min-height: 160px;
+}
+
+.status-bar {
+  grid-column: 2 / span 3;
+  gap: 14px;
+  min-width: 0;
+  overflow: hidden;
+  border-top: 1px solid #303030;
+  background: #242424;
+  color: #9a9a9a;
+  font-size: 12px;
+  padding: 3px 10px;
+}
+
+.status-bar span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+@media (max-width: 1180px) {
+  .obsidian-shell {
+    grid-template-columns: 38px minmax(230px, 290px) minmax(0, 1fr);
+  }
+
+  .right-sidebar {
+    display: none;
+  }
+
+  .status-bar {
+    grid-column: 2 / span 2;
+  }
+}

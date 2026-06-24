@@ -1164,7 +1164,7 @@ mod tests {
             .await
             .expect("client css response");
         assert_eq!(css_response.status(), StatusCode::OK);
-        let css_body = to_bytes(css_response.into_body(), 16 * 1024)
+        let css_body = to_bytes(css_response.into_body(), 64 * 1024)
             .await
             .expect("client css body");
         let css_body = std::str::from_utf8(&css_body).expect("client css utf8");
@@ -1183,7 +1183,7 @@ mod tests {
             .await
             .expect("client js response");
         assert_eq!(js_response.status(), StatusCode::OK);
-        let js_body = to_bytes(js_response.into_body(), 64 * 1024)
+        let js_body = to_bytes(js_response.into_body(), 128 * 1024)
             .await
             .expect("client js body");
         let js_body = std::str::from_utf8(&js_body).expect("client js utf8");

@@ -94,6 +94,225 @@ function fakeSignedEvent(template, page, authorNpub) {
 
 const pages = [
   {
+    folderId: "general",
+    objectId: "fb_smoke_home_0001",
+    path: "index.md",
+    title: "FiniteBrain Smoke Vault",
+    text: `# FiniteBrain Smoke Vault
+
+This smoke vault is a small, real-content FiniteBrain workspace for local testing.
+
+It is organized around the Portable v1 model:
+
+- Vaults are the top-level privacy container.
+- Folders are independent access and crypto boundaries.
+- Pages are encrypted Folder Objects.
+- The Product Client opens Folder Key Grants, decrypts readable Pages, and builds local views.
+
+Start with [[Vault Model]], [[Product Client]], [[Folder Keys]], and [[Sync Append Log]].
+`,
+  },
+  {
+    folderId: "general",
+    objectId: "fb_vault_model_0001",
+    path: "vault-model.md",
+    title: "Vault Model",
+    text: `# Vault Model
+
+A Vault is the top-level container for a personal or organization knowledge space.
+
+Organization Vaults start with:
+
+- vault-ops for admin-only operational material;
+- general for all-member material;
+- optional extra Folders for product domains, projects, or shared work.
+
+Personal Vaults have an owner-controlled home Folder.
+
+Folder access is binary in Portable v1. A member either has access to a Folder or they do not. There are no read-only or editor roles yet.
+
+Related pages: [[Folder Keys]], [[Vault Invites]], and [[Shared Folder Mounts]].
+`,
+  },
+  {
+    folderId: "general",
+    objectId: "fb_folder_keys_0001",
+    path: "folder-keys.md",
+    title: "Folder Keys",
+    text: `# Folder Keys
+
+Every Folder has its own Folder Key.
+
+There is no Vault Root Key. Parent Folder access does not imply Child Folder access, and Child Folder access does not imply Parent Folder access.
+
+The Product Client opens Folder Key Grants into an in-memory session keyring. Once a Folder Key is open, the client can decrypt the current encrypted objects for that Folder.
+
+This is why graph, search, OKF export, and agent working-tree projection all follow the same visibility boundary.
+`,
+  },
+  {
+    folderId: "general",
+    objectId: "fb_product_client_0001",
+    path: "product-client.md",
+    title: "Product Client",
+    text: `# Product Client
+
+The Product Client is the trusted browser workflow for FiniteBrain.
+
+It owns the normal loop:
+
+- connect a NIP-07 signer;
+- prepare signed Nostr HTTP authorization;
+- load Vault metadata;
+- open Folder Key Grants;
+- decrypt readable Pages;
+- edit and encrypt Page writes;
+- build graph, search, replay, and OKF views from local plaintext.
+
+The Smoke UI remains a development harness. The Product Client is the actual direction.
+
+See [[First Party Product Client ADR]] and [[Product Client Runbook]].
+`,
+  },
+  {
+    folderId: "general",
+    objectId: "fb_portable_v1_0001",
+    path: "portable-v1.md",
+    title: "Portable v1",
+    text: `# Portable v1
+
+Portable v1 is the hard-cut Rust implementation target.
+
+It covers:
+
+- Vault, Folder, and Page domain rules;
+- Folder Object encryption;
+- Folder Key Grants;
+- signed object revisions and tombstones;
+- sync bootstrap and incremental pulls;
+- shared Folder invitations and mounts;
+- OKF import/export;
+- working-tree projection for agents.
+
+Hard cut means no legacy runtime compatibility shims. Old data should come through explicit import paths, not hidden compatibility routes.
+`,
+  },
+  {
+    folderId: "general",
+    objectId: "fb_sync_log_0001",
+    path: "sync-append-log.md",
+    title: "Sync Append Log",
+    text: `# Sync Append Log
+
+FiniteBrain sync is built from ordered records.
+
+The server keeps:
+
+- a Vault Record Index with monotonic sequence numbers;
+- current encrypted object projection for fast bootstrap;
+- duplicate event detection;
+- tombstones for deletes;
+- cursor behavior for incremental pulls.
+
+Clients bootstrap from current state, then pull later records by cursor. If the cursor expires, the client reboots from a fresh bootstrap.
+`,
+  },
+  {
+    folderId: "general",
+    objectId: "fb_graph_replay_0001",
+    path: "graph-replay.md",
+    title: "Graph Replay",
+    text: `# Graph Replay
+
+Graph Replay is a Product Client projection.
+
+The server does not store plaintext graph nodes, links, backlinks, or replay frames. The client derives those from Pages it can decrypt.
+
+This means replay visibility follows Folder Key access:
+
+- inaccessible Pages do not appear;
+- newly opened Folder Keys can add nodes;
+- removed access should remove those nodes after refresh/rebootstrap.
+
+See [[Graph View Visibility]] and [[Replay Frames]].
+`,
+  },
+  {
+    folderId: "general",
+    objectId: "fb_sharing_model_0001",
+    path: "sharing-model.md",
+    title: "Sharing Model",
+    text: `# Sharing Model
+
+FiniteBrain sharing has two related flows.
+
+Vault invitations add a specific npub as a member of one Vault.
+
+Shared Folder invitations let a source Folder appear inside another organization without copying ownership. This is closer to shared channels than email attachments.
+
+The crypto primitive stays the same: recipients need Folder Key Grants for the source Folder.
+
+Read [[Vault Invites]], [[Shared Folder Mounts]], and [[Mounted Folder Routing]].
+`,
+  },
+  {
+    folderId: "general",
+    objectId: "fb_okf_agentwiki_0001",
+    path: "okf-and-agent-wiki.md",
+    title: "OKF and Agent Wiki",
+    text: `# OKF and Agent Wiki
+
+OKF is the readable import/export format for accessible content.
+
+The agent wiki layer is the local working-tree shape agents use after the client decrypts Pages:
+
+- AGENTS.md for operating instructions;
+- _index.md for folder summaries;
+- _wiki/ for generated durable summaries;
+- raw, compiled, and output areas for workflows.
+
+The server remains blind to readable OKF and wiki content unless a trusted client encrypts it back into Folder Objects.
+`,
+  },
+  {
+    folderId: "general",
+    objectId: "fb_security_notes_0001",
+    path: "security-notes.md",
+    title: "Security Notes",
+    text: `# Security Notes
+
+Current hardening themes:
+
+- Nostr HTTP auth validates method, URL, timestamp, payload hash, event id, and signature.
+- Folder Object AAD binds ciphertext to vaultId, folderId, objectId, and keyVersion.
+- Payload limits, CORS allowlists, rate limits, and replay checks are server concerns.
+- Plaintext Page content belongs in trusted clients, not server-side search or import routes.
+
+Prototype boundary: the browser keyring is in-memory, so opened Folder Keys are not durable across sessions.
+`,
+  },
+  {
+    folderId: "general",
+    objectId: "fb_smoke_runbook_0001",
+    path: "smoke-testing-runbook.md",
+    title: "Smoke Testing Runbook",
+    text: `# Smoke Testing Runbook
+
+Local smoke path:
+
+- start finite-brain-app with FINITE_BRAIN_DB pointing at the smoke SQLite file;
+- open /client;
+- connect the NIP-07 signer;
+- load the smoke Vault;
+- open accessible Folder Key Grants;
+- click each Folder and Page;
+- render Graph View from decrypted Pages;
+- test a Page write inside an accessible Folder.
+
+Expected result: all seeded Folders have Pages, and locked states are explained instead of looking empty.
+`,
+  },
+  {
     folderId: "docs",
     objectId: "fb_docs_context_map_0001",
     path: "context-map.md",
@@ -454,6 +673,507 @@ When access is removed, the expected secure path is:
 - update the current projection to the rotated revision.
 
 This fixture is readable in the smoke setup because the seeded admin receives the Restricted Lab Folder Key.
+`,
+  },
+  {
+    folderId: "docs",
+    objectId: "fb_docs_hard_cut_0001",
+    path: "hard-cut-boundary.md",
+    title: "Hard Cut Boundary",
+    text: `# Hard Cut Boundary
+
+FiniteBrain Rust v1 is a hard cut from the previous prototype runtime.
+
+That means:
+
+- no legacy route compatibility as a product promise;
+- no old runtime migration shims hidden inside the new client;
+- explicit import/export paths for portable data;
+- Product Client language based on Vault, Folder, and Page.
+
+The hard cut keeps the Rust implementation small enough to reason about while still preserving the useful product ideas from v1.
+`,
+  },
+  {
+    folderId: "docs",
+    objectId: "fb_docs_product_runbook_0001",
+    path: "product-client-runbook.md",
+    title: "Product Client Runbook",
+    text: `# Product Client Runbook
+
+The Product Client parity runbook verifies that the trusted browser workflow can perform the core spine.
+
+Required checks:
+
+- serve /client and static assets;
+- load /client/config.json;
+- connect through NIP-07;
+- sign protected route requests;
+- open Folder Key Grants;
+- decrypt readable Pages;
+- prepare encrypted Page writes;
+- build graph, replay, OKF, and sync projections locally.
+
+This smoke vault is intentionally docs-heavy so those flows have enough content to inspect.
+`,
+  },
+  {
+    folderId: "architecture",
+    objectId: "fb_arch_finite_nostr_0001",
+    path: "finite-nostr-boundary.md",
+    title: "finite-nostr Boundary",
+    text: `# finite-nostr Boundary
+
+finite-nostr is for reusable Nostr primitives.
+
+Good candidates:
+
+- NIP-19 identity encoding;
+- Nostr event serialization and verification;
+- NIP-44 encryption adapters;
+- NIP-59 wrapping helpers;
+- NIP-98-style HTTP authorization helpers.
+
+Not candidates:
+
+- Vault policy;
+- Folder access rules;
+- Folder Object AAD;
+- OKF import behavior;
+- Product Client state.
+
+FiniteBrain uses Nostr, but FiniteBrain policy belongs in finite-brain.
+`,
+  },
+  {
+    folderId: "architecture",
+    objectId: "fb_arch_sqlite_day_one_0001",
+    path: "sqlite-from-day-one.md",
+    title: "SQLite From Day One",
+    text: `# SQLite From Day One
+
+SQLite is the authoritative state store for the Rust implementation.
+
+The reason is simple: sync, grants, invites, mounts, backups, and recovery are durability problems from the start.
+
+The store owns:
+
+- schema migrations;
+- transaction boundaries;
+- current projection rebuilds;
+- duplicate event handling;
+- restart behavior;
+- backup and consistency checks.
+
+In-memory stores can help pure unit tests, but SQLite is the reference path.
+`,
+  },
+  {
+    folderId: "crypto",
+    objectId: "fb_crypto_http_auth_0001",
+    path: "nostr-http-auth.md",
+    title: "Nostr HTTP Auth",
+    text: `# Nostr HTTP Auth
+
+Protected FiniteBrain routes use signed Nostr authorization events.
+
+The event binds:
+
+- request method;
+- absolute request URL;
+- request body hash when a body is present;
+- timestamp within the configured skew window;
+- signer identity.
+
+The server verifies the event id and Schnorr signature, then derives the actor npub from the signer.
+
+This avoids trusting caller-supplied user ids for protected Vault operations.
+`,
+  },
+  {
+    folderId: "crypto",
+    objectId: "fb_crypto_signed_revisions_0001",
+    path: "signed-revisions.md",
+    title: "Signed Revisions",
+    text: `# Signed Revisions
+
+Folder Object creates, updates, moves, and deletes are signed events.
+
+Create/update/move writes include:
+
+- vaultId;
+- folderId;
+- objectId;
+- operation;
+- revision;
+- baseRevision;
+- keyVersion;
+- ciphertext hash;
+- author npub.
+
+Deletes create tombstones instead of silently removing history.
+
+The server validates the signed event against the submitted encrypted payload before appending the record.
+`,
+  },
+  {
+    folderId: "crypto",
+    objectId: "fb_crypto_canonical_vectors_0001",
+    path: "canonical-test-vectors.md",
+    title: "Canonical Test Vectors",
+    text: `# Canonical Test Vectors
+
+Portable v1 treats serialization as part of the cryptographic boundary.
+
+Compatibility fixtures should cover:
+
+- auth event serialization;
+- encrypted Folder Object envelopes;
+- Folder Key Grant plaintext;
+- ciphertext hashes;
+- base64 encoding;
+- Nostr event ids;
+- revision and tombstone payloads;
+- duplicate sync submissions;
+- stale baseRevision conflicts.
+
+The goal is to make another implementation fail loudly if it hashes or serializes a security-critical object differently.
+`,
+  },
+  {
+    folderId: "sync",
+    objectId: "fb_sync_cursor_rebootstrap_0001",
+    path: "cursor-rebootstrap.md",
+    title: "Cursor Rebootstrap",
+    text: `# Cursor Rebootstrap
+
+Sync cursors are a convenience, not a permanent truth.
+
+If a client cursor expires, the expected behavior is:
+
+- stop incremental pull;
+- request sync bootstrap again;
+- rebuild the current encrypted projection;
+- reopen/decrypt readable Pages with the session keyring;
+- resume incremental pulls from the new latest sequence.
+
+This keeps the client correct even when old event windows compact away.
+`,
+  },
+  {
+    folderId: "sync",
+    objectId: "fb_sync_duplicate_events_0001",
+    path: "duplicate-events.md",
+    title: "Duplicate Events",
+    text: `# Duplicate Events
+
+Duplicate event handling keeps retry behavior boring.
+
+If a client submits the same signed record twice, the store should detect the existing event id and return the existing sequence instead of appending a second logical change.
+
+This matters for flaky browsers, refreshes, and reconnects.
+
+Idempotency belongs near storage because it depends on durable event ids and transaction boundaries.
+`,
+  },
+  {
+    folderId: "sync",
+    objectId: "fb_sync_base_revision_0001",
+    path: "base-revision-conflicts.md",
+    title: "Base Revision Conflicts",
+    text: `# Base Revision Conflicts
+
+Updates include baseRevision.
+
+If the client thinks a Page is at revision 1 but the server is already at revision 2, the server rejects the stale write.
+
+The Product Client should keep the local draft unresolved, fetch the newer server version, and let the user or future merge helper decide what to do.
+
+This is intentionally simpler than real-time collaborative editing.
+`,
+  },
+  {
+    folderId: "sharing",
+    objectId: "fb_sharing_invite_lifecycle_0001",
+    path: "invite-lifecycle.md",
+    title: "Invite Lifecycle",
+    text: `# Invite Lifecycle
+
+Vault invites are singleton and npub-bound.
+
+States:
+
+- pending;
+- accepted;
+- revoked;
+- expired.
+
+An accepted invite cannot be accepted again by another npub. Revoking a pending invite prevents future acceptance, but it does not silently remove already-created membership from an accepted invite.
+
+Folder access after joining still depends on the initial Folder choices and grants.
+`,
+  },
+  {
+    folderId: "sharing",
+    objectId: "fb_sharing_mounted_routing_0001",
+    path: "mounted-folder-routing.md",
+    title: "Mounted Folder Routing",
+    text: `# Mounted Folder Routing
+
+A mounted shared Folder appears in a destination Vault but remains owned by the source Vault.
+
+Client behavior:
+
+- display the mount where the destination org expects it;
+- read source metadata and source encrypted objects;
+- open source Folder Key Grants;
+- send writes back to the source Vault and Folder;
+- remove or lock the mount when access is revoked.
+
+This avoids copying private content between organizations while still supporting shared-channel style collaboration.
+`,
+  },
+  {
+    folderId: "sharing",
+    objectId: "fb_sharing_binary_access_0001",
+    path: "binary-folder-access.md",
+    title: "Binary Folder Access",
+    text: `# Binary Folder Access
+
+FiniteBrain currently keeps Folder access binary.
+
+For a given Folder:
+
+- allowed means read and write encrypted content;
+- not allowed means see only permitted metadata;
+- admins have access to every organization Folder;
+- restricted access lists name additional members.
+
+Role-based editor/viewer permissions are intentionally deferred until the product really needs them.
+`,
+  },
+  {
+    folderId: "portability",
+    objectId: "fb_port_path_rules_0001",
+    path: "path-and-naming-rules.md",
+    title: "Path and Naming Rules",
+    text: `# Path and Naming Rules
+
+FiniteBrain has two path layers.
+
+Folder hierarchy paths are server-visible metadata.
+
+Page paths live inside encrypted Folder Object plaintext.
+
+Rules:
+
+- paths are UTF-8 and normalized to Unicode NFC;
+- comparisons are case-sensitive;
+- Page paths must be relative safe paths;
+- reserved root names include .finitebrain, _admin, and .git;
+- Folder ids and object ids are stable opaque identifiers;
+- moving a Folder changes metadata only.
+`,
+  },
+  {
+    folderId: "portability",
+    objectId: "fb_port_import_conflicts_0001",
+    path: "okf-import-conflicts.md",
+    title: "OKF Import Conflicts",
+    text: `# OKF Import Conflicts
+
+OKF import planning should be explicit before writing encrypted objects.
+
+Conflict behavior should answer:
+
+- does this Page already exist in the destination Folder?
+- should import skip, overwrite, or copy with a new path?
+- which links need rewriting?
+- which inaccessible folders were omitted from export?
+- which destination Folder Keys must be open before upload?
+
+The server should receive encrypted writes, not readable OKF payloads.
+`,
+  },
+  {
+    folderId: "portability",
+    objectId: "fb_port_backup_restore_0001",
+    path: "backup-restore.md",
+    title: "Backup and Restore",
+    text: `# Backup and Restore
+
+Portable v1 backup is mostly a server-state concern.
+
+The backup shape should preserve:
+
+- SQLite metadata tables;
+- Vault Record Index order;
+- current encrypted object projection;
+- Folder Key Grant metadata;
+- invitations, share links, mounts, and access state.
+
+Restore ordering matters: metadata and grants must exist before clients can decrypt current objects after rebootstrap.
+`,
+  },
+  {
+    folderId: "agent-wiki",
+    objectId: "fb_agent_agents_md_0001",
+    path: "agents-md-contract.md",
+    title: "AGENTS.md Contract",
+    text: `# AGENTS.md Contract
+
+The working tree can create AGENTS.md files for agent-readable operating context.
+
+A useful AGENTS.md should tell an agent:
+
+- what this Folder is for;
+- which local conventions matter;
+- where raw source material lives;
+- where compiled or generated output should go;
+- what not to infer from inaccessible Folders.
+
+This is client-side generated context over decrypted Pages, not server-side policy.
+`,
+  },
+  {
+    folderId: "agent-wiki",
+    objectId: "fb_agent_wiki_conventions_0001",
+    path: "wiki-folder-conventions.md",
+    title: "Wiki Folder Conventions",
+    text: `# Wiki Folder Conventions
+
+Agent-facing wiki folders use a predictable shape.
+
+Common paths:
+
+- _index.md for a human and agent summary;
+- _wiki/ for durable generated summaries;
+- raw/ for captured source material;
+- compiled/ for bundled context;
+- output/ for run artifacts and reports.
+
+These paths are conventions inside an accessible working tree. The encrypted server state remains Folder Objects and sync records.
+`,
+  },
+  {
+    folderId: "graph-smoke",
+    objectId: "fb_graph_visibility_0001",
+    path: "graph-visibility.md",
+    title: "Graph View Visibility",
+    text: `# Graph View Visibility
+
+Graph View must be built from decrypted Pages.
+
+Visibility rules:
+
+- all nodes come from readable Folder Objects;
+- links to unreadable Pages may be shown as unresolved labels or omitted;
+- tags and backlinks are local client indexes;
+- server-visible object metadata is not enough to build a readable graph.
+
+This smoke folder links across the vault so graph filtering can be tested.
+`,
+  },
+  {
+    folderId: "graph-smoke",
+    objectId: "fb_graph_replay_frames_0001",
+    path: "replay-frames.md",
+    title: "Replay Frames",
+    text: `# Replay Frames
+
+Replay frames are a local view over applied sync history and decrypted Page indexes.
+
+Useful frame events:
+
+- Page created;
+- Page updated;
+- Page moved;
+- Page deleted;
+- Folder Key opened;
+- Folder access lost after refresh.
+
+Replay is not a separate authoritative event model. It is a Product Client visualization.
+`,
+  },
+  {
+    folderId: "restricted-lab",
+    objectId: "fb_restricted_lab_0001",
+    path: "restricted-lab.md",
+    title: "Restricted Lab",
+    text: `# Restricted Lab
+
+This Folder is restricted to make access behavior visible during smoke testing.
+
+It should demonstrate:
+
+- restricted metadata can appear in the Vault tree;
+- Page content only opens when the current user has a Folder Key Grant;
+- removing access requires key rotation;
+- stale local plaintext must not become server-visible.
+
+In the local fixture, the seeded admin can read it so the Product Client has something real to show.
+`,
+  },
+  {
+    folderId: "restricted-lab",
+    objectId: "fb_restricted_access_example_0001",
+    path: "restricted-access-example.md",
+    title: "Restricted Access Example",
+    text: `# Restricted Access Example
+
+A traditional app might say: You do not have access to this folder.
+
+FiniteBrain should explain the same thing in product terms:
+
+- this Folder is restricted;
+- your account does not have a current Folder Key Grant;
+- an admin can grant access or repair setup;
+- if access was removed, old keys may no longer open current content.
+
+That framing is much clearer than saying the Folder is broken.
+`,
+  },
+  {
+    folderId: "vault-ops",
+    objectId: "fb_ops_bootstrap_0001",
+    path: "bootstrap-seed-expectations.md",
+    title: "Bootstrap Seed Expectations",
+    text: `# Bootstrap Seed Expectations
+
+Smoke/demo bootstrap should be reproducible.
+
+Required expectations:
+
+- create every demo Folder with a current Folder Key;
+- create Folder Key Grants for every seeded Folder;
+- seed encrypted Pages through the same crypto helper path the client uses;
+- avoid hidden browser keyring state;
+- keep test-only content clearly marked or omit it from reusable fixtures.
+
+This page exists so future seed changes have a checklist.
+`,
+  },
+  {
+    folderId: "vault-ops",
+    objectId: "fb_ops_hardening_0001",
+    path: "hardening-watchlist.md",
+    title: "Hardening Watchlist",
+    text: `# Hardening Watchlist
+
+Before production, keep pressure on:
+
+- replay resistance;
+- clock skew;
+- nonce uniqueness;
+- CORS and CSRF boundaries;
+- payload size limits;
+- rate limits;
+- local plaintext lifetime;
+- NIP-07 trust boundary;
+- backup restore consistency;
+- migration tests.
+
+The smoke client should make these boundaries visible without pretending the prototype is already production-hardened.
 `,
   },
 ];

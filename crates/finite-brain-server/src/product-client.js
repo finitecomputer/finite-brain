@@ -14,6 +14,10 @@ const FiniteBrainProductClient = (() => {
     readerBusy: false,
     selectedFolderId: null,
     selectedPageKey: null,
+    activeWorkspaceView: "page",
+    activeSidebarMode: "files",
+    expandedFolderIds: new Set(),
+    contextMenuTarget: null,
   };
 
   const $ = (id) => document.getElementById(id);
@@ -84,6 +88,7 @@ const FiniteBrainProductClient = (() => {
       return {
         access: folder.access,
         accessLabel,
+        currentKeyVersion: folder.currentKeyVersion,
         id: folder.id,
         path: folder.path,
         status,
@@ -1025,6 +1030,7 @@ const FiniteBrainProductClient = (() => {
       const folderWithReadablePages = folders.find((folder) => folder.readableCount > 0);
       state.selectedFolderId = folderWithReadablePages?.id || folders[0]?.id || null;
     }
+    if (state.selectedFolderId) state.expandedFolderIds.add(state.selectedFolderId);
 
     const pages = readerPageRows(state.selectedFolderId);
     const pageStillExists = pages.some((page) => page.key === state.selectedPageKey);
@@ -1039,19 +1045,141 @@ const FiniteBrainProductClient = (() => {
     return projectionPages().find((page) => page.key === state.selectedPageKey) || null;
   }
 
-  function selectReaderFolder(folderId) {
+  function workspaceTabTitle(metadata, page) {
+    return page?.title || metadata?.name || "Open a Vault";
+  }
+
+  function normalizeSidebarMode(mode) {
+    return ["files", "search", "access"].includes(mode) ? mode : "files";
+  }
+
+  function searchPageRows(query, pages = readablePages()) {
+    const needle = String(query || "").trim().toLowerCase();
+    if (!needle) return [];
+    return pages
+      .filter((page) => {
+        const haystack = [page.title, page.path, page.folderId, page.text].filter(Boolean).join("\n").toLowerCase();
+        return haystack.includes(needle);
+      })
+      .sort((left, right) =>
+        (left.title || left.objectId).localeCompare(right.title || right.objectId)
+      )
+      .map((page) => ({
+        ...page,
+        label: page.title || page.objectId,
+        detail: `${page.folderId}/${page.path || `${page.objectId}.md`}`,
+      }));
+  }
+
+  function contextMenuItemsForTarget(target) {
+    if (!target) return [];
+    if (target.type === "page") {
+      return [
+        { action: "open-page", label: "Open Page" },
+        { action: "new-page", label: "New Page in Folder" },
+        { action: "open-graph", label: "Show in Graph View" },
+        { separator: true },
+        { action: "copy-page-id", label: "Copy Page ID" },
+        { action: "copy-folder-id", label: "Copy Folder ID" },
+        { separator: true },
+        { action: "delete-page", label: "Delete Page", disabled: true, danger: true },
+      ];
+    }
+    return [
+      { action: "open-folder", label: "Open Folder" },
+      { action: "new-page", label: "New Page" },
+      { action: "new-folder", label: "New Folder Inside" },
+      { separator: true },
+      { action: "copy-folder-id", label: "Copy Folder ID" },
+      { action: "manage-access", label: "Manage Access" },
+      { action: "share-folder", label: "Share Folder" },
+      { separator: true },
+      { action: "delete-folder", label: "Delete Folder", disabled: true, danger: true },
+    ];
+  }
+
+  function setSidebarMode(mode) {
+    state.activeSidebarMode = normalizeSidebarMode(mode);
+    closeContextMenu();
+    render();
+  }
+
+  function setWorkspaceView(view) {
+    state.activeWorkspaceView = view === "graph" ? "graph" : "page";
+    if (state.activeWorkspaceView === "graph") renderGraphView();
+    render();
+  }
+
+  function renderWorkspaceChrome(page = selectedReaderPage()) {
+    const pageActive = state.activeWorkspaceView !== "graph";
+    $("pageWorkspace").hidden = !pageActive;
+    $("graphWorkspace").hidden = pageActive;
+    $("pageTabButton").className = `workspace-tab${pageActive ? " active" : ""}`;
+    $("graphTabButton").className = `workspace-tab${pageActive ? "" : " active"}`;
+    $("ribbonGraphButton").className = `ribbon-button${pageActive ? "" : " active"}`;
+    setText("workspaceTitle", workspaceTabTitle(state.metadata, page));
+  }
+
+  function nextDraftObjectId() {
+    return `obj_${Date.now().toString(36)}`;
+  }
+
+  function startNewPageDraft(folderIdOverride = null) {
+    const folderId = folderIdOverride || state.selectedFolderId || "general";
+    const objectId = nextDraftObjectId();
     state.selectedFolderId = folderId;
-    const firstPage = readerPageRows(folderId).find((page) => page.status === "ready");
-    state.selectedPageKey = firstPage?.key || null;
+    state.selectedPageKey = null;
+    state.preparedWrite = null;
+    state.preparedWriteTarget = null;
+    state.activeWorkspaceView = "page";
+    state.expandedFolderIds.add(folderId);
+    $("pageFolderIdInput").value = folderId;
+    $("okfDestinationFolderInput").value = folderId;
+    $("pageObjectIdInput").value = objectId;
+    $("pageBaseRevisionInput").value = "";
+    $("pageDraftInput").value = "# New Page\n\nStart writing here.";
+    log("Started a new Page draft.", { folderId, objectId });
+    render();
+  }
+
+  function selectReaderFolder(folderId, options = {}) {
+    state.selectedFolderId = folderId;
+    state.expandedFolderIds.add(folderId);
+    if (options.selectFirstPage !== false) {
+      const firstPage = readerPageRows(folderId).find((page) => page.status === "ready");
+      state.selectedPageKey = firstPage?.key || null;
+    }
+    state.activeWorkspaceView = "page";
     $("pageFolderIdInput").value = folderId;
     $("okfDestinationFolderInput").value = folderId;
     render();
   }
 
+  function toggleReaderFolder(folderId) {
+    const isExpanded = state.expandedFolderIds.has(folderId);
+    state.selectedFolderId = folderId;
+    $("pageFolderIdInput").value = folderId;
+    $("okfDestinationFolderInput").value = folderId;
+    if (isExpanded) {
+      state.expandedFolderIds.delete(folderId);
+      state.selectedPageKey = null;
+    } else {
+      state.expandedFolderIds.add(folderId);
+      const firstPage = readerPageRows(folderId).find((page) => page.status === "ready");
+      state.selectedPageKey = firstPage?.key || null;
+    }
+    state.activeWorkspaceView = "page";
+    closeContextMenu();
+    render();
+  }
+
   function selectReaderPage(pageKeyValue) {
     state.selectedPageKey = pageKeyValue;
+    state.activeWorkspaceView = "page";
     const page = selectedReaderPage();
     if (page) {
+      state.selectedFolderId = page.folderId;
+      state.expandedFolderIds.add(page.folderId);
       $("pageFolderIdInput").value = page.folderId;
       $("pageObjectIdInput").value = page.objectId;
       $("pageBaseRevisionInput").value = String(page.revision || "");
@@ -1168,6 +1296,100 @@ const FiniteBrainProductClient = (() => {
     $("activityLog").textContent = `${new Date().toISOString()} ${message}${suffix}`;
   }
 
+  function closeContextMenu() {
+    state.contextMenuTarget = null;
+    const menu = $("contextMenu");
+    if (!menu) return;
+    menu.hidden = true;
+    menu.replaceChildren();
+  }
+
+  function positionContextMenu(menu, x, y, itemCount) {
+    const estimatedWidth = 240;
+    const estimatedHeight = Math.max(40, itemCount * 34 + 14);
+    const maxLeft = Math.max(8, window.innerWidth - estimatedWidth - 8);
+    const maxTop = Math.max(8, window.innerHeight - estimatedHeight - 8);
+    menu.style.left = `${Math.min(Math.max(8, x), maxLeft)}px`;
+    menu.style.top = `${Math.min(Math.max(8, y), maxTop)}px`;
+  }
+
+  function writeClipboard(text) {
+    if (navigator.clipboard?.writeText) return navigator.clipboard.writeText(text);
+    return Promise.resolve();
+  }
+
+  function handleContextMenuAction(item, target) {
+    if (item.disabled) return;
+    closeContextMenu();
+    if (item.action === "open-folder") {
+      selectReaderFolder(target.folderId);
+      return;
+    }
+    if (item.action === "open-page") {
+      selectReaderPage(target.pageKey);
+      return;
+    }
+    if (item.action === "new-page") {
+      startNewPageDraft(target.folderId);
+      return;
+    }
+    if (item.action === "new-folder") {
+      log("New child Folder is queued for the Folder creation slice.", {
+        parentFolderId: target.folderId,
+      });
+      return;
+    }
+    if (item.action === "open-graph") {
+      $("graphFilterInput").value = target.title || target.objectId || "";
+      setWorkspaceView("graph");
+      return;
+    }
+    if (item.action === "copy-page-id") {
+      writeClipboard(target.objectId).catch(() => {});
+      log("Copied Page ID.", { objectId: target.objectId });
+      return;
+    }
+    if (item.action === "copy-folder-id") {
+      writeClipboard(target.folderId).catch(() => {});
+      log("Copied Folder ID.", { folderId: target.folderId });
+      return;
+    }
+    if (item.action === "manage-access") {
+      setSidebarMode("access");
+      log("Opened Folder access panel.", { folderId: target.folderId });
+      return;
+    }
+    if (item.action === "share-folder") {
+      setSidebarMode("access");
+      log("Share Folder flow is surfaced in the access/share slice.", { folderId: target.folderId });
+    }
+  }
+
+  function openContextMenu(target, x, y) {
+    const menu = $("contextMenu");
+    if (!menu) return;
+    state.contextMenuTarget = target;
+    menu.replaceChildren();
+    const items = contextMenuItemsForTarget(target);
+    for (const item of items) {
+      if (item.separator) {
+        const separator = document.createElement("div");
+        separator.className = "context-menu-separator";
+        menu.appendChild(separator);
+        continue;
+      }
+      const button = document.createElement("button");
+      button.type = "button";
+      button.textContent = item.label;
+      button.disabled = Boolean(item.disabled);
+      button.className = item.danger ? "danger" : "";
+      button.addEventListener("click", () => handleContextMenuAction(item, target));
+      menu.appendChild(button);
+    }
+    menu.hidden = false;
+    positionContextMenu(menu, x, y, items.length);
+  }
+
   function readerButton(label, detail, className, onClick) {
     const button = document.createElement("button");
     button.type = "button";
@@ -1183,6 +1405,86 @@ const FiniteBrainProductClient = (() => {
     return button;
   }
 
+  function appendObsidianDetail(button, detail) {
+    if (!detail) return;
+    const detailElement = document.createElement("span");
+    detailElement.className = "obsidian-file-detail";
+    detailElement.textContent = detail;
+    button.appendChild(detailElement);
+  }
+
+  function obsidianTreeButton(label, detail, className, onClick, options = {}) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = className;
+    button.textContent = label;
+    appendObsidianDetail(button, detail);
+    button.addEventListener("click", onClick);
+    if (options.contextTarget) {
+      button.addEventListener("contextmenu", (event) => {
+        event.preventDefault();
+        openContextMenu(options.contextTarget, event.clientX, event.clientY);
+      });
+    }
+    return button;
+  }
+
+  function renderSidebarMode() {
+    const mode = normalizeSidebarMode(state.activeSidebarMode);
+    state.activeSidebarMode = mode;
+    $("filesSidebarPanel").hidden = mode !== "files";
+    $("searchSidebarPanel").hidden = mode !== "search";
+    $("accessSidebarPanel").hidden = mode !== "access";
+    $("ribbonFilesButton").className = `ribbon-button${mode === "files" ? " active" : ""}`;
+    $("ribbonSearchButton").className = `ribbon-button${mode === "search" ? " active" : ""}`;
+    $("ribbonAccessButton").className = `ribbon-button${mode === "access" ? " active" : ""}`;
+  }
+
+  function renderSearchPanel() {
+    const query = $("sidebarSearchInput").value;
+    const rows = searchPageRows(query);
+    setPill("searchResultCount", `${rows.length}`, rows.length ? "ready" : "muted");
+    setList("sidebarSearchResults", rows, "Search readable Pages", (item, row) => {
+      const button = obsidianTreeButton(
+        row.label,
+        row.detail,
+        `obsidian-page-button ${row.key === state.selectedPageKey ? " active" : ""}`,
+        () => selectReaderPage(row.key),
+        {
+          contextTarget: {
+            type: "page",
+            folderId: row.folderId,
+            objectId: row.objectId,
+            pageKey: row.key,
+            title: row.title,
+          },
+        }
+      );
+      item.appendChild(button);
+    });
+  }
+
+  function renderAccessPanel() {
+    const rows = readerFolderRows(state.metadata);
+    setPill("accessFolderCount", `${rows.length}`, rows.length ? "ready" : "muted");
+    setList("accessFolderList", rows, "Load a Vault to inspect access", (item, row) => {
+      const button = obsidianTreeButton(
+        row.path,
+        `${row.accessLabel} - key v${row.currentKeyVersion || 1}${row.detail ? ` - ${row.detail}` : ""}`,
+        `obsidian-folder-button ${row.status}${row.id === state.selectedFolderId ? " active" : ""}`,
+        () => selectReaderFolder(row.id, { selectFirstPage: false }),
+        {
+          contextTarget: {
+            type: "folder",
+            folderId: row.id,
+            path: row.path,
+          },
+        }
+      );
+      item.appendChild(button);
+    });
+  }
+
   function renderReader() {
     selectDefaultReaderTargets();
     const folderRows = readerFolderRows(state.metadata);
@@ -1194,13 +1496,49 @@ const FiniteBrainProductClient = (() => {
     setPill("readerKeySummary", `${openedKeyCount} keys open`, openedKeyCount ? "ready" : "muted");
 
     setList("readerFolderList", folderRows, "Load a Vault to browse folders", (item, row) => {
-      const button = readerButton(
+      const expanded = state.expandedFolderIds.has(row.id);
+      const button = obsidianTreeButton(
         row.path,
         readerFolderDetail(row),
-        `reader-list-button ${row.status}${row.id === state.selectedFolderId ? " active" : ""}`,
-        () => selectReaderFolder(row.id)
+        `obsidian-folder-button ${row.status}${expanded ? " expanded" : ""}${
+          row.id === state.selectedFolderId ? " active" : ""
+        }`,
+        () => toggleReaderFolder(row.id),
+        {
+          contextTarget: {
+            type: "folder",
+            folderId: row.id,
+            path: row.path,
+          },
+        }
       );
       item.appendChild(button);
+      const childPages = readerPageRows(row.id);
+      if (expanded && childPages.length) {
+        const childList = document.createElement("ol");
+        childList.className = "obsidian-page-children";
+        for (const pageRow of childPages) {
+          const childItem = document.createElement("li");
+          const pageButton = obsidianTreeButton(
+            pageRow.label,
+            pageRow.status === "ready" ? "" : "Locked",
+            `obsidian-page-button ${pageRow.status}${pageRow.key === state.selectedPageKey ? " active" : ""}`,
+            () => selectReaderPage(pageRow.key),
+            {
+              contextTarget: {
+                type: "page",
+                folderId: pageRow.folderId,
+                objectId: pageRow.objectId,
+                pageKey: pageRow.key,
+                title: pageRow.title,
+              },
+            }
+          );
+          childItem.appendChild(pageButton);
+          childList.appendChild(childItem);
+        }
+        item.appendChild(childList);
+      }
     });
 
     setList("readerPageList", pageRows, "No Pages in this Folder yet", (item, row) => {
@@ -1218,6 +1556,7 @@ const FiniteBrainProductClient = (() => {
       setText("readerPageTitle", state.selectedFolderId ? "No readable page selected" : "No folder selected");
       setPill("readerPageMeta", "empty", "muted");
       setText("readerPageContent", "Open an accessible vault to read decrypted Pages here.");
+      renderWorkspaceChrome(null);
       return;
     }
 
@@ -1233,6 +1572,7 @@ const FiniteBrainProductClient = (() => {
         ? page.text
         : "This Page is present in sync, but its Folder Key is not open in this session."
     );
+    renderWorkspaceChrome(page);
   }
 
   function render() {
@@ -1284,7 +1624,10 @@ const FiniteBrainProductClient = (() => {
     $("spineVault").className = state.metadata ? "done" : "waiting";
     $("spineKeys").className = state.keyring?.openedGrants.length ? "done" : "waiting";
     $("spinePages").className = readablePages().length ? "done" : "waiting";
+    renderSidebarMode();
     renderReader();
+    renderSearchPanel();
+    renderAccessPanel();
     renderOkfPlan();
   }
 
@@ -1699,6 +2042,35 @@ const FiniteBrainProductClient = (() => {
         render();
       });
     });
+    $("pageTabButton").addEventListener("click", () => {
+      setWorkspaceView("page");
+    });
+    $("graphTabButton").addEventListener("click", () => {
+      setWorkspaceView("graph");
+    });
+    $("ribbonGraphButton").addEventListener("click", () => {
+      setWorkspaceView("graph");
+    });
+    $("ribbonFilesButton").addEventListener("click", () => {
+      setSidebarMode("files");
+    });
+    $("ribbonSearchButton").addEventListener("click", () => {
+      setSidebarMode("search");
+    });
+    $("ribbonAccessButton").addEventListener("click", () => {
+      setSidebarMode("access");
+    });
+    $("sidebarSearchInput").addEventListener("input", () => {
+      renderSearchPanel();
+    });
+    $("obsidianNewPageButton").addEventListener("click", () => {
+      startNewPageDraft();
+    });
+    $("obsidianNewFolderButton").addEventListener("click", () => {
+      log("New Folder will be wired through the Folder creation flow in the access/share slice.", {
+        parentFolderId: state.selectedFolderId || null,
+      });
+    });
     $("openFolderKeyButton").addEventListener("click", () => {
       openEnteredFolderKey().catch((error) => {
         state.lastError = error.message;
@@ -1759,6 +2131,13 @@ const FiniteBrainProductClient = (() => {
         render();
       });
     });
+    document.addEventListener("click", (event) => {
+      const menu = $("contextMenu");
+      if (!menu.hidden && !menu.contains(event.target)) closeContextMenu();
+    });
+    document.addEventListener("keydown", (event) => {
+      if (event.key === "Escape") closeContextMenu();
+    });
   }
 
   async function start() {
@@ -1772,6 +2151,7 @@ const FiniteBrainProductClient = (() => {
     buildAuthEventTemplate,
     buildGraphProjection,
     buildReplayFrames,
+    contextMenuItemsForTarget,
     createClientProjection,
     createSessionKeyring,
     deriveSignerState,
@@ -1780,6 +2160,7 @@ const FiniteBrainProductClient = (() => {
     mergeSyncProjection,
     metadataFolderRows,
     metadataMountRows,
+    normalizeSidebarMode,
     npubFromHex,
     openDevelopmentFolderKeyGrants,
     openFolderKeyGrantPlaintext,
@@ -1792,8 +2173,10 @@ const FiniteBrainProductClient = (() => {
     readerFolderDetail,
     readerFolderRows,
     readerPageRows,
+    searchPageRows,
     shortKey,
     start,
+    workspaceTabTitle,
   };
 })();
 

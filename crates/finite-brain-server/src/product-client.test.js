@@ -269,6 +269,46 @@ assert.match(folderRows[1].detail, /locked/);
     }),
     "2 pages present, Folder Key not open - restricted"
   );
+  assert.equal(client.workspaceTabTitle(null, null), "Open a Vault");
+  assert.equal(client.workspaceTabTitle({ name: "Smoke" }, null), "Smoke");
+  assert.equal(
+    client.workspaceTabTitle({ name: "Smoke" }, { title: "Folder Object Crypto" }),
+    "Folder Object Crypto"
+  );
+  assert.equal(client.normalizeSidebarMode("search"), "search");
+  assert.equal(client.normalizeSidebarMode("access"), "access");
+  assert.equal(client.normalizeSidebarMode("bogus"), "files");
+  const searchRows = client.searchPageRows("folder key", [
+    {
+      folderId: "crypto",
+      objectId: "page-a",
+      path: "folder-keys.md",
+      status: "ready",
+      text: "# Folder Keys\n\nReadable key material stays client-side.",
+      title: "Folder Keys",
+    },
+    {
+      folderId: "sync",
+      objectId: "page-b",
+      path: "sync.md",
+      status: "ready",
+      text: "# Sync\n\nCursor notes.",
+      title: "Sync",
+    },
+  ]);
+  assert.equal(searchRows.length, 1);
+  assert.equal(searchRows[0].detail, "crypto/folder-keys.md");
+  const folderMenu = client.contextMenuItemsForTarget({ type: "folder", folderId: "crypto" });
+  assert.equal(folderMenu.some((item) => item.action === "new-page"), true);
+  assert.equal(folderMenu.some((item) => item.action === "share-folder"), true);
+  assert.equal(folderMenu.find((item) => item.action === "delete-folder").disabled, true);
+  const pageMenu = client.contextMenuItemsForTarget({
+    type: "page",
+    folderId: "crypto",
+    objectId: "page-a",
+  });
+  assert.equal(pageMenu.some((item) => item.action === "open-graph"), true);
+  assert.equal(pageMenu.find((item) => item.action === "delete-page").disabled, true);
   const readerPages = client.readerPageRows("general", openedSync.objects);
   assert.equal(readerPages[0].label, "Hello");
 
