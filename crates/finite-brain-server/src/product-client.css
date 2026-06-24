@@ -1028,6 +1028,10 @@ pre {
   overflow: hidden;
 }
 
+.workspace-view[hidden] {
+  display: none;
+}
+
 .page-workspace {
   padding: 0;
 }

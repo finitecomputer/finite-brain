@@ -81,8 +81,10 @@
   - `cargo fmt --check`
   - `git diff --check`
   - Runtime endpoint check against `http://127.0.0.1:4015/client`
+  - In-app browser screenshot/layout verification: shell rendered, Files panel
+    visible, Page workspace visible, Graph workspace hidden until selected.
   - Smoke DB has 53 encrypted current objects and all 53 opened through the
     Product Client keyring/decrypt path.
-- Visual note: headless Chromium screenshot capture hung on this machine after
-  loading browser background services; local server remains live for manual
-  Chromium refresh.
+- Visual note: standalone headless Chromium screenshot capture hung on this
+  machine after loading browser background services; in-app browser
+  verification succeeded.
