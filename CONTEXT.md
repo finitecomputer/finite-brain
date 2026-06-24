@@ -36,6 +36,14 @@ materialize Pages, edit content, sync changes, run local search/graph indexes,
 and perform OKF import/export. Unlike the Smoke UI, the Product Client owns the
 normal user workflow.
 
+### Product Client Spine
+
+The minimum trusted-client workflow that later client features build on:
+connect the User's NIP-07 signer, load Vault state, open current Folder Key
+Grants, decrypt readable Pages, edit one Page, encrypt and write the Page back
+as a signed revision, and pull/apply sync records without losing unresolved
+local edits.
+
 ### Hard Cut
 
 A compatibility boundary where FiniteBrain does not carry legacy route,

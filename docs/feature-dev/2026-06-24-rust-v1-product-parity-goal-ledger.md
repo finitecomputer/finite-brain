@@ -9,7 +9,7 @@
 - Feature branch: `feature/rust-portable-v1-core`
 - Human owner: Austin
 - Started: 2026-06-24
-- Current status: grilling with docs; Product Client boundary resolved, minimum client workflow pending
+- Current status: grilling with docs; Product Client spine resolved, graph/replay projection pending
 - Skill setup status: `AGENTS.md`, `CONTEXT.md`, and `docs/agents/*` already exist
 
 ## Goal
@@ -21,7 +21,7 @@ This is a hard-cut continuation from the Rust Portable v1 core PR.
 ## Durable Artifacts
 
 - CONTEXT updates: root `CONTEXT.md` now distinguishes `Product Client`,
-  `Smoke UI`, and `Hard Cut`.
+  `Product Client Spine`, `Smoke UI`, and `Hard Cut`.
 - ADRs: `docs/adr/0004-build-a-first-party-product-client.md`
 - PRD issue: pending.
 - Slice issues: pending.
@@ -46,6 +46,9 @@ This is a hard-cut continuation from the Rust Portable v1 core PR.
 In scope:
 
 - Product Client: a real trusted browser client, not the development Smoke UI.
+- Product Client Spine: connect NIP-07 signer, load a Vault, open Folder Key
+  Grants, decrypt/read accessible Pages, edit one Page, encrypt/write a signed
+  revision, and pull/apply sync without discarding unresolved local edits.
 - NIP-07 workflow: signer discovery, auth signing, NIP-44 encrypt/decrypt,
   Folder Key Grant opening, and session keyring behavior.
 - Graph View and replay: local decrypted graph/search indexes plus an
@@ -82,11 +85,19 @@ Out of scope:
 | --- | --- | --- | --- | --- | --- |
 | Pending | | | | | |
 
+## Resolved Decisions
+
+- The Product Client is a first-party browser app served by the Rust app/server,
+  not a SilverBullet compatibility surface. See
+  `docs/adr/0004-build-a-first-party-product-client.md`.
+- The minimum Product Client Spine must land before graph/replay, OKF import
+  execution, and agent working-tree materialization build on top.
+
 ## Open Questions
 
-- What is the minimum first Product Client workflow that must land before graph
-  replay, OKF import execution, and agent working-tree materialization build on
-  top of it?
+- Should Graph View and replay be derived purely from the Product Client's
+  decrypted local Page index, or should the server expose an encrypted/object
+  metadata graph to help layout and replay?
 
 ## Escalations
 
