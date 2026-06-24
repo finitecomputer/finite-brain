@@ -64,6 +64,14 @@ Folder Object revisions, and uploads those revisions through normal secure
 object routes. The Rust server does not parse readable OKF or receive
 plaintext Page content during import.
 
+### Vault Working Tree
+
+A local agent-facing file projection built from already-decrypted accessible
+Pages. It writes `AGENTS.md`, `_index.md`, `_wiki/`, `raw/`, `compiled/`, and
+`output/` conventions for readable Folders, stores only safe locked metadata
+for inaccessible Folders, and maps file changes back into Product Client
+encrypted-object write, move, and delete intents.
+
 ### Hard Cut
 
 A compatibility boundary where FiniteBrain does not carry legacy route,

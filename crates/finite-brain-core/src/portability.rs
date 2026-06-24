@@ -20,6 +20,8 @@ pub enum PortabilityError {
     DuplicatePagePath { folder_id: String, path: String },
     /// Overwrite was requested without explicit confirmation.
     OverwriteRequiresConfirmation,
+    /// A readable working-tree path collided with another materialized path.
+    WorkingTreePathCollision { path: String },
 }
 
 impl fmt::Display for PortabilityError {
@@ -32,6 +34,9 @@ impl fmt::Display for PortabilityError {
             }
             Self::OverwriteRequiresConfirmation => {
                 write!(f, "OKF overwrite import requires explicit confirmation")
+            }
+            Self::WorkingTreePathCollision { path } => {
+                write!(f, "working tree path collision: {path}")
             }
         }
     }
@@ -58,6 +63,10 @@ pub struct OpenedPage {
     pub page_path: SafeRelativePath,
     /// Decrypted Markdown body.
     pub markdown: String,
+    /// Current object revision.
+    pub revision: u64,
+    /// Folder Key version used by the current object.
+    pub key_version: u32,
     /// MIME content type.
     pub content_type: String,
 }
@@ -252,6 +261,216 @@ pub struct OkfImportPlanEntry {
 pub struct OkfImportPlan {
     /// Planned entries in input order.
     pub entries: Vec<OkfImportPlanEntry>,
+}
+
+/// Input for materializing a Vault Working Tree from already-opened content.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct WorkingTreeMaterializeInput {
+    /// Materialization timestamp.
+    pub generated_at: String,
+    /// Acting npub.
+    pub generated_by_npub: UserId,
+    /// Source Vault metadata.
+    pub vault: Vault,
+    /// Decrypted pages visible to the actor.
+    pub opened_pages: Vec<OpenedPage>,
+    /// Folder-level omissions that must not leak Page details.
+    pub locked_folders: Vec<OkfOmittedFolder>,
+    /// Latest sync sequence observed by the client.
+    pub latest_sequence: u64,
+}
+
+/// File-map projection of a Vault Working Tree.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct WorkingTreeProjection {
+    /// Files to write, keyed by safe relative path from the working-tree root.
+    pub files: BTreeMap<String, String>,
+    /// Parsed Vault Directory manifest.
+    pub directory: VaultDirectoryManifest,
+    /// Parsed working-tree state manifest.
+    pub state: VaultWorkingTreeStateManifest,
+}
+
+/// `.finitebrain/vault-directory.json`.
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VaultDirectoryManifest {
+    /// Manifest version.
+    pub version: String,
+    /// Vault summary.
+    pub vault: VaultDirectoryVaultSummary,
+    /// Working-tree root marker.
+    pub working_tree: VaultDirectoryPath,
+    /// Encrypted sync mirror marker.
+    pub encrypted_sync: VaultDirectoryPath,
+    /// Ownership flags.
+    pub portability: VaultDirectoryPortability,
+    /// Creation timestamp.
+    pub created_at: String,
+    /// Update timestamp.
+    pub updated_at: String,
+}
+
+/// Vault summary in a Vault Directory manifest.
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VaultDirectoryVaultSummary {
+    /// Vault id.
+    pub id: String,
+    /// Vault kind.
+    pub kind: String,
+    /// Vault name.
+    pub name: String,
+    /// Owner npub for personal Vaults.
+    pub owner_npub: Option<String>,
+}
+
+/// Path entry in a Vault Directory manifest.
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
+pub struct VaultDirectoryPath {
+    /// Safe relative path.
+    pub path: String,
+}
+
+/// Ownership flags in a Vault Directory manifest.
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VaultDirectoryPortability {
+    /// True when an Agent Runtime owns writes for this directory.
+    pub owned_by_agent_runtime: bool,
+    /// True when an app surface owns writes for this directory.
+    pub owned_by_app_surface: bool,
+}
+
+/// `.finitebrain/working-tree-state.json`.
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VaultWorkingTreeStateManifest {
+    /// Manifest version.
+    pub version: String,
+    /// Folder roots materialized in the working tree.
+    pub folder_roots: Vec<WorkingTreeFolderRoot>,
+    /// Materialized readable objects.
+    pub objects: Vec<WorkingTreeObjectManifestEntry>,
+    /// Latest sync position.
+    pub sync: WorkingTreeSyncState,
+}
+
+/// Folder root in the working-tree state.
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkingTreeFolderRoot {
+    /// Folder id.
+    pub folder_id: String,
+    /// Materialized Folder path.
+    pub path: String,
+    /// Whether plaintext files may be read.
+    pub can_read: bool,
+    /// True when only safe metadata was materialized.
+    pub metadata_only: bool,
+}
+
+/// Object entry in the working-tree state.
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkingTreeObjectManifestEntry {
+    /// Folder id.
+    pub folder_id: String,
+    /// Plaintext path inside the Folder root.
+    pub path: String,
+    /// Folder Object id.
+    pub object_id: String,
+    /// Current revision.
+    pub revision: u64,
+    /// Current Folder Key version.
+    pub key_version: u32,
+    /// Content type.
+    pub content_type: String,
+    /// SHA-256 of plaintext bytes.
+    pub content_hash: String,
+}
+
+/// Sync state in the working-tree manifest.
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkingTreeSyncState {
+    /// Latest applied sync sequence.
+    pub latest_sequence: u64,
+}
+
+/// Local file change detected in a Vault Working Tree.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub enum WorkingTreeChange {
+    /// Create or update a plaintext file.
+    Upsert {
+        /// Working-tree relative path.
+        path: SafeRelativePath,
+        /// New Markdown contents.
+        markdown: String,
+    },
+    /// Rename or move a plaintext file.
+    Rename {
+        /// Source working-tree relative path.
+        from_path: SafeRelativePath,
+        /// Destination working-tree relative path.
+        to_path: SafeRelativePath,
+    },
+    /// Delete a plaintext file.
+    Delete {
+        /// Working-tree relative path.
+        path: SafeRelativePath,
+    },
+}
+
+/// Product Client route family needed to turn a working-tree intent into sync.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum WorkingTreeIntentRoute {
+    /// Encrypt content, sign a Folder Object revision, and PUT the secure object route.
+    EncryptedObjectWrite,
+    /// Sign a Folder Object move through the secure move route.
+    EncryptedObjectMove,
+    /// Sign a Folder Object tombstone through the secure delete route.
+    EncryptedObjectDelete,
+    /// No automatic secure route can be chosen.
+    Unresolved,
+}
+
+/// Action for a working-tree change intent.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum WorkingTreeIntentAction {
+    /// Create a new Folder Object.
+    Create,
+    /// Update an existing Folder Object.
+    Update,
+    /// Move or rename an existing Folder Object.
+    Move,
+    /// Delete an existing Folder Object.
+    Delete,
+    /// Leave unresolved for app/human handling.
+    Unresolved,
+}
+
+/// One Product Client intent derived from a local working-tree change.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct WorkingTreeChangeIntent {
+    /// Intended action.
+    pub action: WorkingTreeIntentAction,
+    /// Secure route family the Product Client must use.
+    pub route: WorkingTreeIntentRoute,
+    /// Destination/source Folder id when known.
+    pub folder_id: Option<FolderId>,
+    /// Existing or generated Object id when known.
+    pub object_id: Option<ObjectId>,
+    /// Path inside the Folder root when known.
+    pub target_path: Option<SafeRelativePath>,
+    /// Previous path for moves.
+    pub from_path: Option<SafeRelativePath>,
+    /// Base revision for update/move/delete when known.
+    pub base_revision: Option<u64>,
+    /// Plaintext markdown for create/update. The Product Client encrypts it before upload.
+    pub markdown: Option<String>,
+    /// Reason when unresolved.
+    pub reason: Option<String>,
 }
 
 struct LinkEdge {
@@ -464,6 +683,501 @@ pub fn plan_okf_import(
     }
 
     Ok(OkfImportPlan { entries })
+}
+
+/// Materialize already-opened content into a Vault Working Tree file map.
+pub fn materialize_vault_working_tree(
+    input: WorkingTreeMaterializeInput,
+) -> Result<WorkingTreeProjection, PortabilityError> {
+    let mut files = BTreeMap::new();
+    let mut folder_roots = BTreeMap::<FolderId, WorkingTreeFolderRoot>::new();
+    let mut objects = Vec::new();
+    let folders_by_id = input
+        .vault
+        .folders
+        .iter()
+        .map(|folder| (folder.id.clone(), folder))
+        .collect::<BTreeMap<_, _>>();
+    let folder_paths = input
+        .vault
+        .folders
+        .iter()
+        .map(|folder| folder.path.to_string())
+        .collect::<BTreeSet<_>>();
+
+    for page in &input.opened_pages {
+        let folder = folders_by_id
+            .get(&page.folder_id)
+            .ok_or_else(|| CoreError::InvalidId {
+                field: "folder_id",
+                value: page.folder_id.to_string(),
+            })?;
+        folder_roots
+            .entry(page.folder_id.clone())
+            .or_insert_with(|| WorkingTreeFolderRoot {
+                folder_id: page.folder_id.to_string(),
+                path: folder.path.to_string(),
+                can_read: true,
+                metadata_only: false,
+            });
+
+        let full_path = working_tree_page_path(&folder.path, &page.page_path)?;
+        if folder_paths.contains(&full_path) {
+            return Err(PortabilityError::WorkingTreePathCollision { path: full_path });
+        }
+        insert_working_tree_file(&mut files, &full_path, page.markdown.clone())?;
+        objects.push(WorkingTreeObjectManifestEntry {
+            folder_id: page.folder_id.to_string(),
+            path: page.page_path.to_string(),
+            object_id: page.object_id.as_str().to_owned(),
+            revision: page.revision,
+            key_version: page.key_version,
+            content_type: page.content_type.clone(),
+            content_hash: sha256_hex(page.markdown.as_bytes()),
+        });
+    }
+
+    for locked in &input.locked_folders {
+        folder_roots
+            .entry(locked.folder_id.clone())
+            .or_insert_with(|| WorkingTreeFolderRoot {
+                folder_id: locked.folder_id.to_string(),
+                path: locked.display_path.to_string(),
+                can_read: false,
+                metadata_only: true,
+            });
+        let locked_marker = serde_json::to_string_pretty(&serde_json::json!({
+            "folderId": locked.folder_id.to_string(),
+            "reason": safe_locked_reason(&locked.reason),
+            "metadataOnly": true
+        }))
+        .expect("locked marker serializes");
+        insert_working_tree_file(
+            &mut files,
+            &format!(
+                ".finitebrain/encrypted-sync/folders/{}/locked.json",
+                locked.folder_id
+            ),
+            locked_marker,
+        )?;
+    }
+
+    let mut roots = folder_roots.into_values().collect::<Vec<_>>();
+    roots.sort_by(|left, right| left.path.cmp(&right.path));
+    objects.sort_by(|left, right| {
+        left.folder_id
+            .cmp(&right.folder_id)
+            .then(left.path.cmp(&right.path))
+    });
+
+    let directory = VaultDirectoryManifest {
+        version: "finite-vault-directory-v1".to_owned(),
+        vault: VaultDirectoryVaultSummary {
+            id: input.vault.id.to_string(),
+            kind: format!("{:?}", input.vault.kind).to_lowercase(),
+            name: input.vault.name.to_string(),
+            owner_npub: input.vault.owner_user_id.as_ref().map(ToString::to_string),
+        },
+        working_tree: VaultDirectoryPath {
+            path: ".".to_owned(),
+        },
+        encrypted_sync: VaultDirectoryPath {
+            path: ".finitebrain/encrypted-sync".to_owned(),
+        },
+        portability: VaultDirectoryPortability {
+            owned_by_agent_runtime: false,
+            owned_by_app_surface: false,
+        },
+        created_at: input.generated_at.clone(),
+        updated_at: input.generated_at.clone(),
+    };
+    let state = VaultWorkingTreeStateManifest {
+        version: "finite-vault-working-tree-state-v1".to_owned(),
+        folder_roots: roots,
+        objects,
+        sync: WorkingTreeSyncState {
+            latest_sequence: input.latest_sequence,
+        },
+    };
+
+    insert_working_tree_file(
+        &mut files,
+        ".finitebrain/vault-directory.json",
+        serde_json::to_string_pretty(&directory).expect("directory manifest serializes"),
+    )?;
+    insert_working_tree_file(
+        &mut files,
+        ".finitebrain/working-tree-state.json",
+        serde_json::to_string_pretty(&state).expect("working-tree manifest serializes"),
+    )?;
+    insert_working_tree_file(
+        &mut files,
+        "AGENTS.md",
+        root_agents_file(&input.generated_by_npub),
+    )?;
+    insert_working_tree_file(&mut files, "_index.md", root_working_tree_index(&state))?;
+    insert_working_tree_file(
+        &mut files,
+        "_wiki/index.md",
+        root_wiki_index(&input.generated_at, &input.generated_by_npub, &state),
+    )?;
+    insert_working_tree_file(
+        &mut files,
+        "_wiki/backlinks.md",
+        "# Backlinks\n\n".to_owned(),
+    )?;
+    insert_working_tree_file(&mut files, "_wiki/orphans.md", root_orphans_report(&state))?;
+    insert_working_tree_file(
+        &mut files,
+        "_wiki/stale.md",
+        root_stale_report(&input.generated_at),
+    )?;
+    let tags_report = root_tags_report(&files);
+    insert_working_tree_file(&mut files, "_wiki/tags.md", tags_report)?;
+
+    for root in &state.folder_roots {
+        if !root.can_read {
+            continue;
+        }
+        insert_working_tree_file(
+            &mut files,
+            &format!("{}/AGENTS.md", root.path),
+            folder_agents_file(&root.folder_id),
+        )?;
+        insert_working_tree_file(
+            &mut files,
+            &format!("{}/_index.md", root.path),
+            folder_index_file(root, &state),
+        )?;
+        insert_working_tree_file(
+            &mut files,
+            &format!("{}/_wiki/index.md", root.path),
+            folder_wiki_index(root, &input.generated_at, &input.generated_by_npub, &state),
+        )?;
+        for convention in ["raw", "compiled", "output"] {
+            insert_working_tree_file(
+                &mut files,
+                &format!("{}/{convention}/.keep", root.path),
+                format!(
+                    "# {convention}\n\nAgent convention directory for Folder `{}`.\n",
+                    root.folder_id
+                ),
+            )?;
+        }
+    }
+
+    Ok(WorkingTreeProjection {
+        files,
+        directory,
+        state,
+    })
+}
+
+/// Translate local working-tree changes into Product Client encrypted-sync intents.
+pub fn plan_working_tree_change_intents(
+    state: &VaultWorkingTreeStateManifest,
+    changes: &[WorkingTreeChange],
+) -> Vec<WorkingTreeChangeIntent> {
+    changes
+        .iter()
+        .map(|change| match change {
+            WorkingTreeChange::Upsert { path, markdown } => {
+                plan_working_tree_upsert(state, path, markdown)
+            }
+            WorkingTreeChange::Rename { from_path, to_path } => {
+                plan_working_tree_rename(state, from_path, to_path)
+            }
+            WorkingTreeChange::Delete { path } => plan_working_tree_delete(state, path),
+        })
+        .collect()
+}
+
+fn working_tree_page_path(
+    folder_path: &SafeRelativePath,
+    page_path: &SafeRelativePath,
+) -> Result<String, CoreError> {
+    let path = format!("{}/{}", folder_path.as_str(), page_path.as_str());
+    SafeRelativePath::new("working_tree_path", &path)?;
+    Ok(path)
+}
+
+fn insert_working_tree_file(
+    files: &mut BTreeMap<String, String>,
+    path: &str,
+    content: String,
+) -> Result<(), PortabilityError> {
+    validate_working_tree_file_path(path)?;
+    let path = path.to_owned();
+    if files.insert(path.clone(), content).is_some() {
+        return Err(PortabilityError::WorkingTreePathCollision { path });
+    }
+    Ok(())
+}
+
+fn validate_working_tree_file_path(path: &str) -> Result<(), CoreError> {
+    if path.starts_with(".finitebrain/") {
+        if path.contains('\\')
+            || path.chars().any(|c| c == '\0' || c.is_control())
+            || path
+                .split('/')
+                .any(|segment| segment.is_empty() || segment == "." || segment == "..")
+        {
+            return Err(CoreError::InvalidPath {
+                field: "working_tree_file",
+                value: path.to_owned(),
+            });
+        }
+        return Ok(());
+    }
+    SafeRelativePath::new("working_tree_file", path).map(|_| ())
+}
+
+fn safe_locked_reason(reason: &str) -> &'static str {
+    match reason {
+        "missing-folder-key" => "missing-folder-key",
+        "no-folder-access" => "no-folder-access",
+        _ => "inaccessible",
+    }
+}
+
+fn root_agents_file(actor: &UserId) -> String {
+    format!(
+        "# FiniteBrain Agent Workspace\n\nActing user: {actor}\n\n- Read and write only materialized accessible Folders.\n- Do not write decrypted content into `.finitebrain/encrypted-sync`.\n- Changes must be returned through the Product Client encrypted sync path.\n"
+    )
+}
+
+fn folder_agents_file(folder_id: &str) -> String {
+    format!(
+        "# Folder Agent Instructions\n\nFolder id: `{folder_id}`\n\nUse `raw/` for source captures, `compiled/` for curated wiki pages, and `output/` for generated artifacts.\n"
+    )
+}
+
+fn root_working_tree_index(state: &VaultWorkingTreeStateManifest) -> String {
+    let folders = state
+        .folder_roots
+        .iter()
+        .map(|root| {
+            if root.can_read {
+                format!("- [{}]({}/_index.md)", root.path, root.path)
+            } else {
+                format!("- {} (locked metadata only)", root.path)
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    format!("# Vault Working Tree\n\n## Folders\n\n{folders}\n")
+}
+
+fn root_wiki_index(
+    generated_at: &str,
+    generated_by: &UserId,
+    state: &VaultWorkingTreeStateManifest,
+) -> String {
+    let readable_count = state
+        .folder_roots
+        .iter()
+        .filter(|root| root.can_read)
+        .count();
+    format!(
+        "# Working Tree Wiki\n\nGenerated at: {generated_at}\nGenerated by: {generated_by}\nReadable Folders: {readable_count}\nReadable Pages: {}\n",
+        state.objects.len()
+    )
+}
+
+fn root_orphans_report(state: &VaultWorkingTreeStateManifest) -> String {
+    let pages = state
+        .objects
+        .iter()
+        .map(|object| format!("- {}/{}", object.folder_id, object.path))
+        .collect::<Vec<_>>()
+        .join("\n");
+    format!("# Orphans\n\n{pages}\n")
+}
+
+fn root_stale_report(generated_at: &str) -> String {
+    format!("# Stale\n\nGenerated at: {generated_at}\nNo stale-page policy was applied.\n")
+}
+
+fn root_tags_report(files: &BTreeMap<String, String>) -> String {
+    format!("# Tags\n\n{}\n", collect_tags(files).join("\n"))
+}
+
+fn folder_index_file(
+    root: &WorkingTreeFolderRoot,
+    state: &VaultWorkingTreeStateManifest,
+) -> String {
+    let pages = state
+        .objects
+        .iter()
+        .filter(|object| object.folder_id == root.folder_id)
+        .map(|object| format!("- [{}]({})", object.path, object.path))
+        .collect::<Vec<_>>()
+        .join("\n");
+    format!("# {}\n\n{pages}\n", root.path)
+}
+
+fn folder_wiki_index(
+    root: &WorkingTreeFolderRoot,
+    generated_at: &str,
+    generated_by: &UserId,
+    state: &VaultWorkingTreeStateManifest,
+) -> String {
+    let count = state
+        .objects
+        .iter()
+        .filter(|object| object.folder_id == root.folder_id)
+        .count();
+    format!(
+        "# Folder Wiki\n\nGenerated at: {generated_at}\nGenerated by: {generated_by}\nFolder: {}\nReadable Pages: {count}\n",
+        root.path
+    )
+}
+
+fn plan_working_tree_upsert(
+    state: &VaultWorkingTreeStateManifest,
+    path: &SafeRelativePath,
+    markdown: &str,
+) -> WorkingTreeChangeIntent {
+    let Some((root, local_path)) = resolve_working_tree_folder(state, path) else {
+        return unresolved_intent("path is outside materialized readable Folders");
+    };
+    if !root.can_read {
+        return unresolved_intent("Folder is locked in this working tree");
+    }
+    let existing = object_for_local_path(state, &root.folder_id, &local_path);
+    let object_id = existing
+        .and_then(|object| ObjectId::new(object.object_id.clone()).ok())
+        .unwrap_or_else(|| generated_working_tree_object_id(&root.folder_id, &local_path));
+    WorkingTreeChangeIntent {
+        action: if existing.is_some() {
+            WorkingTreeIntentAction::Update
+        } else {
+            WorkingTreeIntentAction::Create
+        },
+        route: WorkingTreeIntentRoute::EncryptedObjectWrite,
+        folder_id: FolderId::new(root.folder_id.clone()).ok(),
+        object_id: Some(object_id),
+        target_path: Some(local_path),
+        from_path: None,
+        base_revision: existing.map(|object| object.revision),
+        markdown: Some(markdown.to_owned()),
+        reason: None,
+    }
+}
+
+fn plan_working_tree_rename(
+    state: &VaultWorkingTreeStateManifest,
+    from_path: &SafeRelativePath,
+    to_path: &SafeRelativePath,
+) -> WorkingTreeChangeIntent {
+    let Some((from_root, from_local_path)) = resolve_working_tree_folder(state, from_path) else {
+        return unresolved_intent("source path is outside materialized readable Folders");
+    };
+    let Some((to_root, to_local_path)) = resolve_working_tree_folder(state, to_path) else {
+        return unresolved_intent("destination path is outside materialized readable Folders");
+    };
+    if !from_root.can_read || !to_root.can_read {
+        return unresolved_intent("Folder is locked in this working tree");
+    }
+    if from_root.folder_id != to_root.folder_id {
+        return unresolved_intent("cross-Folder moves require Vault Admin handling");
+    }
+    let Some(existing) = object_for_local_path(state, &from_root.folder_id, &from_local_path)
+    else {
+        return unresolved_intent("source object is not in working-tree state");
+    };
+    WorkingTreeChangeIntent {
+        action: WorkingTreeIntentAction::Move,
+        route: WorkingTreeIntentRoute::EncryptedObjectMove,
+        folder_id: FolderId::new(from_root.folder_id.clone()).ok(),
+        object_id: ObjectId::new(existing.object_id.clone()).ok(),
+        target_path: Some(to_local_path),
+        from_path: Some(from_local_path),
+        base_revision: Some(existing.revision),
+        markdown: None,
+        reason: None,
+    }
+}
+
+fn plan_working_tree_delete(
+    state: &VaultWorkingTreeStateManifest,
+    path: &SafeRelativePath,
+) -> WorkingTreeChangeIntent {
+    let Some((root, local_path)) = resolve_working_tree_folder(state, path) else {
+        return unresolved_intent("path is outside materialized readable Folders");
+    };
+    if !root.can_read {
+        return unresolved_intent("Folder is locked in this working tree");
+    }
+    let Some(existing) = object_for_local_path(state, &root.folder_id, &local_path) else {
+        return unresolved_intent("object is not in working-tree state");
+    };
+    WorkingTreeChangeIntent {
+        action: WorkingTreeIntentAction::Delete,
+        route: WorkingTreeIntentRoute::EncryptedObjectDelete,
+        folder_id: FolderId::new(root.folder_id.clone()).ok(),
+        object_id: ObjectId::new(existing.object_id.clone()).ok(),
+        target_path: Some(local_path),
+        from_path: None,
+        base_revision: Some(existing.revision),
+        markdown: None,
+        reason: None,
+    }
+}
+
+fn resolve_working_tree_folder<'a>(
+    state: &'a VaultWorkingTreeStateManifest,
+    path: &SafeRelativePath,
+) -> Option<(&'a WorkingTreeFolderRoot, SafeRelativePath)> {
+    state
+        .folder_roots
+        .iter()
+        .filter_map(|root| {
+            let root_path = root.path.as_str();
+            let relative = path
+                .as_str()
+                .strip_prefix(root_path)
+                .and_then(|rest| rest.strip_prefix('/'))?;
+            SafeRelativePath::new("working_tree_local_path", relative)
+                .ok()
+                .map(|local_path| (root, local_path))
+        })
+        .max_by_key(|(root, _)| root.path.len())
+}
+
+fn object_for_local_path<'a>(
+    state: &'a VaultWorkingTreeStateManifest,
+    folder_id: &str,
+    local_path: &SafeRelativePath,
+) -> Option<&'a WorkingTreeObjectManifestEntry> {
+    state
+        .objects
+        .iter()
+        .find(|object| object.folder_id == folder_id && object.path == local_path.to_string())
+}
+
+fn generated_working_tree_object_id(folder_id: &str, local_path: &SafeRelativePath) -> ObjectId {
+    let digest = Sha256::digest(format!("{folder_id}/{}", local_path.as_str()).as_bytes());
+    let hex = digest
+        .iter()
+        .take(8)
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    ObjectId::new(format!("obj_{hex}")).expect("generated object id is valid")
+}
+
+fn unresolved_intent(reason: &str) -> WorkingTreeChangeIntent {
+    WorkingTreeChangeIntent {
+        action: WorkingTreeIntentAction::Unresolved,
+        route: WorkingTreeIntentRoute::Unresolved,
+        folder_id: None,
+        object_id: None,
+        target_path: None,
+        from_path: None,
+        base_revision: None,
+        markdown: None,
+        reason: Some(reason.to_owned()),
+    }
 }
 
 fn content_bundle_path(page: &OpenedPage) -> Result<String, CoreError> {
@@ -809,6 +1523,186 @@ mod tests {
     }
 
     #[test]
+    fn working_tree_materializes_accessible_pages_and_safe_agent_conventions() {
+        let mut opened = page(
+            "concepts",
+            "obj_000000000001",
+            "Concepts",
+            "compiled/deep/module.md",
+            "# Deep Module\n\nOnly accessible text is materialized. #agent",
+        );
+        opened.revision = 7;
+        opened.key_version = 3;
+        let projection = materialize_vault_working_tree(WorkingTreeMaterializeInput {
+            generated_at: "2026-06-24T00:00:00.000Z".to_owned(),
+            generated_by_npub: UserId::new("npub-admin").unwrap(),
+            vault: sample_vault(),
+            opened_pages: vec![opened],
+            locked_folders: vec![OkfOmittedFolder {
+                folder_id: FolderId::new("board").unwrap(),
+                display_path: SafeRelativePath::new("folder_path", "Board").unwrap(),
+                reason: "inaccessible secret-plan".to_owned(),
+            }],
+            latest_sequence: 42,
+        })
+        .unwrap();
+
+        assert!(
+            projection
+                .files
+                .contains_key(".finitebrain/vault-directory.json")
+        );
+        assert!(
+            projection
+                .files
+                .contains_key(".finitebrain/working-tree-state.json")
+        );
+        assert!(projection.files.contains_key("AGENTS.md"));
+        assert!(projection.files.contains_key("_index.md"));
+        assert!(projection.files.contains_key("_wiki/index.md"));
+        assert!(projection.files.contains_key("Concepts/AGENTS.md"));
+        assert!(projection.files.contains_key("Concepts/_index.md"));
+        assert!(projection.files.contains_key("Concepts/_wiki/index.md"));
+        assert!(projection.files.contains_key("Concepts/raw/.keep"));
+        assert!(projection.files.contains_key("Concepts/compiled/.keep"));
+        assert!(projection.files.contains_key("Concepts/output/.keep"));
+        assert_eq!(
+            projection
+                .files
+                .get("Concepts/compiled/deep/module.md")
+                .unwrap(),
+            "# Deep Module\n\nOnly accessible text is materialized. #agent"
+        );
+
+        let concepts = projection
+            .state
+            .folder_roots
+            .iter()
+            .find(|root| root.folder_id == "concepts")
+            .unwrap();
+        assert!(concepts.can_read);
+        assert!(!concepts.metadata_only);
+        let board = projection
+            .state
+            .folder_roots
+            .iter()
+            .find(|root| root.folder_id == "board")
+            .unwrap();
+        assert!(!board.can_read);
+        assert!(board.metadata_only);
+        assert_eq!(projection.state.objects[0].revision, 7);
+        assert_eq!(projection.state.objects[0].key_version, 3);
+        assert_eq!(projection.state.objects[0].content_hash.len(), 64);
+        assert_eq!(projection.state.sync.latest_sequence, 42);
+        assert_eq!(
+            projection.directory.encrypted_sync.path,
+            ".finitebrain/encrypted-sync"
+        );
+
+        let all_materialized_text = projection.files.values().cloned().collect::<String>();
+        assert!(!all_materialized_text.contains("secret-plan"));
+        assert!(!all_materialized_text.contains("Secret Page"));
+        assert!(!all_materialized_text.contains("Board/"));
+    }
+
+    #[test]
+    fn working_tree_change_intents_use_encrypted_product_client_routes() {
+        let mut opened = page(
+            "concepts",
+            "obj_000000000001",
+            "Concepts",
+            "compiled/deep/module.md",
+            "# Deep Module",
+        );
+        opened.revision = 7;
+        let projection = materialize_vault_working_tree(WorkingTreeMaterializeInput {
+            generated_at: "2026-06-24T00:00:00.000Z".to_owned(),
+            generated_by_npub: UserId::new("npub-admin").unwrap(),
+            vault: sample_vault(),
+            opened_pages: vec![opened],
+            locked_folders: vec![OkfOmittedFolder {
+                folder_id: FolderId::new("board").unwrap(),
+                display_path: SafeRelativePath::new("folder_path", "Board").unwrap(),
+                reason: "inaccessible".to_owned(),
+            }],
+            latest_sequence: 42,
+        })
+        .unwrap();
+
+        let intents = plan_working_tree_change_intents(
+            &projection.state,
+            &[
+                WorkingTreeChange::Upsert {
+                    path: SafeRelativePath::new("change_path", "Concepts/compiled/deep/module.md")
+                        .unwrap(),
+                    markdown: "# Deep Module\n\nUpdated.".to_owned(),
+                },
+                WorkingTreeChange::Upsert {
+                    path: SafeRelativePath::new("change_path", "Concepts/raw/new.md").unwrap(),
+                    markdown: "# New".to_owned(),
+                },
+                WorkingTreeChange::Rename {
+                    from_path: SafeRelativePath::new(
+                        "change_path",
+                        "Concepts/compiled/deep/module.md",
+                    )
+                    .unwrap(),
+                    to_path: SafeRelativePath::new(
+                        "change_path",
+                        "Concepts/compiled/deep/module-renamed.md",
+                    )
+                    .unwrap(),
+                },
+                WorkingTreeChange::Delete {
+                    path: SafeRelativePath::new("change_path", "Concepts/compiled/deep/module.md")
+                        .unwrap(),
+                },
+                WorkingTreeChange::Rename {
+                    from_path: SafeRelativePath::new(
+                        "change_path",
+                        "Concepts/compiled/deep/module.md",
+                    )
+                    .unwrap(),
+                    to_path: SafeRelativePath::new("change_path", "Board/secret.md").unwrap(),
+                },
+            ],
+        );
+
+        assert_eq!(intents[0].action, WorkingTreeIntentAction::Update);
+        assert_eq!(
+            intents[0].route,
+            WorkingTreeIntentRoute::EncryptedObjectWrite
+        );
+        assert_eq!(intents[0].base_revision, Some(7));
+        assert_eq!(
+            intents[0].object_id,
+            Some(ObjectId::new("obj_000000000001").unwrap())
+        );
+        assert_eq!(intents[1].action, WorkingTreeIntentAction::Create);
+        assert_eq!(
+            intents[1].route,
+            WorkingTreeIntentRoute::EncryptedObjectWrite
+        );
+        assert!(intents[1].object_id.is_some());
+        assert_eq!(intents[1].base_revision, None);
+        assert_eq!(intents[2].action, WorkingTreeIntentAction::Move);
+        assert_eq!(
+            intents[2].route,
+            WorkingTreeIntentRoute::EncryptedObjectMove
+        );
+        assert_eq!(intents[2].base_revision, Some(7));
+        assert_eq!(intents[3].action, WorkingTreeIntentAction::Delete);
+        assert_eq!(
+            intents[3].route,
+            WorkingTreeIntentRoute::EncryptedObjectDelete
+        );
+        assert_eq!(intents[3].base_revision, Some(7));
+        assert_eq!(intents[4].action, WorkingTreeIntentAction::Unresolved);
+        assert_eq!(intents[4].route, WorkingTreeIntentRoute::Unresolved);
+        assert!(intents[4].reason.as_ref().unwrap().contains("locked"));
+    }
+
+    #[test]
     fn okf_import_plans_skip_copy_and_explicit_overwrite_conflicts() {
         let import_page = OkfImportPage {
             source_path: SafeRelativePath::new("source", "content/Concepts/index.md").unwrap(),
@@ -870,6 +1764,8 @@ mod tests {
             folder_display_path: SafeRelativePath::new("folder_path", folder_display_path).unwrap(),
             page_path: SafeRelativePath::new("page_path", page_path).unwrap(),
             markdown: markdown.to_owned(),
+            revision: 1,
+            key_version: 1,
             content_type: "text/markdown".to_owned(),
         }
     }
