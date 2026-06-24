@@ -109,7 +109,7 @@
 ## PR And Follow-Up
 
 - PR URL: `https://github.com/finitecomputer/finite-brain/pull/42`
-- Commit SHA: pending implementation
+- Commit SHA: `db37a50`
 - Checks: `cargo fmt --check`, `cargo check -p finite-brain-cli`,
   `cargo test -p finite-brain-cli`,
   `cargo clippy -p finite-brain-cli --all-targets -- -D warnings`,
