@@ -27,3 +27,18 @@ A development-only HTML/CSS interface served by the Rust app for local
 end-to-end verification. It is not the product client. It exists to inspect
 Vaults, Folders, encrypted objects, sync state, grants, invitations, shares,
 and mounts while the Rust core and server mature.
+
+### Product Client
+
+The trusted browser experience a User actually uses to open a Vault, connect a
+NIP-07 signer, open Folder Key Grants, decrypt accessible Folder Objects,
+materialize Pages, edit content, sync changes, run local search/graph indexes,
+and perform OKF import/export. Unlike the Smoke UI, the Product Client owns the
+normal user workflow.
+
+### Hard Cut
+
+A compatibility boundary where FiniteBrain does not carry legacy route,
+storage, client, or migration behavior forward. Hard-cut work may import data
+through explicit new-format flows such as OKF, but it does not preserve old v1
+runtime compatibility as a feature requirement.
