@@ -182,6 +182,101 @@ assert.match(folderRows[1].detail, /locked/);
   assert.equal(merged.localDrafts.has("general/obj_000000000001"), true);
   assert.equal(merged.pages.has("general/obj_000000000001"), false);
 
+  assert.deepEqual(
+    Array.from(client.extractPageLinks("[[Roadmap]] [Spec](Specs/OKF.md) [Web](https://example.com)")),
+    ["roadmap", "specs/okf"]
+  );
+
+  const graph = client.buildGraphProjection([
+    {
+      folderId: "general",
+      objectId: "page-a",
+      status: "ready",
+      text: "# Alpha\n\nLinks to [[Beta]] and [[Hidden]].",
+    },
+    {
+      folderId: "general",
+      objectId: "page-b",
+      status: "ready",
+      text: "# Beta\n\nBack to [Alpha](Alpha.md).",
+    },
+    {
+      folderId: "restricted",
+      objectId: "page-hidden",
+      status: "locked",
+      text: "# Hidden\n\nThis must not appear.",
+    },
+  ]);
+  assert.deepEqual(
+    Array.from(graph.nodes.map((node) => node.title).sort()),
+    ["Alpha", "Beta"]
+  );
+  assert.equal(graph.edges.length, 2);
+  assert.equal(graph.edges.some((edge) => edge.id.includes("page-hidden")), false);
+
+  const filteredGraph = client.buildGraphProjection(
+    [
+      {
+        folderId: "general",
+        objectId: "page-a",
+        status: "ready",
+        text: "# Alpha\n\n[[Beta]]",
+      },
+      {
+        folderId: "general",
+        objectId: "page-b",
+        status: "ready",
+        text: "# Beta",
+      },
+    ],
+    "beta"
+  );
+  assert.deepEqual(
+    Array.from(filteredGraph.nodes.map((node) => node.title).sort()),
+    ["Alpha", "Beta"]
+  );
+
+  const replay = client.buildReplayFrames([
+    {
+      sequence: 2,
+      recordEventId: "event-b",
+      page: {
+        folderId: "general",
+        objectId: "page-b",
+        status: "ready",
+        text: "# Beta",
+      },
+    },
+    {
+      sequence: 1,
+      recordEventId: "event-a",
+      page: {
+        folderId: "general",
+        objectId: "page-a",
+        status: "ready",
+        text: "# Alpha\n\n[[Beta]]",
+      },
+    },
+    {
+      sequence: 2,
+      recordEventId: "event-b",
+      page: {
+        folderId: "general",
+        objectId: "page-b",
+        status: "ready",
+        text: "# Duplicate",
+      },
+    },
+  ]);
+  assert.equal(replay.length, 2);
+  assert.deepEqual(
+    Array.from(replay.map((frame) => frame.sequence)),
+    [1, 2]
+  );
+  assert.equal(replay[0].nodeCount, 1);
+  assert.equal(replay[1].nodeCount, 2);
+  assert.equal(replay[1].edgeCount, 1);
+
   console.log("product-client deterministic seams ok");
 })().catch((error) => {
   console.error(error);

@@ -3432,6 +3432,8 @@ mod tests {
         assert!(client_body.contains("Open a Vault"));
         assert!(client_body.contains("Page Loop"));
         assert!(client_body.contains("Save Page"));
+        assert!(client_body.contains("Graph View"));
+        assert!(client_body.contains("Render graph"));
         assert!(client_body.contains("/client/app.js"));
 
         let config_response = router
@@ -3485,7 +3487,7 @@ mod tests {
             .await
             .expect("client js response");
         assert_eq!(js_response.status(), StatusCode::OK);
-        let js_body = to_bytes(js_response.into_body(), 32 * 1024)
+        let js_body = to_bytes(js_response.into_body(), 48 * 1024)
             .await
             .expect("client js body");
         let js_body = std::str::from_utf8(&js_body).expect("client js utf8");
@@ -3493,7 +3495,10 @@ mod tests {
         assert!(js_body.contains("deriveSignerState"));
         assert!(js_body.contains("buildAuthEventTemplate"));
         assert!(js_body.contains("buildPageWriteRequest"));
+        assert!(js_body.contains("buildGraphProjection"));
+        assert!(js_body.contains("buildReplayFrames"));
         assert!(js_body.contains("createSessionKeyring"));
+        assert!(js_body.contains("extractPageLinks"));
         assert!(js_body.contains("openFolderObject"));
         assert!(js_body.contains("mergeSyncProjection"));
         assert!(js_body.contains("metadataFolderRows"));

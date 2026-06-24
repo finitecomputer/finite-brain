@@ -9,7 +9,7 @@
 - Feature branch: `feature/rust-portable-v1-core`
 - Human owner: Austin
 - Started: 2026-06-24
-- Current status: `finite-brain#18` implemented and verified; `finite-brain#19`
+- Current status: `finite-brain#19` implemented and verified; `finite-brain#20`
   is the next executable slice
 - Skill setup status: `AGENTS.md`, `CONTEXT.md`, and `docs/agents/*` already exist
 
@@ -35,8 +35,8 @@ This is a hard-cut continuation from the Rust Portable v1 core PR.
   - `finitecomputer/finite-brain#20` Product OKF import execution
   - `finitecomputer/finite-brain#21` Agent Vault Working Tree materialization
   - `finitecomputer/finite-brain#22` Portable v1 product hardening and runbook
-- Issue sessions: `finite-brain#17` and `finite-brain#18` completed; remaining
-  slices pending.
+- Issue sessions: `finite-brain#17`, `finite-brain#18`, and
+  `finite-brain#19` completed; remaining slices pending.
 - Agent briefs: pending.
 - Review packets: pending.
 - Local CodeRabbit report: pending.
@@ -84,7 +84,7 @@ Out of scope:
 | --- | --- | --- | --- | --- | --- |
 | `finite-brain#17` | AFK | complete | Direct two-axis review; sub-agent review skipped because sub-agent tool policy requires explicit user delegation | None | `node --check crates/finite-brain-server/src/product-client.js`; `node crates/finite-brain-server/src/product-client.test.js`; `cargo fmt --check`; `cargo test -p finite-brain-server product_client_serves_spine_assets_and_config -- --nocapture`; `cargo test`; `cargo clippy --all-targets -- -D warnings`; `cargo build`; `git diff --check`; local `/client`, `/client/config.json`, `/client/app.js`, and `/client/app.css` curl smoke |
 | `finite-brain#18` | AFK | complete | Direct two-axis review; sub-agent review skipped because sub-agent tool policy requires explicit user delegation | Pinned prepared Page writes to their original Folder/Object target before commit | `node --check crates/finite-brain-server/src/product-client.js`; `node crates/finite-brain-server/src/product-client.test.js`; `cargo fmt --check`; `cargo test -p finite-brain-server product_client_serves_spine_assets_and_config -- --nocapture`; `cargo test`; `cargo clippy --all-targets -- -D warnings`; `cargo build`; `git diff --check`; local `/client`, `/client/config.json`, and `/client/app.js` curl smoke |
-| `finite-brain#19` | AFK | pending | pending | pending | pending |
+| `finite-brain#19` | AFK | complete | Direct two-axis review; sub-agent review skipped because sub-agent tool policy requires explicit user delegation | None | `node --check crates/finite-brain-server/src/product-client.js`; `node crates/finite-brain-server/src/product-client.test.js`; `cargo fmt --check`; `cargo test -p finite-brain-server product_client_serves_spine_assets_and_config -- --nocapture`; `cargo test`; `cargo clippy --all-targets -- -D warnings`; `cargo build`; `git diff --check`; local `/client`, `/client/app.js`, and `/client/app.css` curl smoke |
 | `finite-brain#20` | AFK | pending | pending | pending | pending |
 | `finite-brain#21` | AFK | pending | pending | pending | pending |
 | `finite-brain#22` | AFK | pending | pending | pending | pending |
@@ -101,6 +101,7 @@ Out of scope:
 | --- | --- | --- | --- | --- | --- |
 | `finite-brain#17` | `29b1486` | Orchestrator direct implementation | `cc2b1e5ec5af93681f1ee96a7e6841ec3f053426` | Standards/spec direct review passed; route/static asset diff follows existing Smoke UI route pattern, Product Client is distinct from Smoke UI, deterministic JS seams cover signer state, auth event template, and Folder locked-state projection | `node --check crates/finite-brain-server/src/product-client.js`; `node crates/finite-brain-server/src/product-client.test.js`; `cargo fmt --check`; `cargo test -p finite-brain-server product_client_serves_spine_assets_and_config -- --nocapture`; `cargo test`; `cargo clippy --all-targets -- -D warnings`; `cargo build`; `git diff --check`; local curl smoke |
 | `finite-brain#18` | `14ceb56` | Orchestrator direct implementation | `26fd2540bf89d374bf02f17d5c7d465b1b801b44` | Standards/spec direct review passed after fixing prepared-write target drift; Product Client now has in-memory Folder Key opening, AES-GCM Folder Object encrypt/decrypt, signed revision request preparation, protected save path wiring, sync bootstrap merge, dirty draft conflict preservation, and duplicate event de-dupe seams | `node --check crates/finite-brain-server/src/product-client.js`; `node crates/finite-brain-server/src/product-client.test.js`; `cargo fmt --check`; `cargo test -p finite-brain-server product_client_serves_spine_assets_and_config -- --nocapture`; `cargo test`; `cargo clippy --all-targets -- -D warnings`; `cargo build`; `git diff --check`; local curl smoke |
+| `finite-brain#19` | `e111755` | Orchestrator direct implementation | pending commit | Standards/spec direct review passed; Product Client now builds graph nodes/edges from decrypted ready Pages only, omits locked content, extracts wiki/Markdown links, renders an SVG graph surface, and derives replay frames from ordered de-duplicated local Page changes | `node --check crates/finite-brain-server/src/product-client.js`; `node crates/finite-brain-server/src/product-client.test.js`; `cargo fmt --check`; `cargo test -p finite-brain-server product_client_serves_spine_assets_and_config -- --nocapture`; `cargo test`; `cargo clippy --all-targets -- -D warnings`; `cargo build`; `git diff --check`; local curl smoke |
 
 ## Resolved Decisions
 

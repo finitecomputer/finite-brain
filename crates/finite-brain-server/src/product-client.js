@@ -396,6 +396,180 @@ const FiniteBrainProductClient = (() => {
     return next;
   }
 
+  function pageTitleFromText(text, fallback) {
+    const heading = String(text || "").match(/^#\s+(.+)$/m);
+    return heading ? heading[1].trim() : fallback;
+  }
+
+  function normalizePageReference(value) {
+    return String(value || "")
+      .trim()
+      .replace(/^\.?\//, "")
+      .replace(/\.md$/i, "")
+      .replace(/^#/, "")
+      .toLowerCase();
+  }
+
+  function extractPageLinks(text) {
+    const links = new Set();
+    const wikiPattern = /\[\[([^\]|#]+)(?:[|#][^\]]*)?\]\]/g;
+    const markdownPattern = /\[[^\]]+\]\(([^)]+)\)/g;
+    for (const match of String(text || "").matchAll(wikiPattern)) {
+      links.add(normalizePageReference(match[1]));
+    }
+    for (const match of String(text || "").matchAll(markdownPattern)) {
+      const target = match[1].split("#")[0];
+      if (!/^https?:\/\//i.test(target)) links.add(normalizePageReference(target));
+    }
+    return [...links].filter(Boolean);
+  }
+
+  function buildGraphProjection(pages, filterText = "") {
+    const filter = normalizePageReference(filterText);
+    const visiblePages = [...pages].filter((page) => page.status === "ready");
+    const nodes = visiblePages.map((page) => {
+      const id = pageKey(page.folderId, page.objectId);
+      const title = page.title || pageTitleFromText(page.text, page.objectId);
+      return {
+        id,
+        folderId: page.folderId,
+        objectId: page.objectId,
+        title,
+        normalizedTitle: normalizePageReference(title),
+      };
+    });
+    const titleToNode = new Map(nodes.map((node) => [node.normalizedTitle, node]));
+    const includedNodeIds = new Set(
+      nodes
+        .filter((node) => !filter || node.normalizedTitle.includes(filter))
+        .map((node) => node.id)
+    );
+    const edges = [];
+    for (const page of visiblePages) {
+      const source = nodes.find((node) => node.id === pageKey(page.folderId, page.objectId));
+      if (!source) continue;
+      for (const targetRef of extractPageLinks(page.text)) {
+        const target = titleToNode.get(targetRef);
+        if (!target) continue;
+        if (filter && !includedNodeIds.has(source.id) && !includedNodeIds.has(target.id)) continue;
+        includedNodeIds.add(source.id);
+        includedNodeIds.add(target.id);
+        edges.push({
+          id: `${source.id}->${target.id}`,
+          source: source.id,
+          target: target.id,
+        });
+      }
+    }
+    return {
+      nodes: nodes.filter((node) => includedNodeIds.has(node.id)),
+      edges,
+    };
+  }
+
+  function buildReplayFrames(changes) {
+    const ordered = [...changes].sort((left, right) => (left.sequence || 0) - (right.sequence || 0));
+    const seen = new Set();
+    const pages = new Map();
+    const frames = [];
+    for (const change of ordered) {
+      if (change.recordEventId && seen.has(change.recordEventId)) continue;
+      if (change.recordEventId) seen.add(change.recordEventId);
+      if (change.deleted) {
+        pages.delete(pageKey(change.folderId, change.objectId));
+      } else if (change.page?.status === "ready") {
+        pages.set(pageKey(change.page.folderId, change.page.objectId), change.page);
+      }
+      const graph = buildGraphProjection(pages.values());
+      frames.push({
+        sequence: change.sequence || frames.length + 1,
+        action: change.deleted ? "delete" : "upsert",
+        edgeCount: graph.edges.length,
+        graph,
+        nodeCount: graph.nodes.length,
+        recordEventId: change.recordEventId || null,
+      });
+    }
+    return frames;
+  }
+
+  function decryptedPagesForGraph() {
+    const pages = [];
+    for (const [key, draft] of state.projection.localDrafts.entries()) {
+      const [folderId, objectId] = key.split("/");
+      pages.push({
+        folderId,
+        objectId,
+        status: "ready",
+        text: draft.text,
+      });
+    }
+    for (const [key, page] of state.projection.pages.entries()) {
+      if (page.text) {
+        const [folderId, objectId] = key.split("/");
+        pages.push({
+          folderId,
+          objectId,
+          status: "ready",
+          text: page.text,
+          title: page.title,
+        });
+      }
+    }
+    return pages;
+  }
+
+  function drawGraph(graph) {
+    const svg = $("graphCanvas");
+    svg.replaceChildren();
+    if (!graph.nodes.length) {
+      const empty = document.createElementNS("http://www.w3.org/2000/svg", "text");
+      empty.setAttribute("x", "24");
+      empty.setAttribute("y", "44");
+      empty.textContent = "No accessible decrypted Pages match this graph.";
+      svg.appendChild(empty);
+      return;
+    }
+    const centerX = 360;
+    const centerY = 160;
+    const radius = Math.min(118, 34 + graph.nodes.length * 12);
+    const positions = new Map();
+    graph.nodes.forEach((node, index) => {
+      const angle = (Math.PI * 2 * index) / graph.nodes.length - Math.PI / 2;
+      positions.set(node.id, {
+        x: centerX + Math.cos(angle) * radius,
+        y: centerY + Math.sin(angle) * radius,
+      });
+    });
+    for (const edge of graph.edges) {
+      const source = positions.get(edge.source);
+      const target = positions.get(edge.target);
+      if (!source || !target) continue;
+      const line = document.createElementNS("http://www.w3.org/2000/svg", "line");
+      line.setAttribute("class", "edge");
+      line.setAttribute("x1", String(source.x));
+      line.setAttribute("y1", String(source.y));
+      line.setAttribute("x2", String(target.x));
+      line.setAttribute("y2", String(target.y));
+      svg.appendChild(line);
+    }
+    for (const node of graph.nodes) {
+      const position = positions.get(node.id);
+      const circle = document.createElementNS("http://www.w3.org/2000/svg", "circle");
+      circle.setAttribute("class", graph.edges.some((edge) => edge.source === node.id) ? "node focus" : "node");
+      circle.setAttribute("cx", String(position.x));
+      circle.setAttribute("cy", String(position.y));
+      circle.setAttribute("r", "12");
+      svg.appendChild(circle);
+
+      const label = document.createElementNS("http://www.w3.org/2000/svg", "text");
+      label.setAttribute("x", String(position.x + 16));
+      label.setAttribute("y", String(position.y + 4));
+      label.textContent = node.title;
+      svg.appendChild(label);
+    }
+  }
+
   function setPill(id, text, tone) {
     const element = $(id);
     element.textContent = text;
@@ -655,6 +829,13 @@ const FiniteBrainProductClient = (() => {
       method: "PUT",
       body: JSON.stringify(state.preparedWrite),
     });
+    state.projection.pages.set(pageKey(target.folderId, target.objectId), {
+      folderId: target.folderId,
+      objectId: target.objectId,
+      revision: result.revision,
+      status: "ready",
+      text: $("pageDraftInput").value,
+    });
     state.projection.localDrafts.delete(pageKey(target.folderId, target.objectId));
     state.preparedWrite = null;
     state.preparedWriteTarget = null;
@@ -673,6 +854,60 @@ const FiniteBrainProductClient = (() => {
       seenEvents: state.projection.seenEventIds.size,
     });
     render();
+  }
+
+  function renderGraphView() {
+    const graph = buildGraphProjection(decryptedPagesForGraph(), $("graphFilterInput").value);
+    drawGraph(graph);
+    log("Rendered graph from decrypted client index.", {
+      edges: graph.edges.length,
+      nodes: graph.nodes.length,
+    });
+  }
+
+  function renderReplayFrames() {
+    const changes = [];
+    let sequence = 1;
+    for (const [key, draft] of state.projection.localDrafts.entries()) {
+      const [folderId, objectId] = key.split("/");
+      changes.push({
+        sequence,
+        recordEventId: `local-draft-${sequence}`,
+        page: {
+          folderId,
+          objectId,
+          status: "ready",
+          text: draft.text,
+        },
+      });
+      sequence += 1;
+    }
+    for (const [key, page] of state.projection.pages.entries()) {
+      if (!page.text) continue;
+      const [folderId, objectId] = key.split("/");
+      changes.push({
+        sequence,
+        recordEventId: `page-${sequence}`,
+        page: {
+          folderId,
+          objectId,
+          status: "ready",
+          text: page.text,
+          title: page.title,
+        },
+      });
+      sequence += 1;
+    }
+    const frames = buildReplayFrames(changes);
+    setList("replayList", frames, "No replay frames", (item, frame) => {
+      item.textContent = `#${frame.sequence} ${frame.action}: ${frame.nodeCount} nodes, ${frame.edgeCount} edges`;
+    });
+    if (frames.length) drawGraph(frames[frames.length - 1].graph);
+    log("Built graph replay frames.", frames.map((frame) => ({
+      edgeCount: frame.edgeCount,
+      nodeCount: frame.nodeCount,
+      sequence: frame.sequence,
+    })));
   }
 
   function bind() {
@@ -718,6 +953,22 @@ const FiniteBrainProductClient = (() => {
         render();
       });
     });
+    $("renderGraphButton").addEventListener("click", () => {
+      try {
+        renderGraphView();
+      } catch (error) {
+        state.lastError = error.message;
+        log("Failed to render graph.", { error: error.message });
+      }
+    });
+    $("replayGraphButton").addEventListener("click", () => {
+      try {
+        renderReplayFrames();
+      } catch (error) {
+        state.lastError = error.message;
+        log("Failed to build replay.", { error: error.message });
+      }
+    });
   }
 
   async function start() {
@@ -729,10 +980,13 @@ const FiniteBrainProductClient = (() => {
   return {
     buildPageWriteRequest,
     buildAuthEventTemplate,
+    buildGraphProjection,
+    buildReplayFrames,
     createClientProjection,
     createSessionKeyring,
     deriveSignerState,
     encryptFolderObject,
+    extractPageLinks,
     mergeSyncProjection,
     metadataFolderRows,
     metadataMountRows,
