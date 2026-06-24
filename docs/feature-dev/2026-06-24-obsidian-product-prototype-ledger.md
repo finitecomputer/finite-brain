@@ -55,6 +55,7 @@
 ### `#32` Obsidian Workspace Shell
 
 - Baseline: `216e3f1`
+- Implementation checkpoint: `ef28643`
 - Status: implementation in progress; first local pass verified
 - Owner: current orchestrator thread using direct implementation because the
   first slice is the shell foundation for later slices.
