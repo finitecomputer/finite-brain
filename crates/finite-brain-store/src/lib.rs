@@ -15,7 +15,13 @@ use sha2::{Digest, Sha256};
 use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
 
+mod folder_access;
+mod links;
+mod loading;
+mod schema;
+mod shared_folders;
 mod sync_records;
+mod vaults;
 
 const GRANT_FORMAT_NIP59: &str = "NIP-59";
 const MAX_PULL_LIMIT: u64 = 1_000;
@@ -640,1316 +646,6 @@ impl BrainStore {
         Ok(store)
     }
 
-    /// Persist a fresh bootstrap output and its required current grants.
-    pub fn create_vault_bootstrap(
-        &mut self,
-        output: &BootstrapOutput,
-        grants: &[FolderKeyGrantMetadata],
-    ) -> Result<(), StoreError> {
-        if output.vault.folders.len() > MAX_BOOTSTRAP_FOLDERS {
-            return Err(StoreError::BrokenInvariant {
-                reason: format!("bootstrap folder count exceeds limit {MAX_BOOTSTRAP_FOLDERS}"),
-            });
-        }
-        if grants.len() > MAX_BOOTSTRAP_GRANTS {
-            return Err(StoreError::BrokenInvariant {
-                reason: format!("bootstrap grant count exceeds limit {MAX_BOOTSTRAP_GRANTS}"),
-            });
-        }
-        validate_bootstrap_output(output)?;
-        validate_required_grants(&output.vault, &output.required_key_grants, grants)?;
-
-        let tx = self.conn.transaction()?;
-        insert_vault(&tx, &output.vault)?;
-        insert_members_and_admins(&tx, &output.vault)?;
-        for folder in &output.vault.folders {
-            insert_folder(&tx, &output.vault.id, folder, false)?;
-        }
-        for grant in grants {
-            insert_grant(&tx, &output.vault.id, grant)?;
-        }
-        tx.commit()?;
-        Ok(())
-    }
-
-    /// Add an organization Vault Member.
-    pub fn add_member(&mut self, vault_id: &VaultId, user_id: &UserId) -> Result<(), StoreError> {
-        self.require_organization_vault(vault_id)?;
-        self.conn.execute(
-            "INSERT INTO vault_members (vault_id, user_id) VALUES (?1, ?2)",
-            params![vault_id.as_str(), user_id.as_str()],
-        )?;
-        Ok(())
-    }
-
-    /// Add an organization Vault Admin. The user must already be a member.
-    pub fn add_admin(&mut self, vault_id: &VaultId, user_id: &UserId) -> Result<(), StoreError> {
-        self.require_organization_vault(vault_id)?;
-        if !self.member_exists(vault_id, user_id)? {
-            return Err(StoreError::BrokenInvariant {
-                reason: "vault admin must already be a vault member".to_owned(),
-            });
-        }
-        self.conn.execute(
-            "INSERT INTO vault_admins (vault_id, user_id) VALUES (?1, ?2)",
-            params![vault_id.as_str(), user_id.as_str()],
-        )?;
-        Ok(())
-    }
-
-    /// Remove an organization Vault Admin while preserving at least one admin.
-    pub fn remove_admin(&mut self, vault_id: &VaultId, user_id: &UserId) -> Result<(), StoreError> {
-        let vault = self.load_core_vault(vault_id)?;
-        if vault.kind != VaultKind::Organization {
-            return Err(StoreError::BrokenInvariant {
-                reason: "member/admin mutation requires an organization vault".to_owned(),
-            });
-        }
-        if !vault.admins.contains(user_id) {
-            return Err(StoreError::BrokenInvariant {
-                reason: "vault admin does not exist".to_owned(),
-            });
-        }
-        if vault.admins.len() == 1 {
-            return Err(StoreError::BrokenInvariant {
-                reason: "organization vault must keep at least one admin".to_owned(),
-            });
-        }
-
-        self.conn.execute(
-            "DELETE FROM vault_admins WHERE vault_id = ?1 AND user_id = ?2",
-            params![vault_id.as_str(), user_id.as_str()],
-        )?;
-        Ok(())
-    }
-
-    /// Remove an organization Vault Member after admin and restricted access cleanup.
-    pub fn remove_member(
-        &mut self,
-        vault_id: &VaultId,
-        user_id: &UserId,
-    ) -> Result<(), StoreError> {
-        let vault = self.load_core_vault(vault_id)?;
-        if vault.kind != VaultKind::Organization {
-            return Err(StoreError::BrokenInvariant {
-                reason: "member/admin mutation requires an organization vault".to_owned(),
-            });
-        }
-        if vault.admins.contains(user_id) {
-            return Err(StoreError::BrokenInvariant {
-                reason: "remove admin role before removing member".to_owned(),
-            });
-        }
-        if !vault
-            .members
-            .iter()
-            .any(|member| &member.user_id == user_id)
-        {
-            return Err(StoreError::BrokenInvariant {
-                reason: "vault member does not exist".to_owned(),
-            });
-        }
-        if self.member_has_restricted_access(vault_id, user_id)? {
-            return Err(StoreError::BrokenInvariant {
-                reason: "remove restricted folder access before removing member".to_owned(),
-            });
-        }
-
-        self.conn.execute(
-            "DELETE FROM vault_members WHERE vault_id = ?1 AND user_id = ?2",
-            params![vault_id.as_str(), user_id.as_str()],
-        )?;
-        Ok(())
-    }
-
-    /// Create a complete Folder and its current grants in one transaction.
-    pub fn create_folder(
-        &mut self,
-        vault_id: &VaultId,
-        folder: &Folder,
-        access_user_ids: &BTreeSet<UserId>,
-        grants: &[FolderKeyGrantMetadata],
-    ) -> Result<(), StoreError> {
-        if folder.current_key_version != 1 {
-            return Err(StoreError::BrokenInvariant {
-                reason: "new folders must start at key version 1".to_owned(),
-            });
-        }
-
-        let vault = self.load_core_vault(vault_id)?;
-        self.validate_folder_request(&vault, folder, access_user_ids, grants)?;
-
-        let tx = self.conn.transaction()?;
-        insert_folder(&tx, vault_id, folder, false)?;
-        insert_folder_access(&tx, vault_id, &folder.id, access_user_ids)?;
-        for grant in grants {
-            insert_grant(&tx, vault_id, grant)?;
-        }
-        tx.commit()?;
-        Ok(())
-    }
-
-    /// Insert an empty legacy Folder that can later be repaired by Finish Setup.
-    pub fn insert_setup_incomplete_folder_for_repair(
-        &mut self,
-        vault_id: &VaultId,
-        folder: &Folder,
-        access_user_ids: &BTreeSet<UserId>,
-    ) -> Result<(), StoreError> {
-        let vault = self.load_core_vault(vault_id)?;
-        validate_hierarchy(&self.conn, vault_id, folder)?;
-        validate_access_list_shape(folder, access_user_ids)?;
-        validate_access_membership(&vault, access_user_ids)?;
-
-        let tx = self.conn.transaction()?;
-        insert_folder(&tx, vault_id, folder, true)?;
-        insert_folder_access(&tx, vault_id, &folder.id, access_user_ids)?;
-        tx.commit()?;
-        Ok(())
-    }
-
-    /// Finish setup for an empty Folder by writing the required current grants.
-    pub fn finish_folder_setup(
-        &mut self,
-        vault_id: &VaultId,
-        folder_id: &FolderId,
-        grants: &[FolderKeyGrantMetadata],
-    ) -> Result<(), StoreError> {
-        let stored = self.load_vault(vault_id)?;
-        let folder = stored
-            .vault
-            .folders
-            .iter()
-            .find(|folder| folder.id == *folder_id)
-            .ok_or_else(|| StoreError::MissingFolder {
-                folder_id: folder_id.to_string(),
-            })?;
-
-        if !stored.setup_incomplete_folder_ids.contains(folder_id) {
-            return Err(StoreError::BrokenInvariant {
-                reason: "folder setup is already complete".to_owned(),
-            });
-        }
-        if self
-            .load_current_objects(vault_id)?
-            .iter()
-            .any(|object| object.folder_id == *folder_id)
-        {
-            return Err(StoreError::BrokenInvariant {
-                reason: "finish setup only supports empty folders".to_owned(),
-            });
-        }
-
-        let access_user_ids = stored
-            .folder_access
-            .get(folder_id)
-            .cloned()
-            .unwrap_or_default();
-        let required = required_recipients(&stored.vault, folder, &access_user_ids)?;
-        validate_folder_grants(&stored.vault, folder, &required, grants)?;
-
-        let tx = self.conn.transaction()?;
-        for grant in grants {
-            insert_grant(&tx, vault_id, grant)?;
-        }
-        tx.execute(
-            "UPDATE folders SET setup_incomplete = 0 WHERE vault_id = ?1 AND id = ?2",
-            params![vault_id.as_str(), folder_id.as_str()],
-        )?;
-        tx.commit()?;
-        Ok(())
-    }
-
-    /// Grant access to one organization member for a restricted Folder.
-    pub fn grant_folder_access(
-        &mut self,
-        vault_id: &VaultId,
-        folder_id: &FolderId,
-        user_id: &UserId,
-        grant: &FolderKeyGrantMetadata,
-    ) -> Result<(), StoreError> {
-        let stored = self.load_vault(vault_id)?;
-        let folder = stored
-            .vault
-            .folders
-            .iter()
-            .find(|folder| folder.id == *folder_id)
-            .ok_or_else(|| StoreError::MissingFolder {
-                folder_id: folder_id.to_string(),
-            })?;
-        if folder.access != FolderAccessMode::Restricted {
-            return Err(StoreError::BrokenInvariant {
-                reason: "folder access grants require a restricted folder".to_owned(),
-            });
-        }
-        let current_access = stored
-            .folder_access
-            .get(folder_id)
-            .cloned()
-            .unwrap_or_default();
-        if current_access.contains(user_id) {
-            return Err(StoreError::BrokenInvariant {
-                reason: "folder access is already granted".to_owned(),
-            });
-        }
-        validate_access_membership(&stored.vault, &BTreeSet::from([user_id.clone()]))?;
-        validate_grant_metadata(grant)?;
-        validate_grant_issuer(&stored.vault, grant)?;
-        if grant.folder_id != *folder_id {
-            return Err(StoreError::BrokenInvariant {
-                reason: "grant folder id must match folder metadata".to_owned(),
-            });
-        }
-        if grant.key_version != folder.current_key_version {
-            return Err(StoreError::BrokenInvariant {
-                reason: "grant key version must match folder current key version".to_owned(),
-            });
-        }
-        if grant.recipient_npub != *user_id {
-            return Err(StoreError::BrokenInvariant {
-                reason: "grant recipient must match folder access target".to_owned(),
-            });
-        }
-
-        let tx = self.conn.transaction()?;
-        tx.execute(
-            "INSERT INTO folder_access (vault_id, folder_id, user_id) VALUES (?1, ?2, ?3)",
-            params![vault_id.as_str(), folder_id.as_str(), user_id.as_str()],
-        )?;
-        insert_grant(&tx, vault_id, grant)?;
-        tx.commit()?;
-        Ok(())
-    }
-
-    /// Remove restricted Folder access by rotating the Folder Key and re-encrypting live objects.
-    pub fn rotate_folder_key_for_access_removal(
-        &mut self,
-        vault_id: &VaultId,
-        folder_id: &FolderId,
-        removed_user_id: &UserId,
-        new_key_version: u32,
-        grants: &[FolderKeyGrantMetadata],
-        reencrypted_records: &[FolderObjectRevisionSyncRecord],
-    ) -> Result<(), StoreError> {
-        let stored = self.load_vault(vault_id)?;
-        let folder = stored
-            .vault
-            .folders
-            .iter()
-            .find(|folder| folder.id == *folder_id)
-            .ok_or_else(|| StoreError::MissingFolder {
-                folder_id: folder_id.to_string(),
-            })?;
-        if folder.access != FolderAccessMode::Restricted {
-            return Err(StoreError::BrokenInvariant {
-                reason: "folder access removal requires a restricted folder".to_owned(),
-            });
-        }
-        if new_key_version != folder.current_key_version + 1 {
-            return Err(StoreError::BrokenInvariant {
-                reason: "folder access removal must rotate to the next key version".to_owned(),
-            });
-        }
-        let mut remaining_access = stored
-            .folder_access
-            .get(folder_id)
-            .cloned()
-            .unwrap_or_default();
-        if !remaining_access.remove(removed_user_id) {
-            return Err(StoreError::BrokenInvariant {
-                reason: "folder access target does not currently have access".to_owned(),
-            });
-        }
-
-        let mut rotated_folder = folder.clone();
-        rotated_folder.current_key_version = new_key_version;
-        let required = required_recipients(&stored.vault, &rotated_folder, &remaining_access)?;
-        validate_folder_grants(&stored.vault, &rotated_folder, &required, grants)?;
-
-        let live_objects = self
-            .load_current_objects(vault_id)?
-            .into_iter()
-            .filter(|object| object.folder_id == *folder_id && !object.deleted)
-            .collect::<Vec<_>>();
-        validate_rotation_records(&live_objects, reencrypted_records)?;
-
-        let tx = self.conn.transaction()?;
-        tx.execute(
-            "DELETE FROM folder_access WHERE vault_id = ?1 AND folder_id = ?2 AND user_id = ?3",
-            params![
-                vault_id.as_str(),
-                folder_id.as_str(),
-                removed_user_id.as_str()
-            ],
-        )?;
-        tx.execute(
-            "UPDATE folders SET current_key_version = ?3 WHERE vault_id = ?1 AND id = ?2",
-            params![vault_id.as_str(), folder_id.as_str(), new_key_version],
-        )?;
-        for grant in grants {
-            insert_grant(&tx, vault_id, grant)?;
-        }
-        for record in reencrypted_records {
-            let input = SyncRecordInput::FolderObjectRevision(record.clone());
-            sync_records::validate_sync_input(&input)?;
-            sync_records::validate_sync_conflict(&tx, vault_id, &input)?;
-            let sequence = sync_records::next_sequence(&tx, vault_id)?;
-            sync_records::insert_sync_record(&tx, vault_id, sequence, &input)?;
-            sync_records::project_sync_record(&tx, vault_id, &input)?;
-        }
-        tx.commit()?;
-        Ok(())
-    }
-
-    /// Create one npub-bound singleton Vault Invitation.
-    #[allow(clippy::too_many_arguments)]
-    pub fn create_vault_invitation(
-        &mut self,
-        vault_id: &VaultId,
-        id: &str,
-        user_id: &UserId,
-        invite_code: &str,
-        accept_path: &str,
-        initial_folder_access: &[FolderId],
-        created_by_npub: &UserId,
-        expires_at: &str,
-        created_at: &str,
-    ) -> Result<StoredVaultInvitation, StoreError> {
-        let vault = self.load_core_vault(vault_id)?;
-        if vault.kind != VaultKind::Organization {
-            return Err(StoreError::BrokenInvariant {
-                reason: "vault invitations require an organization vault".to_owned(),
-            });
-        }
-        if !vault.admins.contains(created_by_npub) {
-            return Err(StoreError::BrokenInvariant {
-                reason: "vault invitations must be created by a vault admin".to_owned(),
-            });
-        }
-        validate_link_id("vault_invitation_id", id)?;
-        validate_link_id("invite_code", invite_code)?;
-        validate_link_timestamp("expiresAt", expires_at)?;
-        for folder_id in initial_folder_access {
-            ensure_folder_exists(&self.conn, vault_id, folder_id)?;
-        }
-        let initial_folder_access_json = folder_id_vec_json(initial_folder_access)?;
-
-        self.conn
-            .execute(
-                r#"
-                INSERT INTO vault_invitations (
-                    id, vault_id, user_id, status, invite_code, accept_path,
-                    initial_folder_access_json, created_by_npub, expires_at,
-                    created_at, updated_at
-                )
-                VALUES (?1, ?2, ?3, 'pending', ?4, ?5, ?6, ?7, ?8, ?9, ?9)
-                "#,
-                params![
-                    id,
-                    vault_id.as_str(),
-                    user_id.as_str(),
-                    invite_code,
-                    accept_path,
-                    initial_folder_access_json,
-                    created_by_npub.as_str(),
-                    expires_at,
-                    created_at
-                ],
-            )
-            .map_err(map_insert_error("vault_invitation_id", id))?;
-
-        self.load_vault_invitation(id)
-    }
-
-    /// Load one Vault Invitation by id.
-    pub fn load_vault_invitation(
-        &self,
-        invitation_id: &str,
-    ) -> Result<StoredVaultInvitation, StoreError> {
-        self.conn
-            .query_row(
-                r#"
-                SELECT id, vault_id, user_id, status, invite_code, accept_path,
-                       initial_folder_access_json, created_by_npub, expires_at,
-                       created_at, updated_at, accepted_at
-                FROM vault_invitations
-                WHERE id = ?1
-                "#,
-                params![invitation_id],
-                vault_invitation_from_row,
-            )
-            .optional()?
-            .ok_or(StoreError::UnavailableLink {
-                kind: "vault invitation",
-            })
-    }
-
-    /// Load a pending Vault Invitation by invite code for its target user only.
-    pub fn load_available_vault_invitation_by_code(
-        &self,
-        invite_code: &str,
-        user_id: &UserId,
-        now: &str,
-    ) -> Result<StoredVaultInvitation, StoreError> {
-        let invitation = self
-            .conn
-            .query_row(
-                r#"
-                SELECT id, vault_id, user_id, status, invite_code, accept_path,
-                       initial_folder_access_json, created_by_npub, expires_at,
-                       created_at, updated_at, accepted_at
-                FROM vault_invitations
-                WHERE invite_code = ?1
-                "#,
-                params![invite_code],
-                vault_invitation_from_row,
-            )
-            .optional()?
-            .ok_or(StoreError::UnavailableLink {
-                kind: "vault invitation",
-            })?;
-        ensure_invitation_available(&invitation, user_id, now)?;
-        Ok(invitation)
-    }
-
-    /// Revoke a Vault Invitation delivery handle. Accepted membership is unchanged.
-    pub fn revoke_vault_invitation(
-        &mut self,
-        vault_id: &VaultId,
-        invitation_id: &str,
-        actor_npub: &UserId,
-        updated_at: &str,
-    ) -> Result<StoredVaultInvitation, StoreError> {
-        let vault = self.load_core_vault(vault_id)?;
-        if !vault.admins.contains(actor_npub) {
-            return Err(StoreError::BrokenInvariant {
-                reason: "vault invitation revocation requires a vault admin".to_owned(),
-            });
-        }
-        let invitation = self.load_vault_invitation(invitation_id)?;
-        if invitation.vault_id != *vault_id {
-            return Err(StoreError::UnavailableLink {
-                kind: "vault invitation",
-            });
-        }
-        self.conn.execute(
-            "UPDATE vault_invitations SET status = 'revoked', updated_at = ?3 WHERE vault_id = ?1 AND id = ?2",
-            params![vault_id.as_str(), invitation_id, updated_at],
-        )?;
-        self.load_vault_invitation(invitation_id)
-    }
-
-    /// Accept a pending Vault Invitation, adding the target as a member exactly once.
-    pub fn accept_vault_invitation_by_code(
-        &mut self,
-        invite_code: &str,
-        user_id: &UserId,
-        now: &str,
-    ) -> Result<StoredVaultInvitation, StoreError> {
-        let mut invitation = self
-            .conn
-            .query_row(
-                r#"
-                SELECT id, vault_id, user_id, status, invite_code, accept_path,
-                       initial_folder_access_json, created_by_npub, expires_at,
-                       created_at, updated_at, accepted_at
-                FROM vault_invitations
-                WHERE invite_code = ?1
-                "#,
-                params![invite_code],
-                vault_invitation_from_row,
-            )
-            .optional()?
-            .ok_or(StoreError::UnavailableLink {
-                kind: "vault invitation",
-            })?;
-
-        if invitation.user_id != *user_id {
-            return Err(StoreError::UnavailableLink {
-                kind: "vault invitation",
-            });
-        }
-        if invitation.status == LinkStatus::Accepted {
-            invitation.duplicate_accept = true;
-            return Ok(invitation);
-        }
-        ensure_invitation_available(&invitation, user_id, now)?;
-
-        let tx = self.conn.transaction()?;
-        insert_member_if_missing(&tx, &invitation.vault_id, user_id)?;
-        tx.execute(
-            r#"
-            UPDATE vault_invitations
-            SET status = 'accepted', updated_at = ?3, accepted_at = ?3
-            WHERE vault_id = ?1 AND id = ?2 AND status = 'pending'
-            "#,
-            params![invitation.vault_id.as_str(), invitation.id, now],
-        )?;
-        tx.commit()?;
-
-        self.load_vault_invitation(&invitation.id)
-    }
-
-    /// Create one npub-bound singleton Share Link for a restricted Folder.
-    #[allow(clippy::too_many_arguments)]
-    pub fn create_share_link(
-        &mut self,
-        vault_id: &VaultId,
-        folder_id: &FolderId,
-        id: &str,
-        recipient_npub: &UserId,
-        created_by_npub: &UserId,
-        expires_at: &str,
-        accept_path: &str,
-        grant: &FolderKeyGrantMetadata,
-        create_personal_mount: bool,
-        created_at: &str,
-    ) -> Result<StoredShareLink, StoreError> {
-        let stored = self.load_vault(vault_id)?;
-        if stored.vault.kind != VaultKind::Organization {
-            return Err(StoreError::BrokenInvariant {
-                reason: "share links require an organization source vault".to_owned(),
-            });
-        }
-        if !stored.vault.admins.contains(created_by_npub) {
-            return Err(StoreError::BrokenInvariant {
-                reason: "share links must be created by a vault admin".to_owned(),
-            });
-        }
-        let folder = stored
-            .vault
-            .folders
-            .iter()
-            .find(|folder| folder.id == *folder_id)
-            .ok_or_else(|| StoreError::MissingFolder {
-                folder_id: folder_id.to_string(),
-            })?;
-        if folder.access != FolderAccessMode::Restricted {
-            return Err(StoreError::BrokenInvariant {
-                reason: "share links require a restricted folder".to_owned(),
-            });
-        }
-        validate_link_id("share_link_id", id)?;
-        validate_link_timestamp("expiresAt", expires_at)?;
-        validate_grant_metadata(grant)?;
-        validate_grant_issuer(&stored.vault, grant)?;
-        if grant.folder_id != *folder_id
-            || grant.key_version != folder.current_key_version
-            || grant.recipient_npub != *recipient_npub
-            || grant.issuer_npub != *created_by_npub
-        {
-            return Err(StoreError::BrokenInvariant {
-                reason:
-                    "share link grant must match folder, current key version, issuer, and recipient"
-                        .to_owned(),
-            });
-        }
-        let access_change_event_json =
-            grant
-                .access_change_event_json
-                .clone()
-                .ok_or_else(|| StoreError::BrokenInvariant {
-                    reason: "share link requires an access-change event".to_owned(),
-                })?;
-
-        self.conn
-            .execute(
-                r#"
-                INSERT INTO share_links (
-                    id, vault_id, folder_id, recipient_npub, created_by_npub, status,
-                    accept_path, expires_at, created_at, updated_at, grant_id,
-                    grant_key_version, grant_wrapped_event_json, access_change_event_json,
-                    create_personal_mount
-                )
-                VALUES (?1, ?2, ?3, ?4, ?5, 'pending', ?6, ?7, ?8, ?8, ?9, ?10, ?11, ?12, ?13)
-                "#,
-                params![
-                    id,
-                    vault_id.as_str(),
-                    folder_id.as_str(),
-                    recipient_npub.as_str(),
-                    created_by_npub.as_str(),
-                    accept_path,
-                    expires_at,
-                    created_at,
-                    grant.id,
-                    grant.key_version,
-                    grant.wrapped_event_json,
-                    access_change_event_json,
-                    create_personal_mount
-                ],
-            )
-            .map_err(map_insert_error("share_link_id", id))?;
-
-        self.load_share_link(id)
-    }
-
-    /// Load one Share Link by id.
-    pub fn load_share_link(&self, share_link_id: &str) -> Result<StoredShareLink, StoreError> {
-        self.conn
-            .query_row(
-                r#"
-                SELECT id, vault_id, folder_id, recipient_npub, created_by_npub, status,
-                       accept_path, expires_at, created_at, updated_at, accepted_at,
-                       grant_id, grant_key_version, grant_wrapped_event_json,
-                       access_change_event_json, create_personal_mount, personal_mount_id
-                FROM share_links
-                WHERE id = ?1
-                "#,
-                params![share_link_id],
-                share_link_from_row,
-            )
-            .optional()?
-            .ok_or(StoreError::UnavailableLink { kind: "share link" })
-    }
-
-    /// Load a pending Share Link for its recipient only.
-    pub fn load_available_share_link(
-        &self,
-        share_link_id: &str,
-        recipient_npub: &UserId,
-        now: &str,
-    ) -> Result<StoredShareLink, StoreError> {
-        let share_link = self.load_share_link(share_link_id)?;
-        ensure_share_link_available(&share_link, recipient_npub, now)?;
-        Ok(share_link)
-    }
-
-    /// Revoke a Share Link delivery handle. Accepted access is unchanged.
-    pub fn revoke_share_link(
-        &mut self,
-        share_link_id: &str,
-        actor_npub: &UserId,
-        updated_at: &str,
-    ) -> Result<StoredShareLink, StoreError> {
-        let share_link = self.load_share_link(share_link_id)?;
-        let vault = self.load_core_vault(&share_link.vault_id)?;
-        if !vault.admins.contains(actor_npub) {
-            return Err(StoreError::BrokenInvariant {
-                reason: "share link revocation requires a vault admin".to_owned(),
-            });
-        }
-        self.conn.execute(
-            "UPDATE share_links SET status = 'revoked', updated_at = ?2 WHERE id = ?1",
-            params![share_link_id, updated_at],
-        )?;
-        self.load_share_link(share_link_id)
-    }
-
-    /// Accept a pending Share Link, creating membership, restricted access, grant, and optional mount state.
-    pub fn accept_share_link(
-        &mut self,
-        share_link_id: &str,
-        recipient_npub: &UserId,
-        now: &str,
-    ) -> Result<StoredShareLink, StoreError> {
-        let mut share_link = self.load_share_link(share_link_id)?;
-        if share_link.recipient_npub != *recipient_npub {
-            return Err(StoreError::UnavailableLink { kind: "share link" });
-        }
-        if share_link.status == LinkStatus::Accepted {
-            share_link.duplicate_accept = true;
-            return Ok(share_link);
-        }
-        ensure_share_link_available(&share_link, recipient_npub, now)?;
-
-        let stored = self.load_vault(&share_link.vault_id)?;
-        let folder = stored
-            .vault
-            .folders
-            .iter()
-            .find(|folder| folder.id == share_link.folder_id)
-            .ok_or_else(|| StoreError::MissingFolder {
-                folder_id: share_link.folder_id.to_string(),
-            })?;
-        if folder.access != FolderAccessMode::Restricted {
-            return Err(StoreError::BrokenInvariant {
-                reason: "share links require a restricted folder".to_owned(),
-            });
-        }
-        validate_grant_metadata(&share_link.folder_key_grant)?;
-        validate_grant_issuer(&stored.vault, &share_link.folder_key_grant)?;
-        if share_link.folder_key_grant.key_version != folder.current_key_version {
-            return Err(StoreError::BrokenInvariant {
-                reason: "share link grant key version must match folder current key version"
-                    .to_owned(),
-            });
-        }
-
-        let tx = self.conn.transaction()?;
-        insert_member_if_missing(&tx, &share_link.vault_id, recipient_npub)?;
-        tx.execute(
-            "INSERT INTO folder_access (vault_id, folder_id, user_id) VALUES (?1, ?2, ?3)",
-            params![
-                share_link.vault_id.as_str(),
-                share_link.folder_id.as_str(),
-                recipient_npub.as_str()
-            ],
-        )?;
-        insert_grant(&tx, &share_link.vault_id, &share_link.folder_key_grant)?;
-
-        let personal_mount_id = if share_link.create_personal_mount {
-            let mount_id =
-                personal_mount_id(recipient_npub, &share_link.vault_id, &share_link.folder_id);
-            tx.execute(
-                r#"
-                INSERT INTO personal_folder_mounts (
-                    id, owner_npub, source_vault_id, source_folder_id, display_name,
-                    display_parent_folder_id, created_at, updated_at
-                )
-                VALUES (?1, ?2, ?3, ?4, ?5, NULL, ?6, ?6)
-                ON CONFLICT(owner_npub, source_vault_id, source_folder_id) DO UPDATE SET
-                    updated_at = excluded.updated_at
-                "#,
-                params![
-                    mount_id,
-                    recipient_npub.as_str(),
-                    share_link.vault_id.as_str(),
-                    share_link.folder_id.as_str(),
-                    folder.name.as_str(),
-                    now
-                ],
-            )?;
-            Some(mount_id)
-        } else {
-            None
-        };
-        tx.execute(
-            r#"
-            UPDATE share_links
-            SET status = 'accepted', updated_at = ?2, accepted_at = ?2, personal_mount_id = ?3
-            WHERE id = ?1 AND status = 'pending'
-            "#,
-            params![share_link_id, now, personal_mount_id],
-        )?;
-        tx.commit()?;
-
-        self.load_share_link(share_link_id)
-    }
-
-    /// Mark a restricted, setup-complete Folder as a Shared Folder Source.
-    pub fn mark_shared_folder_source(
-        &mut self,
-        vault_id: &VaultId,
-        folder_id: &FolderId,
-    ) -> Result<(), StoreError> {
-        let stored = self.load_vault(vault_id)?;
-        let folder = stored
-            .vault
-            .folders
-            .iter()
-            .find(|folder| folder.id == *folder_id)
-            .ok_or_else(|| StoreError::MissingFolder {
-                folder_id: folder_id.to_string(),
-            })?;
-        if folder.access != FolderAccessMode::Restricted {
-            return Err(StoreError::BrokenInvariant {
-                reason: "shared folder sources must be restricted folders".to_owned(),
-            });
-        }
-        if stored.setup_incomplete_folder_ids.contains(folder_id) {
-            return Err(StoreError::BrokenInvariant {
-                reason: "shared folder source setup must be complete".to_owned(),
-            });
-        }
-        self.conn.execute(
-            "UPDATE folders SET shared_folder_source = 1 WHERE vault_id = ?1 AND id = ?2",
-            params![vault_id.as_str(), folder_id.as_str()],
-        )?;
-        Ok(())
-    }
-
-    /// Create a Shared Folder Invitation from a source Folder to a destination Organization admin.
-    #[allow(clippy::too_many_arguments)]
-    pub fn create_shared_folder_invitation(
-        &mut self,
-        source_vault_id: &VaultId,
-        source_folder_id: &FolderId,
-        destination_vault_id: &VaultId,
-        id: &str,
-        destination_admin_npub: &UserId,
-        created_by_npub: &UserId,
-        accept_path: &str,
-        grant: &FolderKeyGrantMetadata,
-        created_at: &str,
-    ) -> Result<StoredSharedFolderInvitation, StoreError> {
-        let source = self.load_vault(source_vault_id)?;
-        let source_folder = source
-            .vault
-            .folders
-            .iter()
-            .find(|folder| folder.id == *source_folder_id)
-            .ok_or_else(|| StoreError::MissingFolder {
-                folder_id: source_folder_id.to_string(),
-            })?;
-        if !source.vault.admins.contains(created_by_npub) {
-            return Err(StoreError::BrokenInvariant {
-                reason: "shared folder invitations must be created by a source vault admin"
-                    .to_owned(),
-            });
-        }
-        if !source_folder.shared_folder_source
-            || source_folder.access != FolderAccessMode::Restricted
-        {
-            return Err(StoreError::BrokenInvariant {
-                reason: "shared folder invitations require a restricted shared folder source"
-                    .to_owned(),
-            });
-        }
-        if source
-            .setup_incomplete_folder_ids
-            .contains(source_folder_id)
-        {
-            return Err(StoreError::BrokenInvariant {
-                reason: "shared folder source setup must be complete".to_owned(),
-            });
-        }
-        let destination = self.load_vault(destination_vault_id)?;
-        if destination.vault.kind != VaultKind::Organization {
-            return Err(StoreError::BrokenInvariant {
-                reason: "shared folder destination must be an organization vault".to_owned(),
-            });
-        }
-        if !destination.vault.admins.contains(destination_admin_npub) {
-            return Err(StoreError::BrokenInvariant {
-                reason: "shared folder invitation target must be a destination vault admin"
-                    .to_owned(),
-            });
-        }
-        validate_link_id("shared_folder_invitation_id", id)?;
-        validate_grant_metadata(grant)?;
-        validate_grant_issuer(&source.vault, grant)?;
-        if grant.folder_id != *source_folder_id
-            || grant.key_version != source_folder.current_key_version
-            || grant.recipient_npub != *destination_admin_npub
-            || grant.issuer_npub != *created_by_npub
-        {
-            return Err(StoreError::BrokenInvariant {
-                reason: "shared folder invitation grant must match source folder, key version, issuer, and destination admin"
-                    .to_owned(),
-            });
-        }
-        let access_change_event_json =
-            grant
-                .access_change_event_json
-                .clone()
-                .ok_or_else(|| StoreError::BrokenInvariant {
-                    reason: "shared folder invitation requires an access-change event".to_owned(),
-                })?;
-
-        self.conn
-            .execute(
-                r#"
-                INSERT INTO shared_folder_invitations (
-                    id, source_vault_id, source_folder_id, destination_vault_id,
-                    destination_admin_npub, created_by_npub, status, current_key_version,
-                    accept_path, created_at, updated_at, grant_id, grant_wrapped_event_json,
-                    access_change_event_json
-                )
-                VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'pending', ?7, ?8, ?9, ?9, ?10, ?11, ?12)
-                "#,
-                params![
-                    id,
-                    source_vault_id.as_str(),
-                    source_folder_id.as_str(),
-                    destination_vault_id.as_str(),
-                    destination_admin_npub.as_str(),
-                    created_by_npub.as_str(),
-                    source_folder.current_key_version,
-                    accept_path,
-                    created_at,
-                    grant.id,
-                    grant.wrapped_event_json,
-                    access_change_event_json
-                ],
-            )
-            .map_err(map_insert_error("shared_folder_invitation_id", id))?;
-
-        self.load_shared_folder_invitation(id)
-    }
-
-    /// Load a Shared Folder Invitation.
-    pub fn load_shared_folder_invitation(
-        &self,
-        invitation_id: &str,
-    ) -> Result<StoredSharedFolderInvitation, StoreError> {
-        self.conn
-            .query_row(
-                r#"
-                SELECT id, source_vault_id, source_folder_id, destination_vault_id,
-                       destination_admin_npub, created_by_npub, status, current_key_version,
-                       accept_path, created_at, updated_at, accepted_at, grant_id,
-                       grant_wrapped_event_json, access_change_event_json
-                FROM shared_folder_invitations
-                WHERE id = ?1
-                "#,
-                params![invitation_id],
-                shared_folder_invitation_from_row,
-            )
-            .optional()?
-            .ok_or(StoreError::UnavailableLink {
-                kind: "shared folder invitation",
-            })
-    }
-
-    /// Revoke a pending or accepted Shared Folder Invitation delivery handle.
-    pub fn revoke_shared_folder_invitation(
-        &mut self,
-        invitation_id: &str,
-        actor_npub: &UserId,
-        updated_at: &str,
-    ) -> Result<StoredSharedFolderInvitation, StoreError> {
-        let invitation = self.load_shared_folder_invitation(invitation_id)?;
-        let source = self.load_core_vault(&invitation.source_vault_id)?;
-        if !source.admins.contains(actor_npub) {
-            return Err(StoreError::BrokenInvariant {
-                reason: "shared folder invitation revocation requires a source vault admin"
-                    .to_owned(),
-            });
-        }
-        self.conn.execute(
-            "UPDATE shared_folder_invitations SET status = 'revoked', updated_at = ?2 WHERE id = ?1",
-            params![invitation_id, updated_at],
-        )?;
-        self.load_shared_folder_invitation(invitation_id)
-    }
-
-    /// Accept a Shared Folder Invitation, creating/reusing connection and Organization Mount.
-    pub fn accept_shared_folder_invitation(
-        &mut self,
-        invitation_id: &str,
-        destination_admin_npub: &UserId,
-        connection_id: &str,
-        mount_id: &str,
-        now: &str,
-    ) -> Result<StoredSharedFolderInvitation, StoreError> {
-        let mut invitation = self.load_shared_folder_invitation(invitation_id)?;
-        if invitation.destination_admin_npub != *destination_admin_npub {
-            return Err(StoreError::UnavailableLink {
-                kind: "shared folder invitation",
-            });
-        }
-        if invitation.status == LinkStatus::Accepted {
-            invitation.duplicate_accept = true;
-            return Ok(invitation);
-        }
-        if invitation.status != LinkStatus::Pending {
-            return Err(StoreError::UnavailableLink {
-                kind: "shared folder invitation",
-            });
-        }
-
-        let source = self.load_vault(&invitation.source_vault_id)?;
-        let source_folder = source
-            .vault
-            .folders
-            .iter()
-            .find(|folder| folder.id == invitation.source_folder_id)
-            .ok_or_else(|| StoreError::MissingFolder {
-                folder_id: invitation.source_folder_id.to_string(),
-            })?;
-        if !source_folder.shared_folder_source
-            || source_folder.access != FolderAccessMode::Restricted
-            || source
-                .setup_incomplete_folder_ids
-                .contains(&invitation.source_folder_id)
-        {
-            return Err(StoreError::BrokenInvariant {
-                reason: "shared folder invitation source is not usable".to_owned(),
-            });
-        }
-        validate_grant_metadata(&invitation.folder_key_grant)?;
-        validate_grant_issuer(&source.vault, &invitation.folder_key_grant)?;
-        if invitation.folder_key_grant.key_version != source_folder.current_key_version {
-            return Err(StoreError::BrokenInvariant {
-                reason: "shared folder invitation grant key version must match source folder"
-                    .to_owned(),
-            });
-        }
-
-        let tx = self.conn.transaction()?;
-        tx.execute(
-            r#"
-            INSERT INTO shared_folder_connections (
-                id, source_vault_id, source_folder_id, destination_vault_id,
-                destination_admin_npub, status, created_at, updated_at
-            )
-            VALUES (?1, ?2, ?3, ?4, ?5, 'active', ?6, ?6)
-            ON CONFLICT(source_vault_id, source_folder_id, destination_vault_id)
-            DO UPDATE SET status = 'active', updated_at = excluded.updated_at
-            "#,
-            params![
-                connection_id,
-                invitation.source_vault_id.as_str(),
-                invitation.source_folder_id.as_str(),
-                invitation.destination_vault_id.as_str(),
-                destination_admin_npub.as_str(),
-                now
-            ],
-        )?;
-        tx.execute(
-            r#"
-            INSERT INTO organization_folder_mounts (
-                id, organization_vault_id, source_vault_id, source_folder_id, connection_id,
-                display_name, display_parent_folder_id, created_by_npub, created_at, updated_at
-            )
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULL, ?7, ?8, ?8)
-            ON CONFLICT(organization_vault_id, source_vault_id, source_folder_id)
-            DO UPDATE SET connection_id = excluded.connection_id, updated_at = excluded.updated_at
-            "#,
-            params![
-                mount_id,
-                invitation.destination_vault_id.as_str(),
-                invitation.source_vault_id.as_str(),
-                invitation.source_folder_id.as_str(),
-                connection_id,
-                source_folder.name.as_str(),
-                destination_admin_npub.as_str(),
-                now
-            ],
-        )?;
-        insert_member_if_missing(&tx, &invitation.source_vault_id, destination_admin_npub)?;
-        insert_folder_access_if_missing(
-            &tx,
-            &invitation.source_vault_id,
-            &invitation.source_folder_id,
-            destination_admin_npub,
-        )?;
-        insert_grant_or_ignore(
-            &tx,
-            &invitation.source_vault_id,
-            &invitation.folder_key_grant,
-        )?;
-        tx.execute(
-            "INSERT OR IGNORE INTO shared_folder_connection_members (connection_id, member_npub, created_at) VALUES (?1, ?2, ?3)",
-            params![connection_id, destination_admin_npub.as_str(), now],
-        )?;
-        tx.execute(
-            "UPDATE shared_folder_invitations SET status = 'accepted', updated_at = ?2, accepted_at = ?2 WHERE id = ?1 AND status = 'pending'",
-            params![invitation_id, now],
-        )?;
-        tx.commit()?;
-
-        self.load_shared_folder_invitation(invitation_id)
-    }
-
-    /// Load a Shared Folder Connection.
-    pub fn load_shared_folder_connection(
-        &self,
-        connection_id: &str,
-    ) -> Result<StoredSharedFolderConnection, StoreError> {
-        let members = self.load_connection_members(connection_id)?;
-        self.conn
-            .query_row(
-                r#"
-                SELECT id, source_vault_id, source_folder_id, destination_vault_id,
-                       destination_admin_npub, status, created_at, updated_at
-                FROM shared_folder_connections
-                WHERE id = ?1
-                "#,
-                params![connection_id],
-                |row| shared_folder_connection_from_row(row, members),
-            )
-            .optional()?
-            .ok_or(StoreError::UnavailableLink {
-                kind: "shared folder connection",
-            })
-    }
-
-    /// Load Organization Folder Mounts for one destination Vault.
-    pub fn load_organization_folder_mounts(
-        &self,
-        organization_vault_id: &VaultId,
-    ) -> Result<Vec<StoredOrganizationFolderMount>, StoreError> {
-        self.require_vault_exists(organization_vault_id)?;
-        let mut stmt = self.conn.prepare(
-            r#"
-            SELECT id, organization_vault_id, source_vault_id, source_folder_id,
-                   connection_id, display_name, display_parent_folder_id,
-                   created_by_npub, created_at, updated_at
-            FROM organization_folder_mounts
-            WHERE organization_vault_id = ?1
-            ORDER BY id
-            "#,
-        )?;
-        let rows = stmt.query_map(
-            params![organization_vault_id.as_str()],
-            organization_mount_from_row,
-        )?;
-        let mut mounts = Vec::new();
-        for row in rows {
-            mounts.push(row?);
-        }
-        Ok(mounts)
-    }
-
-    /// Project Organization Folder Mounts as client-visible source-backed Folders.
-    pub fn mounted_folder_projection(
-        &self,
-        organization_vault_id: &VaultId,
-        actor_npub: &UserId,
-    ) -> Result<Vec<MountedFolderProjection>, StoreError> {
-        let mounts = self.load_organization_folder_mounts(organization_vault_id)?;
-        let mut projections = Vec::new();
-        for mount in mounts {
-            let connection = self.load_shared_folder_connection(&mount.connection_id)?;
-            let state = if connection.status == SharedFolderConnectionStatus::Revoked {
-                MountedFolderState::Revoked
-            } else if self.actor_has_current_source_access_and_grant(
-                &mount.source_vault_id,
-                &mount.source_folder_id,
-                actor_npub,
-            )? {
-                MountedFolderState::Available
-            } else {
-                MountedFolderState::Locked
-            };
-            projections.push(MountedFolderProjection {
-                mount_id: mount.id,
-                organization_vault_id: mount.organization_vault_id,
-                source_vault_id: mount.source_vault_id,
-                source_folder_id: mount.source_folder_id,
-                connection_id: mount.connection_id,
-                display_name: mount.display_name,
-                display_parent_folder_id: mount.display_parent_folder_id,
-                state,
-            });
-        }
-        Ok(projections)
-    }
-
-    /// Add a destination Organization member to a Shared Folder Connection.
-    pub fn add_shared_folder_connection_member(
-        &mut self,
-        connection_id: &str,
-        actor_npub: &UserId,
-        target_npub: &UserId,
-        grant: &FolderKeyGrantMetadata,
-        created_at: &str,
-    ) -> Result<StoredSharedFolderConnection, StoreError> {
-        let connection = self.load_shared_folder_connection(connection_id)?;
-        self.validate_destination_admin_for_connection(&connection, actor_npub)?;
-        self.validate_destination_member(&connection.destination_vault_id, target_npub)?;
-        let source = self.load_vault(&connection.source_vault_id)?;
-        let source_folder = source
-            .vault
-            .folders
-            .iter()
-            .find(|folder| folder.id == connection.source_folder_id)
-            .ok_or_else(|| StoreError::MissingFolder {
-                folder_id: connection.source_folder_id.to_string(),
-            })?;
-        validate_connection_grant(
-            grant,
-            &connection.source_folder_id,
-            source_folder.current_key_version,
-            actor_npub,
-            target_npub,
-        )?;
-
-        let tx = self.conn.transaction()?;
-        insert_member_if_missing(&tx, &connection.source_vault_id, target_npub)?;
-        insert_folder_access_if_missing(
-            &tx,
-            &connection.source_vault_id,
-            &connection.source_folder_id,
-            target_npub,
-        )?;
-        insert_grant(&tx, &connection.source_vault_id, grant)?;
-        tx.execute(
-            "INSERT OR IGNORE INTO shared_folder_connection_members (connection_id, member_npub, created_at) VALUES (?1, ?2, ?3)",
-            params![connection_id, target_npub.as_str(), created_at],
-        )?;
-        tx.commit()?;
-
-        self.load_shared_folder_connection(connection_id)
-    }
-
-    /// Remove one destination member from a Shared Folder Connection with source key rotation.
-    pub fn remove_shared_folder_connection_member(
-        &mut self,
-        connection_id: &str,
-        actor_npub: &UserId,
-        target_npub: &UserId,
-        new_key_version: u32,
-        grants: &[FolderKeyGrantMetadata],
-        reencrypted_records: &[FolderObjectRevisionSyncRecord],
-    ) -> Result<StoredSharedFolderConnection, StoreError> {
-        let connection = self.load_shared_folder_connection(connection_id)?;
-        self.validate_destination_admin_for_connection(&connection, actor_npub)?;
-        if target_npub == &connection.destination_admin_npub {
-            return Err(StoreError::BrokenInvariant {
-                reason: "destination admin access must be kept while the connection is active"
-                    .to_owned(),
-            });
-        }
-        if !connection.member_npubs.contains(target_npub) {
-            return Err(StoreError::BrokenInvariant {
-                reason: "connection member does not exist".to_owned(),
-            });
-        }
-        let removed_user_ids = BTreeSet::from([target_npub.clone()]);
-        let rotation = SharedFolderAccessRemoval {
-            removed_user_ids: &removed_user_ids,
-            new_key_version,
-            grants,
-            reencrypted_records,
-        };
-        self.rotate_shared_folder_access_removal(
-            &connection,
-            actor_npub,
-            rotation,
-            |tx| {
-                tx.execute(
-                    "DELETE FROM shared_folder_connection_members WHERE connection_id = ?1 AND member_npub = ?2",
-                    params![connection_id, target_npub.as_str()],
-                )?;
-                Ok(())
-            },
-        )?;
-        self.load_shared_folder_connection(connection_id)
-    }
-
-    /// Revoke a Shared Folder Connection and remove all participating destination access.
-    pub fn revoke_shared_folder_connection(
-        &mut self,
-        connection_id: &str,
-        actor_npub: &UserId,
-        new_key_version: u32,
-        grants: &[FolderKeyGrantMetadata],
-        reencrypted_records: &[FolderObjectRevisionSyncRecord],
-        updated_at: &str,
-    ) -> Result<StoredSharedFolderConnection, StoreError> {
-        let connection = self.load_shared_folder_connection(connection_id)?;
-        let source = self.load_core_vault(&connection.source_vault_id)?;
-        if !source.admins.contains(actor_npub) {
-            return Err(StoreError::BrokenInvariant {
-                reason: "shared folder connection revocation requires a source vault admin"
-                    .to_owned(),
-            });
-        }
-        let rotation = SharedFolderAccessRemoval {
-            removed_user_ids: &connection.member_npubs,
-            new_key_version,
-            grants,
-            reencrypted_records,
-        };
-        self.rotate_shared_folder_access_removal(
-            &connection,
-            actor_npub,
-            rotation,
-            |tx| {
-                tx.execute(
-                    "UPDATE shared_folder_connections SET status = 'revoked', updated_at = ?2 WHERE id = ?1",
-                    params![connection_id, updated_at],
-                )?;
-                Ok(())
-            },
-        )?;
-        self.load_shared_folder_connection(connection_id)
-    }
-
-    /// Reload a Vault and all current access/grant metadata.
     pub fn load_vault(&self, vault_id: &VaultId) -> Result<StoredVault, StoreError> {
         let mut vault = self.load_core_vault(vault_id)?;
         let folder_access = self.load_folder_access(vault_id)?;
@@ -2173,53 +869,6 @@ impl BrainStore {
         Ok(())
     }
 
-    fn apply_migrations(&mut self) -> Result<(), StoreError> {
-        let tx = self.conn.transaction()?;
-        tx.execute_batch(
-            r#"
-            CREATE TABLE IF NOT EXISTS schema_migrations (
-                version INTEGER PRIMARY KEY,
-                applied_at TEXT NOT NULL
-            );
-            "#,
-        )?;
-
-        if !migration_applied(&tx, 1)? {
-            tx.execute_batch(SCHEMA_V1)?;
-            tx.execute(
-                "INSERT INTO schema_migrations (version, applied_at) VALUES (?1, ?2)",
-                params![1, MIGRATION_TIMESTAMP],
-            )?;
-        }
-
-        if !migration_applied(&tx, 2)? {
-            tx.execute_batch(SCHEMA_V2)?;
-            tx.execute(
-                "INSERT INTO schema_migrations (version, applied_at) VALUES (?1, ?2)",
-                params![2, MIGRATION_TIMESTAMP],
-            )?;
-        }
-
-        if !migration_applied(&tx, 3)? {
-            tx.execute_batch(SCHEMA_V3)?;
-            tx.execute(
-                "INSERT INTO schema_migrations (version, applied_at) VALUES (?1, ?2)",
-                params![3, MIGRATION_TIMESTAMP],
-            )?;
-        }
-
-        if !migration_applied(&tx, 4)? {
-            tx.execute_batch(SCHEMA_V4)?;
-            tx.execute(
-                "INSERT INTO schema_migrations (version, applied_at) VALUES (?1, ?2)",
-                params![4, MIGRATION_TIMESTAMP],
-            )?;
-        }
-
-        tx.commit()?;
-        Ok(())
-    }
-
     fn require_vault_exists(&self, vault_id: &VaultId) -> Result<(), StoreError> {
         self.conn
             .query_row(
@@ -2277,245 +926,6 @@ impl BrainStore {
         validate_access_membership(vault, access_user_ids)?;
         let required = required_recipients(vault, folder, access_user_ids)?;
         validate_folder_grants(vault, folder, &required, grants)
-    }
-
-    fn load_core_vault(&self, vault_id: &VaultId) -> Result<Vault, StoreError> {
-        let row = self
-            .conn
-            .query_row(
-                "SELECT id, kind, name, owner_user_id FROM vaults WHERE id = ?1",
-                params![vault_id.as_str()],
-                |row| {
-                    Ok((
-                        row.get::<_, String>(0)?,
-                        row.get::<_, String>(1)?,
-                        row.get::<_, String>(2)?,
-                        row.get::<_, Option<String>>(3)?,
-                    ))
-                },
-            )
-            .optional()?
-            .ok_or_else(|| StoreError::MissingVault {
-                vault_id: vault_id.to_string(),
-            })?;
-
-        let kind = parse_vault_kind(&row.1)?;
-        let mut vault = Vault {
-            id: VaultId::new(row.0)?,
-            kind,
-            name: DisplayName::new("vault_name", row.2)?,
-            owner_user_id: row.3.map(UserId::new).transpose()?,
-            folders: self.load_folders(vault_id)?,
-            members: self.load_members(vault_id)?,
-            admins: self.load_admins(vault_id)?,
-        };
-        validate_loaded_vault(&vault)?;
-
-        if vault.kind == VaultKind::Organization {
-            let folder_access = self.load_folder_access(vault_id)?;
-            for member in &mut vault.members {
-                member.folder_access = folder_access
-                    .iter()
-                    .filter_map(|(folder_id, users)| {
-                        users.contains(&member.user_id).then_some(folder_id.clone())
-                    })
-                    .collect();
-            }
-        }
-
-        Ok(vault)
-    }
-
-    fn load_folders(&self, vault_id: &VaultId) -> Result<Vec<Folder>, StoreError> {
-        let mut stmt = self.conn.prepare(
-            r#"
-            SELECT id, name, role, access, parent_folder_id, path, current_key_version,
-                   shared_folder_source
-            FROM folders
-            WHERE vault_id = ?1
-            ORDER BY id
-            "#,
-        )?;
-        let rows = stmt.query_map(params![vault_id.as_str()], |row| {
-            Ok(StoredFolderRow {
-                id: row.get(0)?,
-                name: row.get(1)?,
-                role: row.get(2)?,
-                access: row.get(3)?,
-                parent_folder_id: row.get(4)?,
-                path: row.get(5)?,
-                current_key_version: row.get(6)?,
-                shared_folder_source: row.get(7)?,
-            })
-        })?;
-
-        let mut folders = Vec::new();
-        for row in rows {
-            folders.push(row?.try_into_folder()?);
-        }
-        Ok(folders)
-    }
-
-    fn load_members(&self, vault_id: &VaultId) -> Result<Vec<VaultMember>, StoreError> {
-        let mut stmt = self
-            .conn
-            .prepare("SELECT user_id FROM vault_members WHERE vault_id = ?1 ORDER BY user_id")?;
-        let rows = stmt.query_map(params![vault_id.as_str()], |row| row.get::<_, String>(0))?;
-
-        let mut members = Vec::new();
-        for row in rows {
-            members.push(VaultMember {
-                user_id: UserId::new(row?)?,
-                folder_access: BTreeSet::new(),
-            });
-        }
-        Ok(members)
-    }
-
-    fn load_admins(&self, vault_id: &VaultId) -> Result<Vec<UserId>, StoreError> {
-        let mut stmt = self
-            .conn
-            .prepare("SELECT user_id FROM vault_admins WHERE vault_id = ?1 ORDER BY user_id")?;
-        let rows = stmt.query_map(params![vault_id.as_str()], |row| row.get::<_, String>(0))?;
-
-        let mut admins = Vec::new();
-        for row in rows {
-            admins.push(UserId::new(row?)?);
-        }
-        Ok(admins)
-    }
-
-    fn load_folder_access(
-        &self,
-        vault_id: &VaultId,
-    ) -> Result<BTreeMap<FolderId, BTreeSet<UserId>>, StoreError> {
-        let mut stmt = self.conn.prepare(
-            "SELECT folder_id, user_id FROM folder_access WHERE vault_id = ?1 ORDER BY folder_id, user_id",
-        )?;
-        let rows = stmt.query_map(params![vault_id.as_str()], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-        })?;
-
-        let mut access = BTreeMap::new();
-        for row in rows {
-            let (folder_id, user_id) = row?;
-            access
-                .entry(FolderId::new(folder_id)?)
-                .or_insert_with(BTreeSet::new)
-                .insert(UserId::new(user_id)?);
-        }
-        Ok(access)
-    }
-
-    fn load_grants(&self, vault_id: &VaultId) -> Result<Vec<FolderKeyGrantMetadata>, StoreError> {
-        let mut stmt = self.conn.prepare(
-            r#"
-            SELECT id, folder_id, key_version, issuer_npub, recipient_npub, format,
-                   wrapped_event_json, access_change_event_json, created_at
-            FROM folder_key_grants
-            WHERE vault_id = ?1
-            ORDER BY folder_id, key_version, recipient_npub, id
-            "#,
-        )?;
-        let rows = stmt.query_map(params![vault_id.as_str()], |row| {
-            Ok(StoredGrantRow {
-                id: row.get(0)?,
-                folder_id: row.get(1)?,
-                key_version: row.get(2)?,
-                issuer_npub: row.get(3)?,
-                recipient_npub: row.get(4)?,
-                format: row.get(5)?,
-                wrapped_event_json: row.get(6)?,
-                access_change_event_json: row.get(7)?,
-                created_at: row.get(8)?,
-            })
-        })?;
-
-        let mut grants = Vec::new();
-        for row in rows {
-            grants.push(row?.try_into_grant()?);
-        }
-        Ok(grants)
-    }
-
-    fn load_setup_incomplete_folder_ids(
-        &self,
-        vault_id: &VaultId,
-    ) -> Result<BTreeSet<FolderId>, StoreError> {
-        let mut stmt = self.conn.prepare(
-            "SELECT id FROM folders WHERE vault_id = ?1 AND setup_incomplete = 1 ORDER BY id",
-        )?;
-        let rows = stmt.query_map(params![vault_id.as_str()], |row| row.get::<_, String>(0))?;
-
-        let mut ids = BTreeSet::new();
-        for row in rows {
-            ids.insert(FolderId::new(row?)?);
-        }
-        Ok(ids)
-    }
-
-    fn latest_sequence(&self, vault_id: &VaultId) -> Result<u64, StoreError> {
-        let latest = self.conn.query_row(
-            "SELECT COALESCE(MAX(sequence), 0) FROM vault_record_index WHERE vault_id = ?1",
-            params![vault_id.as_str()],
-            |row| row.get::<_, u64>(0),
-        )?;
-        Ok(latest)
-    }
-
-    fn retention_floor(&self, vault_id: &VaultId) -> Result<u64, StoreError> {
-        let floor = self
-            .conn
-            .query_row(
-                "SELECT retention_floor FROM vault_sync_retention WHERE vault_id = ?1",
-                params![vault_id.as_str()],
-                |row| row.get::<_, u64>(0),
-            )
-            .optional()?
-            .unwrap_or(0);
-        Ok(floor)
-    }
-
-    fn load_current_objects(
-        &self,
-        vault_id: &VaultId,
-    ) -> Result<Vec<CurrentEncryptedObject>, StoreError> {
-        let mut stmt = self.conn.prepare(
-            r#"
-            SELECT folder_id, object_id, payload_json, revision, updated_at, deleted
-            FROM current_encrypted_vault_objects
-            WHERE vault_id = ?1
-            ORDER BY folder_id, object_id
-            "#,
-        )?;
-        let rows = stmt.query_map(params![vault_id.as_str()], |row| {
-            Ok(CurrentObjectRow {
-                folder_id: row.get(0)?,
-                object_id: row.get(1)?,
-                payload_json: row.get(2)?,
-                revision: row.get(3)?,
-                updated_at: row.get(4)?,
-                deleted: row.get(5)?,
-            })
-        })?;
-
-        let mut objects = Vec::new();
-        for row in rows {
-            objects.push(row?.try_into_current_object()?);
-        }
-        Ok(objects)
-    }
-
-    fn load_connection_members(&self, connection_id: &str) -> Result<BTreeSet<UserId>, StoreError> {
-        let mut stmt = self.conn.prepare(
-            "SELECT member_npub FROM shared_folder_connection_members WHERE connection_id = ?1 ORDER BY member_npub",
-        )?;
-        let rows = stmt.query_map(params![connection_id], |row| row.get::<_, String>(0))?;
-        let mut members = BTreeSet::new();
-        for row in rows {
-            members.insert(UserId::new(row?)?);
-        }
-        Ok(members)
     }
 
     fn actor_has_current_source_access_and_grant(
@@ -2679,265 +1089,6 @@ impl BrainStore {
         Ok(())
     }
 }
-
-const SCHEMA_V1: &str = r#"
-CREATE TABLE vaults (
-    id TEXT PRIMARY KEY NOT NULL,
-    kind TEXT NOT NULL CHECK (kind IN ('personal', 'organization')),
-    name TEXT NOT NULL,
-    owner_user_id TEXT,
-    created_at TEXT NOT NULL,
-    CHECK (
-        (kind = 'personal' AND owner_user_id IS NOT NULL) OR
-        (kind = 'organization' AND owner_user_id IS NULL)
-    )
-);
-
-CREATE TABLE vault_members (
-    vault_id TEXT NOT NULL,
-    user_id TEXT NOT NULL,
-    PRIMARY KEY (vault_id, user_id),
-    FOREIGN KEY (vault_id) REFERENCES vaults(id) ON DELETE CASCADE
-);
-
-CREATE TABLE vault_admins (
-    vault_id TEXT NOT NULL,
-    user_id TEXT NOT NULL,
-    PRIMARY KEY (vault_id, user_id),
-    FOREIGN KEY (vault_id, user_id) REFERENCES vault_members(vault_id, user_id)
-        ON DELETE CASCADE
-);
-
-CREATE TABLE folders (
-    vault_id TEXT NOT NULL,
-    id TEXT NOT NULL,
-    name TEXT NOT NULL,
-    role TEXT NOT NULL CHECK (role IN ('personal_home', 'vault_ops', 'general', 'folder')),
-    access TEXT NOT NULL CHECK (access IN ('owner', 'admin_only', 'all_members', 'restricted')),
-    parent_folder_id TEXT,
-    parent_folder_key TEXT NOT NULL,
-    path TEXT NOT NULL,
-    current_key_version INTEGER NOT NULL CHECK (current_key_version > 0),
-    shared_folder_source INTEGER NOT NULL CHECK (shared_folder_source IN (0, 1)),
-    setup_incomplete INTEGER NOT NULL CHECK (setup_incomplete IN (0, 1)),
-    created_at TEXT NOT NULL,
-    PRIMARY KEY (vault_id, id),
-    UNIQUE (vault_id, parent_folder_key, name),
-    FOREIGN KEY (vault_id) REFERENCES vaults(id) ON DELETE CASCADE,
-    FOREIGN KEY (vault_id, parent_folder_id) REFERENCES folders(vault_id, id)
-        ON DELETE RESTRICT
-);
-
-CREATE TABLE folder_access (
-    vault_id TEXT NOT NULL,
-    folder_id TEXT NOT NULL,
-    user_id TEXT NOT NULL,
-    PRIMARY KEY (vault_id, folder_id, user_id),
-    FOREIGN KEY (vault_id, folder_id) REFERENCES folders(vault_id, id)
-        ON DELETE CASCADE,
-    FOREIGN KEY (vault_id, user_id) REFERENCES vault_members(vault_id, user_id)
-        ON DELETE CASCADE
-);
-
-CREATE TABLE folder_key_grants (
-    id TEXT PRIMARY KEY NOT NULL,
-    vault_id TEXT NOT NULL,
-    folder_id TEXT NOT NULL,
-    key_version INTEGER NOT NULL CHECK (key_version > 0),
-    issuer_npub TEXT NOT NULL,
-    recipient_npub TEXT NOT NULL,
-    format TEXT NOT NULL CHECK (format = 'NIP-59'),
-    wrapped_event_json TEXT NOT NULL,
-    access_change_event_json TEXT,
-    created_at TEXT NOT NULL,
-    UNIQUE (vault_id, folder_id, key_version, recipient_npub),
-    FOREIGN KEY (vault_id, folder_id) REFERENCES folders(vault_id, id)
-        ON DELETE CASCADE
-);
-"#;
-
-const SCHEMA_V2: &str = r#"
-CREATE TABLE vault_record_index (
-    vault_id TEXT NOT NULL,
-    sequence INTEGER NOT NULL CHECK (sequence > 0),
-    record_event_id TEXT NOT NULL,
-    record_type TEXT NOT NULL CHECK (
-        record_type IN (
-            'folder_object_revision',
-            'folder_object_tombstone',
-            'folder_key_grant',
-            'vault_admin_access_change'
-        )
-    ),
-    folder_id TEXT,
-    object_id TEXT,
-    revision INTEGER,
-    actor_npub TEXT NOT NULL,
-    client_created_at TEXT NOT NULL,
-    payload_json TEXT NOT NULL,
-    accepted_at TEXT NOT NULL,
-    record_event_kind INTEGER NOT NULL,
-    PRIMARY KEY (vault_id, sequence),
-    UNIQUE (vault_id, record_event_id),
-    FOREIGN KEY (vault_id) REFERENCES vaults(id) ON DELETE CASCADE,
-    FOREIGN KEY (vault_id, folder_id) REFERENCES folders(vault_id, id)
-        ON DELETE RESTRICT
-);
-
-CREATE INDEX vault_record_index_by_event
-    ON vault_record_index(vault_id, record_event_id);
-
-CREATE TABLE current_encrypted_vault_objects (
-    vault_id TEXT NOT NULL,
-    folder_id TEXT NOT NULL,
-    object_id TEXT NOT NULL,
-    payload_json TEXT NOT NULL,
-    revision INTEGER NOT NULL CHECK (revision > 0),
-    updated_at TEXT NOT NULL,
-    deleted INTEGER NOT NULL CHECK (deleted IN (0, 1)),
-    PRIMARY KEY (vault_id, folder_id, object_id),
-    FOREIGN KEY (vault_id, folder_id) REFERENCES folders(vault_id, id)
-        ON DELETE CASCADE
-);
-
-CREATE TABLE vault_sync_retention (
-    vault_id TEXT PRIMARY KEY NOT NULL,
-    retention_floor INTEGER NOT NULL CHECK (retention_floor >= 0),
-    FOREIGN KEY (vault_id) REFERENCES vaults(id) ON DELETE CASCADE
-);
-"#;
-
-const SCHEMA_V3: &str = r#"
-CREATE TABLE vault_invitations (
-    id TEXT PRIMARY KEY NOT NULL,
-    vault_id TEXT NOT NULL,
-    user_id TEXT NOT NULL,
-    status TEXT NOT NULL CHECK (status IN ('pending', 'accepted', 'revoked')),
-    invite_code TEXT NOT NULL UNIQUE,
-    accept_path TEXT NOT NULL,
-    initial_folder_access_json TEXT NOT NULL,
-    created_by_npub TEXT NOT NULL,
-    expires_at TEXT NOT NULL,
-    created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL,
-    accepted_at TEXT,
-    FOREIGN KEY (vault_id) REFERENCES vaults(id) ON DELETE CASCADE
-);
-
-CREATE UNIQUE INDEX vault_invitations_pending_target
-    ON vault_invitations(vault_id, user_id)
-    WHERE status = 'pending';
-
-CREATE TABLE share_links (
-    id TEXT PRIMARY KEY NOT NULL,
-    vault_id TEXT NOT NULL,
-    folder_id TEXT NOT NULL,
-    recipient_npub TEXT NOT NULL,
-    created_by_npub TEXT NOT NULL,
-    status TEXT NOT NULL CHECK (status IN ('pending', 'accepted', 'revoked')),
-    accept_path TEXT NOT NULL,
-    expires_at TEXT NOT NULL,
-    created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL,
-    accepted_at TEXT,
-    grant_id TEXT NOT NULL,
-    grant_key_version INTEGER NOT NULL CHECK (grant_key_version > 0),
-    grant_wrapped_event_json TEXT NOT NULL,
-    access_change_event_json TEXT NOT NULL,
-    create_personal_mount INTEGER NOT NULL CHECK (create_personal_mount IN (0, 1)),
-    personal_mount_id TEXT,
-    FOREIGN KEY (vault_id, folder_id) REFERENCES folders(vault_id, id)
-        ON DELETE CASCADE
-);
-
-CREATE UNIQUE INDEX share_links_pending_target
-    ON share_links(vault_id, folder_id, recipient_npub)
-    WHERE status = 'pending';
-
-CREATE TABLE personal_folder_mounts (
-    id TEXT PRIMARY KEY NOT NULL,
-    owner_npub TEXT NOT NULL,
-    source_vault_id TEXT NOT NULL,
-    source_folder_id TEXT NOT NULL,
-    display_name TEXT NOT NULL,
-    display_parent_folder_id TEXT,
-    created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL,
-    UNIQUE (owner_npub, source_vault_id, source_folder_id),
-    FOREIGN KEY (source_vault_id, source_folder_id)
-        REFERENCES folders(vault_id, id) ON DELETE CASCADE
-);
-"#;
-
-const SCHEMA_V4: &str = r#"
-CREATE TABLE shared_folder_invitations (
-    id TEXT PRIMARY KEY NOT NULL,
-    source_vault_id TEXT NOT NULL,
-    source_folder_id TEXT NOT NULL,
-    destination_vault_id TEXT NOT NULL,
-    destination_admin_npub TEXT NOT NULL,
-    created_by_npub TEXT NOT NULL,
-    status TEXT NOT NULL CHECK (status IN ('pending', 'accepted', 'revoked')),
-    current_key_version INTEGER NOT NULL CHECK (current_key_version > 0),
-    accept_path TEXT NOT NULL,
-    created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL,
-    accepted_at TEXT,
-    grant_id TEXT NOT NULL,
-    grant_wrapped_event_json TEXT NOT NULL,
-    access_change_event_json TEXT NOT NULL,
-    FOREIGN KEY (source_vault_id, source_folder_id)
-        REFERENCES folders(vault_id, id) ON DELETE CASCADE,
-    FOREIGN KEY (destination_vault_id) REFERENCES vaults(id) ON DELETE CASCADE
-);
-
-CREATE UNIQUE INDEX shared_folder_invitations_pending_target
-    ON shared_folder_invitations(source_vault_id, source_folder_id, destination_vault_id)
-    WHERE status = 'pending';
-
-CREATE TABLE shared_folder_connections (
-    id TEXT PRIMARY KEY NOT NULL,
-    source_vault_id TEXT NOT NULL,
-    source_folder_id TEXT NOT NULL,
-    destination_vault_id TEXT NOT NULL,
-    destination_admin_npub TEXT NOT NULL,
-    status TEXT NOT NULL CHECK (status IN ('active', 'revoked')),
-    created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL,
-    UNIQUE (source_vault_id, source_folder_id, destination_vault_id),
-    FOREIGN KEY (source_vault_id, source_folder_id)
-        REFERENCES folders(vault_id, id) ON DELETE CASCADE,
-    FOREIGN KEY (destination_vault_id) REFERENCES vaults(id) ON DELETE CASCADE
-);
-
-CREATE TABLE shared_folder_connection_members (
-    connection_id TEXT NOT NULL,
-    member_npub TEXT NOT NULL,
-    created_at TEXT NOT NULL,
-    PRIMARY KEY (connection_id, member_npub),
-    FOREIGN KEY (connection_id) REFERENCES shared_folder_connections(id)
-        ON DELETE CASCADE
-);
-
-CREATE TABLE organization_folder_mounts (
-    id TEXT PRIMARY KEY NOT NULL,
-    organization_vault_id TEXT NOT NULL,
-    source_vault_id TEXT NOT NULL,
-    source_folder_id TEXT NOT NULL,
-    connection_id TEXT NOT NULL,
-    display_name TEXT NOT NULL,
-    display_parent_folder_id TEXT,
-    created_by_npub TEXT NOT NULL,
-    created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL,
-    UNIQUE (organization_vault_id, source_vault_id, source_folder_id),
-    FOREIGN KEY (organization_vault_id) REFERENCES vaults(id) ON DELETE CASCADE,
-    FOREIGN KEY (source_vault_id, source_folder_id)
-        REFERENCES folders(vault_id, id) ON DELETE CASCADE,
-    FOREIGN KEY (connection_id) REFERENCES shared_folder_connections(id)
-        ON DELETE CASCADE
-);
-"#;
 
 impl SyncRecordType {
     fn as_str(&self) -> &'static str {
@@ -3146,18 +1297,6 @@ impl StoredGrantRow {
             created_at: self.created_at,
         })
     }
-}
-
-fn migration_applied(tx: &Transaction<'_>, version: i64) -> Result<bool, StoreError> {
-    let applied = tx
-        .query_row(
-            "SELECT 1 FROM schema_migrations WHERE version = ?1",
-            params![version],
-            |_| Ok(()),
-        )
-        .optional()?
-        .is_some();
-    Ok(applied)
 }
 
 fn vault_invitation_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredVaultInvitation> {
@@ -4888,6 +3027,213 @@ mod tests {
                 .state,
             MountedFolderState::Revoked
         );
+    }
+
+    #[test]
+    fn sqlite_full_lifecycle_invite_share_sync_revoke_and_filter_visibility() {
+        let temp = TempDir::new().unwrap();
+        let db = temp.path().join("finite-brain.sqlite3");
+        let source_vault_id = VaultId::new("acme").unwrap();
+        let source_folder_id = FolderId::new("strategy").unwrap();
+        let destination_vault_id = VaultId::new("dest").unwrap();
+        let source_admin = UserId::new("npub-admin").unwrap();
+        let destination_admin = UserId::new("npub-dest-admin").unwrap();
+        let destination_member = UserId::new("npub-dest-member").unwrap();
+        let now = "2026-06-23T00:00:00.000Z";
+
+        {
+            let mut store = BrainStore::open(&db).unwrap();
+            bootstrap_org_and_strategy_folder(&mut store);
+            bootstrap_org_named(&mut store, "dest", "Dest", "npub-dest-admin");
+
+            store
+                .create_vault_invitation(
+                    &destination_vault_id,
+                    "invitation-dest-member",
+                    &destination_member,
+                    "invite-dest-member",
+                    "/_admin/invitations/invitation-dest-member/accept",
+                    &[],
+                    &destination_admin,
+                    "2026-06-30T00:00:00.000Z",
+                    now,
+                )
+                .unwrap();
+            store
+                .accept_vault_invitation_by_code("invite-dest-member", &destination_member, now)
+                .unwrap();
+
+            store
+                .mark_shared_folder_source(&source_vault_id, &source_folder_id)
+                .unwrap();
+            store
+                .submit_sync_record(
+                    &source_vault_id,
+                    &revision_record(
+                        "event-lifecycle-create",
+                        "obj_000000000101",
+                        1,
+                        None,
+                        "shared",
+                    ),
+                )
+                .unwrap();
+
+            store
+                .create_shared_folder_invitation(
+                    &source_vault_id,
+                    &source_folder_id,
+                    &destination_vault_id,
+                    "shared-folder-invitation-lifecycle",
+                    &destination_admin,
+                    &source_admin,
+                    "/_admin/shared-folder-invitations/shared-folder-invitation-lifecycle/accept",
+                    &grant(
+                        "grant-lifecycle-dest-admin-v1",
+                        "strategy",
+                        1,
+                        "npub-admin",
+                        destination_admin.as_str(),
+                    ),
+                    now,
+                )
+                .unwrap();
+            store
+                .accept_shared_folder_invitation(
+                    "shared-folder-invitation-lifecycle",
+                    &destination_admin,
+                    "shared-folder-connection-lifecycle",
+                    "organization-mount-lifecycle",
+                    now,
+                )
+                .unwrap();
+            store
+                .add_shared_folder_connection_member(
+                    "shared-folder-connection-lifecycle",
+                    &destination_admin,
+                    &destination_member,
+                    &grant(
+                        "grant-lifecycle-dest-member-v1",
+                        "strategy",
+                        1,
+                        destination_admin.as_str(),
+                        destination_member.as_str(),
+                    ),
+                    now,
+                )
+                .unwrap();
+        }
+
+        {
+            let mut store = BrainStore::open(&db).unwrap();
+            let member_projection = store
+                .mounted_folder_projection(&destination_vault_id, &destination_member)
+                .unwrap();
+            assert_eq!(member_projection[0].state, MountedFolderState::Available);
+
+            let member_export = store
+                .encrypted_vault_export(&source_vault_id, &destination_member)
+                .unwrap();
+            let shared_object = member_export
+                .objects
+                .iter()
+                .find(|object| object.folder_id == source_folder_id)
+                .unwrap();
+            assert_eq!(
+                shared_object.payload_json.as_deref(),
+                Some("{\"body\":\"shared\"}")
+            );
+            assert_eq!(
+                store
+                    .sync_bootstrap(&source_vault_id)
+                    .unwrap()
+                    .latest_sequence,
+                1
+            );
+
+            store
+                .remove_shared_folder_connection_member(
+                    "shared-folder-connection-lifecycle",
+                    &destination_admin,
+                    &destination_member,
+                    2,
+                    &[
+                        grant(
+                            "grant-lifecycle-source-admin-v2",
+                            "strategy",
+                            2,
+                            destination_admin.as_str(),
+                            source_admin.as_str(),
+                        ),
+                        grant(
+                            "grant-lifecycle-dest-admin-v2",
+                            "strategy",
+                            2,
+                            destination_admin.as_str(),
+                            destination_admin.as_str(),
+                        ),
+                    ],
+                    &[revision_record_struct(
+                        "event-lifecycle-reencrypt-member",
+                        "strategy",
+                        "obj_000000000101",
+                        2,
+                        Some(1),
+                        "shared-v2",
+                    )],
+                )
+                .unwrap();
+            let locked_projection = store
+                .mounted_folder_projection(&destination_vault_id, &destination_member)
+                .unwrap();
+            assert_eq!(locked_projection[0].state, MountedFolderState::Locked);
+
+            let filtered_export = store
+                .encrypted_vault_export(&source_vault_id, &destination_member)
+                .unwrap();
+            let filtered_object = filtered_export
+                .objects
+                .iter()
+                .find(|object| object.folder_id == source_folder_id)
+                .unwrap();
+            assert!(filtered_object.payload_json.is_none());
+            assert!(filtered_object.opaque);
+
+            store
+                .revoke_shared_folder_connection(
+                    "shared-folder-connection-lifecycle",
+                    &source_admin,
+                    3,
+                    &[grant(
+                        "grant-lifecycle-source-admin-v3",
+                        "strategy",
+                        3,
+                        source_admin.as_str(),
+                        source_admin.as_str(),
+                    )],
+                    &[revision_record_struct(
+                        "event-lifecycle-reencrypt-admin",
+                        "strategy",
+                        "obj_000000000101",
+                        3,
+                        Some(2),
+                        "shared-v3",
+                    )],
+                    now,
+                )
+                .unwrap();
+            let revoked_projection = store
+                .mounted_folder_projection(&destination_vault_id, &destination_admin)
+                .unwrap();
+            assert_eq!(revoked_projection[0].state, MountedFolderState::Revoked);
+            assert_eq!(
+                store
+                    .sync_bootstrap(&source_vault_id)
+                    .unwrap()
+                    .latest_sequence,
+                3
+            );
+        }
     }
 
     #[test]

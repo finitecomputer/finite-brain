@@ -33,11 +33,23 @@ test for sharing/sync/access behavior.
   - finitecomputer/finite-brain#28 Split finite-brain portability helpers
   - finitecomputer/finite-brain#29 Add full lifecycle sharing and sync integration test
   - finitecomputer/finite-nostr#3 Split reusable Nostr primitive modules
-- Issue sessions: to be filled per completed slice
+- Issue sessions:
+  - `docs/feature-dev/2026-06-24-issue-24-ci-guardrails-session.md`
+  - `docs/feature-dev/2026-06-24-issue-25-finite-nostr-module-split-session.md`
+  - `docs/feature-dev/2026-06-24-issue-26-server-route-split-session.md`
+  - `docs/feature-dev/2026-06-24-issue-27-store-subdomain-split-session.md`
+  - `docs/feature-dev/2026-06-24-issue-28-portability-helper-split-session.md`
+  - `docs/feature-dev/2026-06-24-issue-29-lifecycle-integration-test-session.md`
 - Agent briefs: current thread owns implementation directly; no worker handoff yet
-- Review packets: to be filled per completed slice
-- Local CodeRabbit report: pending
-- PR URL: finitecomputer/finite-brain#15; finite-nostr PR pending if companion repo changes are pushed
+- Review packets:
+  - `docs/feature-dev/2026-06-24-issue-24-ci-guardrails-review-packet.md`
+  - `docs/feature-dev/2026-06-24-issue-25-finite-nostr-module-split-review-packet.md`
+  - `docs/feature-dev/2026-06-24-issue-26-server-route-split-review-packet.md`
+  - `docs/feature-dev/2026-06-24-issue-27-store-subdomain-split-review-packet.md`
+  - `docs/feature-dev/2026-06-24-issue-28-portability-helper-split-review-packet.md`
+  - `docs/feature-dev/2026-06-24-issue-29-lifecycle-integration-test-review-packet.md`
+- Local CodeRabbit report: `docs/feature-dev/2026-06-24-local-coderabbit-module-depth-round.md`
+- PR URL: finitecomputer/finite-brain#15; finitecomputer/finite-nostr PR pending if companion repo changes need a separate PR
 
 ## Commands
 
@@ -56,10 +68,10 @@ test for sharing/sync/access behavior.
 | --- | --- | --- | --- | --- | --- |
 | finitecomputer/finite-brain#24 | AFK | complete | current thread | none | local commands pass; remote CI pending push |
 | finitecomputer/finite-brain#25 / finitecomputer/finite-nostr#3 | AFK | complete | current thread | none | finite-nostr fmt/test/clippy/build pass; finite-brain tests/clippy pass against pinned split commit |
-| finitecomputer/finite-brain#26 | AFK | pending | pending | pending | pending |
-| finitecomputer/finite-brain#27 | AFK | pending | pending | pending | pending |
-| finitecomputer/finite-brain#28 | AFK | pending | pending | pending | pending |
-| finitecomputer/finite-brain#29 | AFK | pending | pending | pending | pending |
+| finitecomputer/finite-brain#26 | AFK | complete | current thread | none | local commands pass; remote CI pending push |
+| finitecomputer/finite-brain#27 | AFK | complete | current thread | none | local commands pass; remote CI pending push |
+| finitecomputer/finite-brain#28 | AFK | complete | current thread | none | local commands pass; remote CI pending push |
+| finitecomputer/finite-brain#29 | AFK | complete | current thread | none | local commands pass; remote CI pending push |
 
 ## Parked HITL Slices
 
@@ -71,6 +83,10 @@ None.
 | --- | --- | --- | --- | --- | --- |
 | finitecomputer/finite-brain#24 | finite-brain `7283b6c0affe7f718b26b8d93cdbd0de2dda31ce`; finite-nostr `621bb347f9734f2dcb891333ed8e7c2862ca73e1` | current thread | finite-brain this commit (`Add Rust CI guardrails`); finite-nostr `baaa13a05f3691cf207f78f640f99c8bbd76cb0b` | pass | `cargo fmt --all --check`; `cargo test --workspace`; `cargo clippy --workspace --all-targets -- -D warnings`; `cargo build --workspace`; JS syntax/smoke; finite-nostr fmt/test/clippy/build |
 | finitecomputer/finite-brain#25 / finitecomputer/finite-nostr#3 | finite-brain `13a4f1230add97969246a585f345e2e4a1c61716`; finite-nostr `baaa13a05f3691cf207f78f640f99c8bbd76cb0b` | current thread | finite-brain this commit (`Pin split finite-nostr primitives`); finite-nostr `0ecf25abc3198f357a7b922865829b37a7fe5d13` | pass | finite-nostr fmt/test/clippy/build; finite-brain `cargo update -p finite-nostr`; finite-brain test/clippy |
+| finitecomputer/finite-brain#26 | finite-brain `01bba95` | current thread | this commit (`Split Rust modules and add lifecycle test`) | pass | `cargo test -p finite-brain-server --no-run`; `cargo test --workspace`; clippy; build |
+| finitecomputer/finite-brain#27 | finite-brain `01bba95` | current thread | this commit (`Split Rust modules and add lifecycle test`) | pass | `cargo test -p finite-brain-store`; `cargo test --workspace`; clippy; build |
+| finitecomputer/finite-brain#28 | finite-brain `01bba95` | current thread | this commit (`Split Rust modules and add lifecycle test`) | pass | `cargo test -p finite-brain-core`; `cargo test --workspace`; clippy; build |
+| finitecomputer/finite-brain#29 | finite-brain `01bba95` | current thread | this commit (`Split Rust modules and add lifecycle test`) | pass | lifecycle test; `cargo test --workspace`; clippy; build |
 
 ## Open Questions
 
