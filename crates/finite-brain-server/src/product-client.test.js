@@ -245,7 +245,10 @@ assert.match(folderRows[1].detail, /locked/);
   );
   assert.equal(readerFolders[0].readableCount, 1);
   assert.equal(readerFolders[0].pageCount, 1);
+  assert.equal(readerFolders[0].access, "all_members");
+  assert.equal(readerFolders[0].accessLabel, "all members");
   assert.equal(readerFolders[1].status, "locked");
+  assert.equal(readerFolders[1].accessLabel, "restricted");
   const readerPages = client.readerPageRows("general", openedSync.objects);
   assert.equal(readerPages[0].label, "Hello");
 

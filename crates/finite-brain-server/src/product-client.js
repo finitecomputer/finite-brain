@@ -63,18 +63,31 @@ const FiniteBrainProductClient = (() => {
     return "ready";
   }
 
+  function folderAccessLabel(access) {
+    return (
+      {
+        admin_only: "admin only",
+        all_members: "all members",
+        restricted: "restricted",
+      }[access] || access || "unknown access"
+    );
+  }
+
   function metadataFolderRows(metadata) {
     return (metadata?.folders || []).map((folder) => {
       const status = folderStatus(folder);
+      const accessLabel = folderAccessLabel(folder.access);
       const flags = [];
       if (folder.sharedFolderSource) flags.push("source");
       if (folder.setupIncomplete) flags.push("setup needed");
       if (status === "locked") flags.push("locked");
       return {
+        access: folder.access,
+        accessLabel,
         id: folder.id,
         path: folder.path,
         status,
-        label: `${folder.path} - ${folder.access} - key v${folder.currentKeyVersion}`,
+        label: `${folder.path} - ${accessLabel} - key v${folder.currentKeyVersion}`,
         detail: flags.join(", "),
       };
     });
@@ -1166,7 +1179,7 @@ const FiniteBrainProductClient = (() => {
     setPill("readerKeySummary", `${openedKeyCount} keys open`, openedKeyCount ? "ready" : "muted");
 
     setList("readerFolderList", folderRows, "Load a Vault to browse folders", (item, row) => {
-      const detail = `${row.readableCount}/${row.pageCount} readable - ${row.access}`;
+      const detail = `${row.readableCount}/${row.pageCount} readable - ${row.accessLabel}`;
       const button = readerButton(
         row.path,
         detail,
