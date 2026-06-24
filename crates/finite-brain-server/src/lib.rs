@@ -55,6 +55,16 @@ pub struct HealthStatus {
     pub store_crate: String,
 }
 
+/// Public Product Client runtime config.
+#[derive(Debug, Clone, Eq, PartialEq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProductClientConfigResponse {
+    pub public_base_url: String,
+    pub auth_scheme: String,
+    pub http_auth_kind: u16,
+    pub default_vault_id: String,
+}
+
 /// Shared server state.
 #[derive(Clone)]
 pub struct ServerState {
@@ -639,6 +649,10 @@ pub fn router_with_state(state: ServerState) -> Router {
         .route("/smoke/ui", get(smoke_ui_handler))
         .route("/smoke/ui.css", get(smoke_ui_css_handler))
         .route("/smoke/ui.js", get(smoke_ui_js_handler))
+        .route("/client", get(product_client_handler))
+        .route("/client/app.css", get(product_client_css_handler))
+        .route("/client/app.js", get(product_client_js_handler))
+        .route("/client/config.json", get(product_client_config_handler))
         .route("/_admin/vaults", post(create_vault_handler))
         .route(
             "/_admin/vaults/{vault_id}/metadata",
@@ -794,6 +808,35 @@ async fn smoke_ui_js_handler() -> impl IntoResponse {
         [(CONTENT_TYPE, "text/javascript; charset=utf-8")],
         include_str!("smoke-ui.js"),
     )
+}
+
+async fn product_client_handler() -> Html<&'static str> {
+    Html(include_str!("product-client.html"))
+}
+
+async fn product_client_css_handler() -> impl IntoResponse {
+    (
+        [(CONTENT_TYPE, "text/css; charset=utf-8")],
+        include_str!("product-client.css"),
+    )
+}
+
+async fn product_client_js_handler() -> impl IntoResponse {
+    (
+        [(CONTENT_TYPE, "text/javascript; charset=utf-8")],
+        include_str!("product-client.js"),
+    )
+}
+
+async fn product_client_config_handler(
+    State(state): State<ServerState>,
+) -> Json<ProductClientConfigResponse> {
+    Json(ProductClientConfigResponse {
+        public_base_url: state.public_base_url.to_string(),
+        auth_scheme: "Nostr".to_owned(),
+        http_auth_kind: 27_235,
+        default_vault_id: "smoke".to_owned(),
+    })
 }
 
 async fn create_vault_handler(
@@ -3363,6 +3406,93 @@ mod tests {
         )
         .await;
         assert_eq!(sync_bootstrap.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn product_client_serves_spine_assets_and_config() {
+        let router = test_router();
+
+        let client_response = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/client")
+                    .body(Body::empty())
+                    .expect("valid client request"),
+            )
+            .await
+            .expect("client response");
+        assert_eq!(client_response.status(), StatusCode::OK);
+        let client_body = to_bytes(client_response.into_body(), 16 * 1024)
+            .await
+            .expect("client body");
+        let client_body = std::str::from_utf8(&client_body).expect("client utf8");
+        assert!(client_body.contains("Product Client"));
+        assert!(client_body.contains("Connect signer"));
+        assert!(client_body.contains("Open a Vault"));
+        assert!(client_body.contains("/client/app.js"));
+
+        let config_response = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/client/config.json")
+                    .body(Body::empty())
+                    .expect("valid config request"),
+            )
+            .await
+            .expect("config response");
+        assert_eq!(config_response.status(), StatusCode::OK);
+        let config: ProductClientConfigResponse = read_json(config_response).await;
+        assert_eq!(
+            config,
+            ProductClientConfigResponse {
+                public_base_url: TEST_BASE_URL.to_owned(),
+                auth_scheme: "Nostr".to_owned(),
+                http_auth_kind: 27_235,
+                default_vault_id: "smoke".to_owned(),
+            }
+        );
+
+        let css_response = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/client/app.css")
+                    .body(Body::empty())
+                    .expect("valid client css request"),
+            )
+            .await
+            .expect("client css response");
+        assert_eq!(css_response.status(), StatusCode::OK);
+        let css_body = to_bytes(css_response.into_body(), 16 * 1024)
+            .await
+            .expect("client css body");
+        let css_body = std::str::from_utf8(&css_body).expect("client css utf8");
+        assert!(css_body.contains(".app-shell"));
+        assert!(css_body.contains(".spine-list"));
+
+        let js_response = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/client/app.js")
+                    .body(Body::empty())
+                    .expect("valid client js request"),
+            )
+            .await
+            .expect("client js response");
+        assert_eq!(js_response.status(), StatusCode::OK);
+        let js_body = to_bytes(js_response.into_body(), 32 * 1024)
+            .await
+            .expect("client js body");
+        let js_body = std::str::from_utf8(&js_body).expect("client js utf8");
+        assert!(js_body.contains("window.FiniteBrainProductClient"));
+        assert!(js_body.contains("deriveSignerState"));
+        assert!(js_body.contains("buildAuthEventTemplate"));
+        assert!(js_body.contains("metadataFolderRows"));
+        assert!(js_body.contains("kind: 27235"));
+        assert!(js_body.contains("/metadata"));
     }
 
     #[tokio::test]

@@ -9,7 +9,8 @@
 - Feature branch: `feature/rust-portable-v1-core`
 - Human owner: Austin
 - Started: 2026-06-24
-- Current status: grilling with docs; graph/replay boundary resolved, OKF import execution pending
+- Current status: `finite-brain#17` implemented and verified; `finite-brain#18`
+  is the next executable slice
 - Skill setup status: `AGENTS.md`, `CONTEXT.md`, and `docs/agents/*` already exist
 
 ## Goal
@@ -21,13 +22,20 @@ This is a hard-cut continuation from the Rust Portable v1 core PR.
 ## Durable Artifacts
 
 - CONTEXT updates: root `CONTEXT.md` now distinguishes `Product Client`,
-  `Product Client Spine`, `Graph View`, `Graph Replay`, `Smoke UI`, and
-  `Hard Cut`.
+  `Product Client Spine`, `Graph View`, `Graph Replay`, `OKF Import
+  Execution`, `Smoke UI`, and `Hard Cut`.
 - ADRs: `docs/adr/0004-build-a-first-party-product-client.md`,
-  `docs/adr/0005-derive-graph-and-replay-from-client-decrypted-indexes.md`
-- PRD issue: pending.
-- Slice issues: pending.
-- Issue sessions: pending.
+  `docs/adr/0005-derive-graph-and-replay-from-client-decrypted-indexes.md`,
+  `docs/adr/0006-keep-okf-import-execution-client-owned.md`
+- PRD issue: `finitecomputer/finite-brain#16`
+- Slice issues:
+  - `finitecomputer/finite-brain#17` Product Client spine with NIP-07 auth states
+  - `finitecomputer/finite-brain#18` Client-side Page decrypt edit encrypt sync loop
+  - `finitecomputer/finite-brain#19` Graph View and replay from decrypted client index
+  - `finitecomputer/finite-brain#20` Product OKF import execution
+  - `finitecomputer/finite-brain#21` Agent Vault Working Tree materialization
+  - `finitecomputer/finite-brain#22` Portable v1 product hardening and runbook
+- Issue sessions: `finite-brain#17` completed; remaining slices pending.
 - Agent briefs: pending.
 - Review packets: pending.
 - Local CodeRabbit report: pending.
@@ -73,7 +81,12 @@ Out of scope:
 
 | Issue | Type | Status | Review thread | Fixes needed | Verified |
 | --- | --- | --- | --- | --- | --- |
-| Pending | | | | | |
+| `finite-brain#17` | AFK | complete | Direct two-axis review; sub-agent review skipped because sub-agent tool policy requires explicit user delegation | None | `node --check crates/finite-brain-server/src/product-client.js`; `node crates/finite-brain-server/src/product-client.test.js`; `cargo fmt --check`; `cargo test -p finite-brain-server product_client_serves_spine_assets_and_config -- --nocapture`; `cargo test`; `cargo clippy --all-targets -- -D warnings`; `cargo build`; `git diff --check`; local `/client`, `/client/config.json`, `/client/app.js`, and `/client/app.css` curl smoke |
+| `finite-brain#18` | AFK | pending | pending | pending | pending |
+| `finite-brain#19` | AFK | pending | pending | pending | pending |
+| `finite-brain#20` | AFK | pending | pending | pending | pending |
+| `finite-brain#21` | AFK | pending | pending | pending | pending |
+| `finite-brain#22` | AFK | pending | pending | pending | pending |
 
 ## Parked HITL Slices
 
@@ -85,7 +98,7 @@ Out of scope:
 
 | Issue | Fixed point | Worker session | Commit | Review result | Checks |
 | --- | --- | --- | --- | --- | --- |
-| Pending | | | | | |
+| `finite-brain#17` | `29b1486` | Orchestrator direct implementation | pending commit | Standards/spec direct review passed; route/static asset diff follows existing Smoke UI route pattern, Product Client is distinct from Smoke UI, deterministic JS seams cover signer state, auth event template, and Folder locked-state projection | `node --check crates/finite-brain-server/src/product-client.js`; `node crates/finite-brain-server/src/product-client.test.js`; `cargo fmt --check`; `cargo test -p finite-brain-server product_client_serves_spine_assets_and_config -- --nocapture`; `cargo test`; `cargo clippy --all-targets -- -D warnings`; `cargo build`; `git diff --check`; local curl smoke |
 
 ## Resolved Decisions
 
@@ -98,12 +111,15 @@ Out of scope:
   local Page index and applied sync history. The server remains sync/object
   metadata aware, not graph aware. See
   `docs/adr/0005-derive-graph-and-replay-from-client-decrypted-indexes.md`.
+- OKF import execution is Product Client owned. The client parses readable OKF,
+  plans conflicts, opens Folder Keys, encrypts imported Pages, signs revisions,
+  and uploads through normal secure object routes. The server does not receive
+  plaintext OKF imports. See
+  `docs/adr/0006-keep-okf-import-execution-client-owned.md`.
 
 ## Open Questions
 
-- Should OKF import execution be entirely Product Client owned, or should the
-  Rust server provide an import endpoint that accepts an OKF bundle and performs
-  server-side encryption/upload work?
+- None for the current executable slice.
 
 ## Escalations
 

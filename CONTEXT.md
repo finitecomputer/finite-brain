@@ -56,6 +56,14 @@ A Product Client playback of graph/index changes derived from the client's
 applied sync history and decrypted Page index. It is not a server-side graph
 event log.
 
+### OKF Import Execution
+
+A Product Client workflow that parses readable OKF, plans import conflicts,
+opens destination Folder Keys, encrypts imported Pages client-side, signs
+Folder Object revisions, and uploads those revisions through normal secure
+object routes. The Rust server does not parse readable OKF or receive
+plaintext Page content during import.
+
 ### Hard Cut
 
 A compatibility boundary where FiniteBrain does not carry legacy route,
