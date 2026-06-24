@@ -29,6 +29,7 @@
 - Behaviors covered:
   - finite-brain CI runs Cargo formatting, tests, clippy, build, Product Client JavaScript syntax checks, Smoke UI syntax checks, and Product Client smoke tests.
   - finite-nostr CI runs Cargo formatting, tests, clippy, and build.
+  - finite-brain CI loads a read-only `finite-nostr` deploy key from `FINITE_NOSTR_DEPLOY_KEY` so Cargo can fetch the private companion crate.
   - No deployment, secrets, production config, or live data operations are introduced.
 - `tdd` used: not applicable; this is CI workflow configuration. Local command parity was verified directly.
 - Commands run during implementation:
@@ -60,3 +61,4 @@
 ## Risks
 
 - GitHub-hosted CI has not run until the branch is pushed; local command parity passed.
+- Follow-up after push: GitHub-hosted CI could not fetch private `finite-nostr` without credentials, so a read-only deploy key was added to `finite-nostr` and stored as a finite-brain Actions secret.

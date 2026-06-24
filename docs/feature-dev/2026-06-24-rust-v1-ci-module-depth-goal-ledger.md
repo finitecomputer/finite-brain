@@ -66,7 +66,7 @@ test for sharing/sync/access behavior.
 
 | Issue | Type | Status | Review thread | Fixes needed | Verified |
 | --- | --- | --- | --- | --- | --- |
-| finitecomputer/finite-brain#24 | AFK | complete | current thread | none | local commands pass; remote CI pending push |
+| finitecomputer/finite-brain#24 | AFK | complete | current thread | private dependency CI fetch fixed with read-only deploy key | local commands pass; remote CI pending rerun |
 | finitecomputer/finite-brain#25 / finitecomputer/finite-nostr#3 | AFK | complete | current thread | none | finite-nostr fmt/test/clippy/build pass; finite-brain tests/clippy pass against pinned split commit |
 | finitecomputer/finite-brain#26 | AFK | complete | current thread | none | local commands pass; remote CI pending push |
 | finitecomputer/finite-brain#27 | AFK | complete | current thread | none | local commands pass; remote CI pending push |
@@ -81,7 +81,7 @@ None.
 
 | Issue | Fixed point | Worker session | Commit | Review result | Checks |
 | --- | --- | --- | --- | --- | --- |
-| finitecomputer/finite-brain#24 | finite-brain `7283b6c0affe7f718b26b8d93cdbd0de2dda31ce`; finite-nostr `621bb347f9734f2dcb891333ed8e7c2862ca73e1` | current thread | finite-brain this commit (`Add Rust CI guardrails`); finite-nostr `baaa13a05f3691cf207f78f640f99c8bbd76cb0b` | pass | `cargo fmt --all --check`; `cargo test --workspace`; `cargo clippy --workspace --all-targets -- -D warnings`; `cargo build --workspace`; JS syntax/smoke; finite-nostr fmt/test/clippy/build |
+| finitecomputer/finite-brain#24 | finite-brain `7283b6c0affe7f718b26b8d93cdbd0de2dda31ce`; finite-nostr `621bb347f9734f2dcb891333ed8e7c2862ca73e1` | current thread | finite-brain this commit (`Add Rust CI guardrails`), plus follow-up CI auth commit; finite-nostr `baaa13a05f3691cf207f78f640f99c8bbd76cb0b` | pass | `cargo fmt --all --check`; `cargo test --workspace`; `cargo clippy --workspace --all-targets -- -D warnings`; `cargo build --workspace`; JS syntax/smoke; finite-nostr fmt/test/clippy/build |
 | finitecomputer/finite-brain#25 / finitecomputer/finite-nostr#3 | finite-brain `13a4f1230add97969246a585f345e2e4a1c61716`; finite-nostr `baaa13a05f3691cf207f78f640f99c8bbd76cb0b` | current thread | finite-brain this commit (`Pin split finite-nostr primitives`); finite-nostr `0ecf25abc3198f357a7b922865829b37a7fe5d13` | pass | finite-nostr fmt/test/clippy/build; finite-brain `cargo update -p finite-nostr`; finite-brain test/clippy |
 | finitecomputer/finite-brain#26 | finite-brain `01bba95` | current thread | this commit (`Split Rust modules and add lifecycle test`) | pass | `cargo test -p finite-brain-server --no-run`; `cargo test --workspace`; clippy; build |
 | finitecomputer/finite-brain#27 | finite-brain `01bba95` | current thread | this commit (`Split Rust modules and add lifecycle test`) | pass | `cargo test -p finite-brain-store`; `cargo test --workspace`; clippy; build |

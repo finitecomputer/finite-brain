@@ -25,6 +25,15 @@ jobs:
         with:
           components: rustfmt, clippy
 
+      - name: Load finite-nostr deploy key
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.FINITE_NOSTR_DEPLOY_KEY }}
+
+      - name: Route finite-nostr git dependency over SSH
+        run: |
+          git config --global url."git@github.com:finitecomputer/finite-nostr.git".insteadOf "https://github.com/finitecomputer/finite-nostr.git"
+
       - name: Cache Rust build
         uses: Swatinem/rust-cache@v2
 

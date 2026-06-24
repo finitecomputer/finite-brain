@@ -21,7 +21,8 @@
 
 Both Rust repos now have GitHub Actions CI definitions for the commands that
 already pass locally. finite-brain also checks the Product Client and Smoke UI
-JavaScript entrypoints.
+JavaScript entrypoints. finite-brain's Rust CI job authenticates private
+`finite-nostr` fetches with a read-only deploy key.
 
 ## Implementation Evidence
 
@@ -49,6 +50,7 @@ JavaScript entrypoints.
 STANDARDS_STATUS: pass
 STANDARDS_FINDINGS:
 - No documented standards violations found. The workflows use explicit Rust and Node setup, read-only permissions, repo-local commands, and no production operations.
+- Follow-up check: the finite-brain Rust workflow now uses a read-only deploy key secret for the private finite-nostr git dependency.
 
 SPEC_STATUS: pass
 SPEC_FINDINGS:
