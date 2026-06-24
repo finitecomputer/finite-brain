@@ -249,6 +249,26 @@ assert.match(folderRows[1].detail, /locked/);
   assert.equal(readerFolders[0].accessLabel, "all members");
   assert.equal(readerFolders[1].status, "locked");
   assert.equal(readerFolders[1].accessLabel, "restricted");
+  assert.equal(
+    client.readerFolderDetail(readerFolders[0]),
+    "1 page readable - all members"
+  );
+  assert.equal(
+    client.readerFolderDetail({
+      accessLabel: "all members",
+      pageCount: 0,
+      readableCount: 0,
+    }),
+    "No pages yet - all members"
+  );
+  assert.equal(
+    client.readerFolderDetail({
+      accessLabel: "restricted",
+      pageCount: 2,
+      readableCount: 0,
+    }),
+    "2 pages present, Folder Key not open - restricted"
+  );
   const readerPages = client.readerPageRows("general", openedSync.objects);
   assert.equal(readerPages[0].label, "Hello");
 

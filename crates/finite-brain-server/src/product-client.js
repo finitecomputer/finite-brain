@@ -1003,6 +1003,21 @@ const FiniteBrainProductClient = (() => {
       }));
   }
 
+  function pageCountLabel(count) {
+    return `${count} ${count === 1 ? "page" : "pages"}`;
+  }
+
+  function readerFolderDetail(row) {
+    if (!row.pageCount) return `No pages yet - ${row.accessLabel}`;
+    if (row.readableCount === row.pageCount) {
+      return `${pageCountLabel(row.pageCount)} readable - ${row.accessLabel}`;
+    }
+    if (!row.readableCount) {
+      return `${pageCountLabel(row.pageCount)} present, Folder Key not open - ${row.accessLabel}`;
+    }
+    return `${row.readableCount}/${row.pageCount} readable - ${row.accessLabel}`;
+  }
+
   function selectDefaultReaderTargets() {
     const folders = readerFolderRows(state.metadata);
     const folderStillExists = folders.some((folder) => folder.id === state.selectedFolderId);
@@ -1179,10 +1194,9 @@ const FiniteBrainProductClient = (() => {
     setPill("readerKeySummary", `${openedKeyCount} keys open`, openedKeyCount ? "ready" : "muted");
 
     setList("readerFolderList", folderRows, "Load a Vault to browse folders", (item, row) => {
-      const detail = `${row.readableCount}/${row.pageCount} readable - ${row.accessLabel}`;
       const button = readerButton(
         row.path,
-        detail,
+        readerFolderDetail(row),
         `reader-list-button ${row.status}${row.id === state.selectedFolderId ? " active" : ""}`,
         () => selectReaderFolder(row.id)
       );
@@ -1775,6 +1789,7 @@ const FiniteBrainProductClient = (() => {
     plaintextGrantFromExportGrant,
     planOkfImport,
     prepareOkfImportWrites,
+    readerFolderDetail,
     readerFolderRows,
     readerPageRows,
     shortKey,
