@@ -88,3 +88,42 @@
 - Visual note: standalone headless Chromium screenshot capture hung on this
   machine after loading browser background services; in-app browser
   verification succeeded.
+
+### `#34` Graph View Workspace Pane
+
+- Baseline: `fa0532d`
+- Implementation checkpoint: this commit
+- Status: implementation complete; local checks and browser verification passed
+- Owner: current orchestrator thread using direct implementation for the
+  Obsidian graph workspace slice.
+- Current implementation:
+  - Promoted Graph View into a fuller workspace pane with a compact local graph
+    topbar, graph stats pill, full-canvas graph stage, floating Fit/Reset
+    controls, and replay overlay.
+  - Replaced the fixed mini graph drawing with deterministic viewport-aware
+    graph layout and stats helpers.
+  - Kept Graph View and Graph Replay derived only from the Product Client's
+    decrypted accessible Page index, preserving the ADR 0005 privacy boundary.
+  - Added Enter-to-render behavior for the graph filter and reset behavior that
+    clears filters without losing the active Page selection.
+  - Added deterministic tests for graph visibility filtering, graph stats,
+    graph layout bounds/determinism, hub placement, and workspace view-state
+    switching.
+- Review:
+  - Standards axis: pass against `AGENTS.md`, `CONTEXT.md`, ADR 0004, and ADR
+    0005.
+  - Spec axis: initial gap found for view-state switching test coverage; fixed
+    with `workspaceChromeState` and Product Client tests before commit.
+- Verification:
+  - `node --check crates/finite-brain-server/src/product-client.js`
+  - `node crates/finite-brain-server/src/product-client.test.js`
+  - `cargo test -p finite-brain-server product_client_serves_spine_assets_and_config -- --nocapture`
+  - `cargo test --workspace`
+  - `cargo clippy --workspace --all-targets -- -D warnings`
+  - `cargo fmt --check`
+  - `git diff --check`
+  - ASCII scan over edited Product Client files
+  - Local server rebuilt and restarted on `http://127.0.0.1:4015/client`
+  - In-app browser verification: Graph tab active, ribbon active, Page pane
+    hidden, Graph pane visible, shell state `graph`, graph stats present, and
+    Fit/Reset controls present.

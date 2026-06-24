@@ -27,6 +27,7 @@ const FiniteBrainProductClient = (() => {
   const APP_EVENT_KIND = 30078;
   const MAX_OBJECT_ID_ATTEMPTS = 1000;
   const BECH32_CHARSET = "qpzry9x8gf2tvdw0s3jn54khce6mua7l";
+  const graphViewport = { height: 560, width: 900 };
 
   function shortKey(value) {
     if (!value) return "-";
@@ -914,6 +915,57 @@ const FiniteBrainProductClient = (() => {
     };
   }
 
+  function graphStats(graph, readablePageCount = graph.nodes.length) {
+    return {
+      edgeCount: graph.edges.length,
+      filteredOutCount: Math.max(0, readablePageCount - graph.nodes.length),
+      nodeCount: graph.nodes.length,
+    };
+  }
+
+  function graphLayout(graph, options = {}) {
+    const width = Number(options.width || graphViewport.width);
+    const height = Number(options.height || graphViewport.height);
+    const margin = Number(options.margin || 76);
+    const centerX = width / 2;
+    const centerY = height / 2;
+    const positions = new Map();
+    if (!graph.nodes.length) return positions;
+
+    const degree = new Map(graph.nodes.map((node) => [node.id, 0]));
+    for (const edge of graph.edges) {
+      degree.set(edge.source, (degree.get(edge.source) || 0) + 1);
+      degree.set(edge.target, (degree.get(edge.target) || 0) + 1);
+    }
+    const orderedNodes = [...graph.nodes].sort((left, right) => {
+      const degreeDelta = (degree.get(right.id) || 0) - (degree.get(left.id) || 0);
+      if (degreeDelta) return degreeDelta;
+      return left.title.localeCompare(right.title);
+    });
+    const radiusX = Math.max(70, width / 2 - margin);
+    const radiusY = Math.max(70, height / 2 - margin);
+    if (orderedNodes.length === 1) {
+      positions.set(orderedNodes[0].id, { x: centerX, y: centerY });
+      return positions;
+    }
+    const hasHub = orderedNodes.length > 4 && (degree.get(orderedNodes[0].id) || 0) > 1;
+    orderedNodes.forEach((node, index) => {
+      const isHub = hasHub && index === 0;
+      if (isHub) {
+        positions.set(node.id, { x: centerX, y: centerY });
+        return;
+      }
+      const ringIndex = hasHub ? index - 1 : index;
+      const ringCount = hasHub ? orderedNodes.length - 1 : orderedNodes.length;
+      const angle = (Math.PI * 2 * ringIndex) / ringCount - Math.PI / 2;
+      positions.set(node.id, {
+        x: Math.round(centerX + Math.cos(angle) * radiusX),
+        y: Math.round(centerY + Math.sin(angle) * radiusY),
+      });
+    });
+    return positions;
+  }
+
   function buildReplayFrames(changes) {
     const ordered = [...changes].sort((left, right) => (left.sequence || 0) - (right.sequence || 0));
     const seen = new Set();
@@ -1110,13 +1162,26 @@ const FiniteBrainProductClient = (() => {
     render();
   }
 
+  function workspaceChromeState(view) {
+    const pageActive = view !== "graph";
+    return {
+      graphHidden: pageActive,
+      graphTabClass: `workspace-tab${pageActive ? "" : " active"}`,
+      pageHidden: !pageActive,
+      pageTabClass: `workspace-tab${pageActive ? " active" : ""}`,
+      ribbonGraphClass: `ribbon-button${pageActive ? "" : " active"}`,
+      shellView: pageActive ? "page" : "graph",
+    };
+  }
+
   function renderWorkspaceChrome(page = selectedReaderPage()) {
-    const pageActive = state.activeWorkspaceView !== "graph";
-    $("pageWorkspace").hidden = !pageActive;
-    $("graphWorkspace").hidden = pageActive;
-    $("pageTabButton").className = `workspace-tab${pageActive ? " active" : ""}`;
-    $("graphTabButton").className = `workspace-tab${pageActive ? "" : " active"}`;
-    $("ribbonGraphButton").className = `ribbon-button${pageActive ? "" : " active"}`;
+    const chrome = workspaceChromeState(state.activeWorkspaceView);
+    document.querySelector(".obsidian-shell").dataset.workspaceView = chrome.shellView;
+    $("pageWorkspace").hidden = chrome.pageHidden;
+    $("graphWorkspace").hidden = chrome.graphHidden;
+    $("pageTabButton").className = chrome.pageTabClass;
+    $("graphTabButton").className = chrome.graphTabClass;
+    $("ribbonGraphButton").className = chrome.ribbonGraphClass;
     setText("workspaceTitle", workspaceTabTitle(state.metadata, page));
   }
 
@@ -1216,6 +1281,7 @@ const FiniteBrainProductClient = (() => {
   function drawGraph(graph) {
     const svg = $("graphCanvas");
     svg.replaceChildren();
+    svg.setAttribute("viewBox", `0 0 ${graphViewport.width} ${graphViewport.height}`);
     if (!graph.nodes.length) {
       const empty = document.createElementNS("http://www.w3.org/2000/svg", "text");
       empty.setAttribute("x", "24");
@@ -1224,17 +1290,12 @@ const FiniteBrainProductClient = (() => {
       svg.appendChild(empty);
       return;
     }
-    const centerX = 360;
-    const centerY = 160;
-    const radius = Math.min(118, 34 + graph.nodes.length * 12);
-    const positions = new Map();
-    graph.nodes.forEach((node, index) => {
-      const angle = (Math.PI * 2 * index) / graph.nodes.length - Math.PI / 2;
-      positions.set(node.id, {
-        x: centerX + Math.cos(angle) * radius,
-        y: centerY + Math.sin(angle) * radius,
-      });
-    });
+    const positions = graphLayout(graph);
+    const edgeDegree = new Map(graph.nodes.map((node) => [node.id, 0]));
+    for (const edge of graph.edges) {
+      edgeDegree.set(edge.source, (edgeDegree.get(edge.source) || 0) + 1);
+      edgeDegree.set(edge.target, (edgeDegree.get(edge.target) || 0) + 1);
+    }
     for (const edge of graph.edges) {
       const source = positions.get(edge.source);
       const target = positions.get(edge.target);
@@ -1253,10 +1314,12 @@ const FiniteBrainProductClient = (() => {
       circle.setAttribute("class", graph.edges.some((edge) => edge.source === node.id) ? "node focus" : "node");
       circle.setAttribute("cx", String(position.x));
       circle.setAttribute("cy", String(position.y));
-      circle.setAttribute("r", "12");
+      circle.setAttribute("r", String(Math.min(18, 9 + (edgeDegree.get(node.id) || 0) * 1.5)));
+      circle.setAttribute("data-folder-id", node.folderId);
       svg.appendChild(circle);
 
       const label = document.createElementNS("http://www.w3.org/2000/svg", "text");
+      label.setAttribute("class", "node-label");
       label.setAttribute("x", String(position.x + 16));
       label.setAttribute("y", String(position.y + 4));
       label.textContent = node.title;
@@ -1272,6 +1335,19 @@ const FiniteBrainProductClient = (() => {
 
   function setText(id, text) {
     $(id).textContent = text;
+  }
+
+  function setGraphStats(graph, readablePageCount) {
+    const stats = graphStats(graph, readablePageCount);
+    const filtered =
+      stats.filteredOutCount > 0 ? ` / ${stats.filteredOutCount} hidden by filter` : "";
+    setPill(
+      "graphStats",
+      `${stats.nodeCount} ${stats.nodeCount === 1 ? "node" : "nodes"} / ${stats.edgeCount} ${
+        stats.edgeCount === 1 ? "link" : "links"
+      }${filtered}`,
+      stats.nodeCount ? "ready" : "muted"
+    );
   }
 
   function setList(id, rows, emptyText, renderRow) {
@@ -1889,12 +1965,24 @@ const FiniteBrainProductClient = (() => {
   }
 
   function renderGraphView() {
-    const graph = buildGraphProjection(decryptedPagesForGraph(), $("graphFilterInput").value);
+    const pages = decryptedPagesForGraph();
+    const graph = buildGraphProjection(pages, $("graphFilterInput").value);
     drawGraph(graph);
+    setGraphStats(graph, pages.length);
     log("Rendered graph from decrypted client index.", {
       edges: graph.edges.length,
       nodes: graph.nodes.length,
     });
+  }
+
+  function fitGraphView() {
+    $("graphCanvas").setAttribute("viewBox", `0 0 ${graphViewport.width} ${graphViewport.height}`);
+    log("Fit graph view to readable graph bounds.");
+  }
+
+  function resetGraphView() {
+    $("graphFilterInput").value = "";
+    renderGraphView();
   }
 
   function renderReplayFrames() {
@@ -1934,7 +2022,10 @@ const FiniteBrainProductClient = (() => {
     setList("replayList", frames, "No replay frames", (item, frame) => {
       item.textContent = `#${frame.sequence} ${frame.action}: ${frame.nodeCount} nodes, ${frame.edgeCount} edges`;
     });
-    if (frames.length) drawGraph(frames[frames.length - 1].graph);
+    if (frames.length) {
+      drawGraph(frames[frames.length - 1].graph);
+      setGraphStats(frames[frames.length - 1].graph, frames[frames.length - 1].nodeCount);
+    }
     log("Built graph replay frames.", frames.map((frame) => ({
       edgeCount: frame.edgeCount,
       nodeCount: frame.nodeCount,
@@ -2107,6 +2198,17 @@ const FiniteBrainProductClient = (() => {
         log("Failed to render graph.", { error: error.message });
       }
     });
+    $("graphFilterInput").addEventListener("keydown", (event) => {
+      if (event.key !== "Enter") return;
+      event.preventDefault();
+      renderGraphView();
+    });
+    $("fitGraphButton").addEventListener("click", () => {
+      fitGraphView();
+    });
+    $("resetGraphButton").addEventListener("click", () => {
+      resetGraphView();
+    });
     $("replayGraphButton").addEventListener("click", () => {
       try {
         renderReplayFrames();
@@ -2157,6 +2259,8 @@ const FiniteBrainProductClient = (() => {
     deriveSignerState,
     encryptFolderObject,
     extractPageLinks,
+    graphLayout,
+    graphStats,
     mergeSyncProjection,
     metadataFolderRows,
     metadataMountRows,
@@ -2176,6 +2280,7 @@ const FiniteBrainProductClient = (() => {
     searchPageRows,
     shortKey,
     start,
+    workspaceChromeState,
     workspaceTabTitle,
   };
 })();

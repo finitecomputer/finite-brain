@@ -117,17 +117,27 @@ Start writing here.</textarea>
 
         <section id="graphWorkspace" class="workspace-view graph-workspace" aria-label="Graph workspace" hidden>
           <header class="graph-topbar">
-            <h2>Graph View</h2>
+            <div>
+              <p class="eyebrow">Local graph</p>
+              <h2>Graph View</h2>
+            </div>
+            <span id="graphStats" class="pill muted">0 nodes / 0 links</span>
             <div class="graph-controls">
               <input id="graphFilterInput" placeholder="Filter graph" autocomplete="off" spellcheck="false" />
               <button id="renderGraphButton" class="primary-action" type="button">Render graph</button>
               <button id="replayGraphButton" type="button">Replay</button>
             </div>
           </header>
-          <svg id="graphCanvas" class="graph-canvas" viewBox="0 0 900 560" role="img" aria-label="FiniteBrain graph view">
-            <text x="24" y="44">No graph rendered.</text>
-          </svg>
-          <ol id="replayList" class="plain-list replay-list"></ol>
+          <div class="graph-stage">
+            <svg id="graphCanvas" class="graph-canvas" viewBox="0 0 900 560" role="img" aria-label="FiniteBrain graph view">
+              <text x="24" y="44">No graph rendered.</text>
+            </svg>
+            <div class="graph-floating-controls" aria-label="Graph controls">
+              <button id="fitGraphButton" type="button" title="Fit graph">Fit</button>
+              <button id="resetGraphButton" type="button" title="Reset graph">Reset</button>
+            </div>
+            <ol id="replayList" class="plain-list replay-list graph-replay-overlay"></ol>
+          </div>
         </section>
       </main>
 

@@ -275,6 +275,13 @@ assert.match(folderRows[1].detail, /locked/);
     client.workspaceTabTitle({ name: "Smoke" }, { title: "Folder Object Crypto" }),
     "Folder Object Crypto"
   );
+  assert.equal(client.workspaceChromeState("page").shellView, "page");
+  assert.equal(client.workspaceChromeState("page").pageHidden, false);
+  assert.equal(client.workspaceChromeState("page").graphHidden, true);
+  assert.equal(client.workspaceChromeState("graph").shellView, "graph");
+  assert.equal(client.workspaceChromeState("graph").pageHidden, true);
+  assert.equal(client.workspaceChromeState("graph").graphHidden, false);
+  assert.match(client.workspaceChromeState("graph").graphTabClass, /active/);
   assert.equal(client.normalizeSidebarMode("search"), "search");
   assert.equal(client.normalizeSidebarMode("access"), "access");
   assert.equal(client.normalizeSidebarMode("bogus"), "files");
@@ -540,6 +547,10 @@ assert.match(folderRows[1].detail, /locked/);
   );
   assert.equal(graph.edges.length, 2);
   assert.equal(graph.edges.some((edge) => edge.id.includes("page-hidden")), false);
+  const graphMetrics = client.graphStats(graph, 3);
+  assert.equal(graphMetrics.edgeCount, 2);
+  assert.equal(graphMetrics.filteredOutCount, 1);
+  assert.equal(graphMetrics.nodeCount, 2);
 
   const filteredGraph = client.buildGraphProjection(
     [
@@ -562,6 +573,30 @@ assert.match(folderRows[1].detail, /locked/);
     Array.from(filteredGraph.nodes.map((node) => node.title).sort()),
     ["Alpha", "Beta"]
   );
+  const layout = client.graphLayout(graph, { height: 260, margin: 40, width: 320 });
+  assert.equal(layout.size, 2);
+  for (const position of layout.values()) {
+    assert.equal(position.x >= 40 && position.x <= 280, true);
+    assert.equal(position.y >= 40 && position.y <= 220, true);
+  }
+  assert.equal(
+    JSON.stringify(Array.from(client.graphLayout(graph, { height: 260, margin: 40, width: 320 }).entries())),
+    JSON.stringify(Array.from(layout.entries()))
+  );
+  const hubGraph = client.buildGraphProjection([
+    {
+      folderId: "general",
+      objectId: "hub",
+      status: "ready",
+      text: "# Hub\n\n[[One]] [[Two]] [[Three]] [[Four]]",
+    },
+    { folderId: "general", objectId: "one", status: "ready", text: "# One" },
+    { folderId: "general", objectId: "two", status: "ready", text: "# Two" },
+    { folderId: "general", objectId: "three", status: "ready", text: "# Three" },
+    { folderId: "general", objectId: "four", status: "ready", text: "# Four" },
+  ]);
+  const hubLayout = client.graphLayout(hubGraph, { height: 300, margin: 60, width: 400 });
+  assert.equal(JSON.stringify(hubLayout.get("general/hub")), JSON.stringify({ x: 200, y: 150 }));
 
   const replay = client.buildReplayFrames([
     {
