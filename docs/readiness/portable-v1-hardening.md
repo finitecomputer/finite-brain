@@ -1,10 +1,12 @@
 # Portable v1 Hardening Readiness
 
-Status: pre-PR readiness record for `finitecomputer/finite-brain#14`
+Status: current readiness record for `finitecomputer/finite-brain#14` and
+`finitecomputer/finite-brain#22`
 
 This document records the Portable v1 hardening pass for the Rust rewrite. It is
 not a production runbook. It is the evidence map for what the current core,
-store, server, and development Smoke UI prove before the first PR.
+store, server, development Smoke UI, and Product Client prove before the
+staging PR.
 
 ## Compatibility Fixture Coverage
 
@@ -27,7 +29,7 @@ store, server, and development Smoke UI prove before the first PR.
 | Sync pull page size | Store clamps client `limit` to `MAX_PULL_LIMIT = 1000`. | `sync_pull_caps_large_client_limits` |
 | Retention floor | Cursors below the retained floor return `410 Gone` and require rebootstrap. | `sync_cursor_expiry_requires_rebootstrap`; server route coverage |
 | Retry/idempotency | Duplicate sync writes are keyed by event id and return the original sequence. Invitation/share accepts are retry-safe only for the same target npub. | duplicate sync, Vault Invitation, Share Link, and Shared Folder tests |
-| Rate limits | Not implemented in this Rust core pass. This remains a deployment/API edge concern before public production traffic. | Recorded residual risk |
+| Protected route rate limits | Authenticated routes are counted per signer, method, and path. Portable v1 defaults to 120 requests per 60 seconds. Deployments can override the in-process bounds through `ServerState::with_rate_limit`. | `protected_routes_enforce_configured_rate_limits` |
 
 ## Backup And Restore
 
@@ -51,12 +53,12 @@ Evidence:
 
 | Topic | Current status |
 | --- | --- |
-| Replay resistance | HTTP auth binds `u`, `method`, optional body payload hash, signature, and 60-second timestamp. State-changing sync records are additionally idempotent or conflict-checked by signed event id and base revision. A separate seen-auth-event cache is not implemented yet. |
+| Replay resistance | HTTP auth binds `u`, `method`, optional body payload hash, signature, and 60-second timestamp. The server rejects a reused auth event id within the configured auth window. State-changing sync records are additionally idempotent or conflict-checked by signed event id and base revision. |
 | Signer mismatch | Core validates revision, tombstone, and access-change signer fields. Server route tests cover signer mismatch on object writes. |
 | Nonce uniqueness | Core encryption generates a fresh 12-byte AES-GCM nonce with `OsRng`. Deterministic nonce helper is public only for fixtures/tests and named as such. |
-| NIP-07 trust boundary | Browser/provider signing and NIP-44 encryption remain trusted-client responsibilities. The Rust Smoke UI never holds production keys and only accepts pasted signed payloads. |
+| NIP-07 trust boundary | Browser/provider signing and NIP-44 encryption remain trusted-client responsibilities. The Product Client owns signer discovery, auth signing, Folder Key Grant opening, and local plaintext indexes. The development Smoke UI never holds production keys and only accepts pasted signed payloads. |
 | Smoke UI plaintext/XSS | Smoke UI is development-only and can display encrypted payloads, route errors, and pasted payload bodies. It must not be deployed as a product client or used with production secrets. |
-| CORS/cookies | Rust server currently relies on Nostr auth headers only. It accepts `Authorization`, `X-Nostr-Authorization`, and `X-FiniteBrain-Nostr`. It does not trust cookies for auth and does not add a permissive CORS layer. |
+| CORS/cookies | Rust server relies on Nostr auth headers only. It accepts `Authorization`, `X-Nostr-Authorization`, and `X-FiniteBrain-Nostr`. It does not trust cookies for auth. Browser CORS is allowlist-driven and defaults to the configured public base URL origin. |
 | Server plaintext search | Server returns `400` for plaintext search because search/indexing must run client-side over decrypted accessible content only. |
 | Payload leakage | Secure object routes store encrypted payload JSON and server-visible metadata only. Encrypted export withholds inaccessible object payloads as opaque entries. |
 
@@ -65,8 +67,11 @@ Evidence:
 | Case | Stable response | Evidence |
 | --- | --- | --- |
 | Missing/invalid Nostr auth | `403`, `valid Nostr authorization is required` | `protected_create_rejects_missing_auth` |
+| Replayed Nostr auth event | `403`, `replayed Nostr authorization event` | `protected_routes_reject_replayed_auth_events` |
 | Stale auth event | `403`, `stale Nostr event timestamp` | `protected_create_rejects_stale_wrong_method_wrong_url_and_wrong_payload_auth` |
 | Wrong auth method/url/payload | `403`, method/url/payload mismatch messages | same route test |
+| Protected route rate limit exceeded | `429`, `protected route rate limit exceeded` | `protected_routes_enforce_configured_rate_limits` |
+| Disallowed CORS preflight origin | `403`, `CORS origin is not allowed` | `cors_preflight_is_allowlist_driven` |
 | Oversized body | `413 Payload Too Large` | `protected_create_rejects_oversized_request_body` |
 | Vault access missing | `403`, `vault access required` | `metadata_requires_vault_membership` |
 | Missing folder/object | `404` for missing current object/folder/vault paths | secure object route tests |
@@ -106,17 +111,20 @@ Evidence:
 | Vault Invitation accept | store and server singleton npub-bound invitation tests; Smoke UI invitation controls |
 | Share Link accept | store and server singleton npub-scoped Share Link tests; Smoke UI Share Link controls |
 | Mounted Folder projection | shared Folder connection store/server tests; Smoke UI mount/connection controls |
-| Export/import | encrypted export route/store tests; core OKF export/import/search tests |
+| Export/import | encrypted export route/store tests; core OKF export/import/search tests; Product Client OKF import execution tests |
 | Locked/setup-needed states | setup incomplete repair tests; Smoke UI setup/error state chips |
-| Local development UI | `smoke_ui_serves_static_assets_and_sqlite_flow_works` verifies static assets and SQLite-backed route flow |
+| Local development UI | `smoke_ui_serves_static_assets_and_sqlite_flow_works` verifies static assets and SQLite-backed route flow; Product Client route smoke covers `/client`, `/client/config.json`, `/client/app.js`, and `/client/app.css` |
 
 ## Residual Pre-Production Risks
 
-- There is no rate limiter or seen-auth-event replay cache in the Rust server
-  yet. The current core relies on short auth skew, payload/method/url binding,
-  signed record idempotency, and base-revision conflicts.
+- The replay cache and protected-route rate limiter are in-process server
+  state. A horizontally scaled production deployment needs a shared edge policy
+  or sticky process assumptions documented before public traffic.
 - The Smoke UI is intentionally not a production signer/client.
-- CORS policy is currently absent rather than permissive. A deployed product
-  server must add an allowlist instead of relying on browser defaults.
-- OKF import remains core planning/client-side logic. The server exposes
-  encrypted export and rejects plaintext server search.
+- CORS is allowlist-driven. Staging/production must set the public base URL and
+  any separate Product Client origin explicitly rather than using wildcard
+  origins.
+- OKF import execution remains Product Client owned. The server exposes
+  encrypted export and rejects plaintext server search/import.
+- Hard-cut v1 does not include legacy route compatibility or a migration bridge
+  from the old prototype runtime.

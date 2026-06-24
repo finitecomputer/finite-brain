@@ -1,15 +1,19 @@
 //! FiniteBrain HTTP server and API surface.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::str;
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use axum::body::Bytes;
-use axum::extract::{DefaultBodyLimit, OriginalUri, Path as AxumPath, Query, State};
-use axum::http::header::{AUTHORIZATION, CONTENT_TYPE};
-use axum::http::{HeaderMap, Method, StatusCode, Uri};
+use axum::extract::{DefaultBodyLimit, OriginalUri, Path as AxumPath, Query, Request, State};
+use axum::http::header::{
+    ACCESS_CONTROL_ALLOW_HEADERS, ACCESS_CONTROL_ALLOW_METHODS, ACCESS_CONTROL_ALLOW_ORIGIN,
+    ACCESS_CONTROL_MAX_AGE, AUTHORIZATION, CONTENT_TYPE, ORIGIN, VARY,
+};
+use axum::http::{HeaderMap, HeaderValue, Method, StatusCode, Uri};
+use axum::middleware::{self, Next};
 use axum::response::{Html, IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
@@ -40,6 +44,8 @@ use time::format_description::well_known::Rfc3339;
 
 const DEFAULT_PUBLIC_BASE_URL: &str = "http://127.0.0.1:3015";
 const DEFAULT_MAX_AUTH_SKEW_SECONDS: u64 = 60;
+const DEFAULT_RATE_LIMIT_MAX_REQUESTS: u32 = 120;
+const DEFAULT_RATE_LIMIT_WINDOW_SECONDS: u64 = 60;
 const MAX_REQUEST_BODY_BYTES: usize = 1024 * 1024;
 const MAX_SYNC_RECORDS_LIMIT: u64 = 1_000;
 const NOSTR_AUTHORIZATION_HEADER: &str = "x-nostr-authorization";
@@ -72,16 +78,35 @@ pub struct ServerState {
     public_base_url: Arc<str>,
     auth_now_unix_seconds: Option<u64>,
     max_auth_skew_seconds: u64,
+    auth_replay_cache: Arc<Mutex<BTreeMap<String, u64>>>,
+    rate_limit_hits: Arc<Mutex<BTreeMap<String, Vec<u64>>>>,
+    rate_limit: RateLimitConfig,
+    cors_allowed_origins: Arc<BTreeSet<String>>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct RateLimitConfig {
+    max_requests: u32,
+    window_seconds: u64,
 }
 
 impl ServerState {
     /// Build state around an existing store.
     pub fn new(store: BrainStore, public_base_url: impl Into<String>) -> Self {
+        let public_base_url = public_base_url.into();
+        let cors_allowed_origins = cors_allowed_origins_from_public_base_url(&public_base_url);
         Self {
             store: Arc::new(Mutex::new(store)),
-            public_base_url: Arc::<str>::from(public_base_url.into()),
+            public_base_url: Arc::<str>::from(public_base_url),
             auth_now_unix_seconds: None,
             max_auth_skew_seconds: DEFAULT_MAX_AUTH_SKEW_SECONDS,
+            auth_replay_cache: Arc::new(Mutex::new(BTreeMap::new())),
+            rate_limit_hits: Arc::new(Mutex::new(BTreeMap::new())),
+            rate_limit: RateLimitConfig {
+                max_requests: DEFAULT_RATE_LIMIT_MAX_REQUESTS,
+                window_seconds: DEFAULT_RATE_LIMIT_WINDOW_SECONDS,
+            },
+            cors_allowed_origins: Arc::new(cors_allowed_origins),
         }
     }
 
@@ -92,10 +117,40 @@ impl ServerState {
         self
     }
 
+    /// Override protected route rate limits for tests or deployments.
+    pub fn with_rate_limit(mut self, max_requests: u32, window_seconds: u64) -> Self {
+        self.rate_limit = RateLimitConfig {
+            max_requests: max_requests.max(1),
+            window_seconds: window_seconds.max(1),
+        };
+        self
+    }
+
+    /// Override CORS allowed origins.
+    pub fn with_cors_allowed_origins(mut self, origins: impl IntoIterator<Item = String>) -> Self {
+        self.cors_allowed_origins = Arc::new(origins.into_iter().collect());
+        self
+    }
+
     fn auth_now_unix_seconds(&self) -> u64 {
         self.auth_now_unix_seconds
             .unwrap_or_else(current_unix_seconds)
     }
+
+    fn cors_origin_allowed(&self, origin: &str) -> bool {
+        self.cors_allowed_origins.contains(origin)
+    }
+}
+
+fn cors_allowed_origins_from_public_base_url(public_base_url: &str) -> BTreeSet<String> {
+    let mut origins = BTreeSet::from([public_base_url.to_owned()]);
+    if let Some((scheme, rest)) = public_base_url.split_once("://") {
+        let host = rest.split('/').next().unwrap_or(rest);
+        if !host.is_empty() {
+            origins.insert(format!("{scheme}://{host}"));
+        }
+    }
+    origins
 }
 
 /// API error body.
@@ -642,6 +697,7 @@ pub fn router_with_sqlite_path(
 
 /// Build a router with explicit state.
 pub fn router_with_state(state: ServerState) -> Router {
+    let cors_state = state.clone();
     Router::new()
         .route("/", get(root_handler))
         .route("/health", get(health_handler))
@@ -774,8 +830,63 @@ pub fn router_with_state(state: ServerState) -> Router {
             "/_admin/vaults/{vault_id}/sync/records",
             get(sync_records_handler).post(submit_sync_record_handler),
         )
+        .layer(middleware::from_fn_with_state(
+            cors_state,
+            cors_allowlist_middleware,
+        ))
         .layer(DefaultBodyLimit::max(MAX_REQUEST_BODY_BYTES))
         .with_state(state)
+}
+
+async fn cors_allowlist_middleware(
+    State(state): State<ServerState>,
+    request: Request,
+    next: Next,
+) -> Response {
+    let origin = request
+        .headers()
+        .get(ORIGIN)
+        .and_then(|value| value.to_str().ok())
+        .map(ToOwned::to_owned);
+    let allowed_origin = origin
+        .as_deref()
+        .filter(|origin| state.cors_origin_allowed(origin));
+
+    if request.method() == Method::OPTIONS && origin.is_some() {
+        let mut response = if allowed_origin.is_some() {
+            StatusCode::NO_CONTENT.into_response()
+        } else {
+            ApiError::new(StatusCode::FORBIDDEN, "CORS origin is not allowed").into_response()
+        };
+        if let Some(origin) = allowed_origin {
+            add_cors_headers(response.headers_mut(), origin);
+        }
+        return response;
+    }
+
+    let mut response = next.run(request).await;
+    if let Some(origin) = allowed_origin {
+        add_cors_headers(response.headers_mut(), origin);
+    }
+    response
+}
+
+fn add_cors_headers(headers: &mut HeaderMap, origin: &str) {
+    if let Ok(origin) = HeaderValue::from_str(origin) {
+        headers.insert(ACCESS_CONTROL_ALLOW_ORIGIN, origin);
+    }
+    headers.insert(VARY, HeaderValue::from_static("Origin"));
+    headers.insert(
+        ACCESS_CONTROL_ALLOW_METHODS,
+        HeaderValue::from_static("GET,POST,PUT,DELETE,PATCH,OPTIONS"),
+    );
+    headers.insert(
+        ACCESS_CONTROL_ALLOW_HEADERS,
+        HeaderValue::from_static(
+            "authorization,content-type,x-nostr-authorization,x-finitebrain-nostr",
+        ),
+    );
+    headers.insert(ACCESS_CONTROL_MAX_AGE, HeaderValue::from_static("600"));
 }
 
 async fn root_handler() -> &'static str {
@@ -2216,7 +2327,52 @@ fn validate_request_auth(
         expected = expected.with_body(body.to_vec());
     }
 
-    finite_nostr::validate_http_auth_event(&event, &expected).map_err(auth_error)
+    let signer = finite_nostr::validate_http_auth_event(&event, &expected).map_err(auth_error)?;
+    enforce_auth_replay_cache(state, &event)?;
+    enforce_rate_limit(state, method, uri, &signer)?;
+    Ok(signer)
+}
+
+fn enforce_auth_replay_cache(state: &ServerState, event: &Event) -> Result<(), ApiError> {
+    let now = state.auth_now_unix_seconds();
+    let expires_at = now.saturating_add(state.max_auth_skew_seconds);
+    let event_id = event.id.to_string();
+    let mut cache = state.auth_replay_cache.lock().map_err(lock_error)?;
+    cache.retain(|_, expiry| *expiry >= now);
+    if cache.contains_key(&event_id) {
+        return Err(ApiError::new(
+            StatusCode::FORBIDDEN,
+            "replayed Nostr authorization event",
+        ));
+    }
+    cache.insert(event_id, expires_at);
+    Ok(())
+}
+
+fn enforce_rate_limit(
+    state: &ServerState,
+    method: &Method,
+    uri: &Uri,
+    signer: &NostrPublicKey,
+) -> Result<(), ApiError> {
+    let now = state.auth_now_unix_seconds();
+    let window = state.rate_limit.window_seconds.max(1);
+    let floor = now.saturating_sub(window);
+    let actor = signer
+        .to_npub()
+        .unwrap_or_else(|_| "unknown-nostr-public-key".to_owned());
+    let key = format!("{actor}:{}:{}", method.as_str(), uri.path());
+    let mut hits = state.rate_limit_hits.lock().map_err(lock_error)?;
+    let entries = hits.entry(key).or_default();
+    entries.retain(|timestamp| *timestamp > floor);
+    if entries.len() as u32 >= state.rate_limit.max_requests {
+        return Err(ApiError::new(
+            StatusCode::TOO_MANY_REQUESTS,
+            "protected route rate limit exceeded",
+        ));
+    }
+    entries.push(now);
+    Ok(())
 }
 
 fn accept_object_revision(
@@ -3264,6 +3420,15 @@ mod tests {
         let state = ServerState::new(BrainStore::open_in_memory().unwrap(), TEST_BASE_URL);
         assert_eq!(state.max_auth_skew_seconds, 60);
         assert_eq!(state.auth_now_unix_seconds, None);
+        assert_eq!(state.rate_limit.max_requests, 120);
+        assert_eq!(state.rate_limit.window_seconds, 60);
+        assert!(state.cors_origin_allowed(TEST_BASE_URL));
+
+        let path_state = ServerState::new(
+            BrainStore::open_in_memory().unwrap(),
+            "https://finite.example/smoke",
+        );
+        assert!(path_state.cors_origin_allowed("https://finite.example"));
     }
 
     #[tokio::test]
@@ -3656,6 +3821,102 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn protected_routes_reject_replayed_auth_events() {
+        let keys = Keys::generate();
+        let body = create_vault_body("acme", "organization");
+        let router = test_router();
+
+        let first = post_vault(router.clone(), &keys, &body, TEST_NOW, None, None, None).await;
+        assert_eq!(first.status(), StatusCode::OK);
+
+        let replay = post_vault(router, &keys, &body, TEST_NOW, None, None, None).await;
+        assert_error(
+            replay,
+            StatusCode::FORBIDDEN,
+            "replayed Nostr authorization event",
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn protected_routes_enforce_configured_rate_limits() {
+        let keys = Keys::generate();
+        let router = router_with_state(test_state().with_rate_limit(1, 60));
+
+        let first_body = create_vault_body("acme", "organization");
+        let first = post_vault(
+            router.clone(),
+            &keys,
+            &first_body,
+            TEST_NOW,
+            None,
+            None,
+            None,
+        )
+        .await;
+        assert_eq!(first.status(), StatusCode::OK);
+
+        let second_body = create_vault_body("beta", "organization");
+        let second = post_vault(router, &keys, &second_body, TEST_NOW + 1, None, None, None).await;
+        assert_error(
+            second,
+            StatusCode::TOO_MANY_REQUESTS,
+            "protected route rate limit exceeded",
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn cors_preflight_is_allowlist_driven() {
+        let state =
+            test_state().with_cors_allowed_origins(["https://client.finite.test".to_owned()]);
+        let router = router_with_state(state);
+
+        let allowed = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("OPTIONS")
+                    .uri("/_admin/vaults")
+                    .header(ORIGIN, "https://client.finite.test")
+                    .header("access-control-request-method", "POST")
+                    .body(Body::empty())
+                    .expect("valid CORS preflight"),
+            )
+            .await
+            .expect("allowed preflight response");
+        assert_eq!(allowed.status(), StatusCode::NO_CONTENT);
+        assert_eq!(
+            allowed
+                .headers()
+                .get(ACCESS_CONTROL_ALLOW_ORIGIN)
+                .and_then(|value| value.to_str().ok()),
+            Some("https://client.finite.test")
+        );
+        assert_eq!(
+            allowed
+                .headers()
+                .get(ACCESS_CONTROL_ALLOW_METHODS)
+                .and_then(|value| value.to_str().ok()),
+            Some("GET,POST,PUT,DELETE,PATCH,OPTIONS")
+        );
+
+        let blocked = router
+            .oneshot(
+                Request::builder()
+                    .method("OPTIONS")
+                    .uri("/_admin/vaults")
+                    .header(ORIGIN, "https://evil.example")
+                    .header("access-control-request-method", "POST")
+                    .body(Body::empty())
+                    .expect("valid CORS preflight"),
+            )
+            .await
+            .expect("blocked preflight response");
+        assert_error(blocked, StatusCode::FORBIDDEN, "CORS origin is not allowed").await;
+    }
+
+    #[tokio::test]
     async fn invalid_bootstrap_maps_to_bad_request_after_valid_auth() {
         let keys = Keys::generate();
         let body = create_vault_body("", "organization");
@@ -3884,8 +4145,15 @@ mod tests {
         assert_eq!(delete.sequence, 4);
         assert_eq!(delete.revision, 4);
 
-        let get_deleted =
-            authed_request(router.clone(), &keys, "GET", object_path, None, TEST_NOW).await;
+        let get_deleted = authed_request(
+            router.clone(),
+            &keys,
+            "GET",
+            object_path,
+            None,
+            TEST_NOW + 1,
+        )
+        .await;
         assert_error(get_deleted, StatusCode::NOT_FOUND, "object not found").await;
 
         let bootstrap = authed_request(
@@ -3894,7 +4162,7 @@ mod tests {
             "GET",
             "/_admin/vaults/acme/sync/bootstrap",
             None,
-            TEST_NOW,
+            TEST_NOW + 1,
         )
         .await;
         assert_eq!(bootstrap.status(), StatusCode::OK);
@@ -4067,7 +4335,7 @@ mod tests {
         assert_eq!(first.sequence, 1);
         assert!(!first.duplicate);
 
-        let retry = authed_request(router, &keys, "PUT", path, Some(body), TEST_NOW).await;
+        let retry = authed_request(router, &keys, "PUT", path, Some(body), TEST_NOW + 1).await;
         assert_eq!(retry.status(), StatusCode::OK);
         let retry: ObjectWriteResponse = read_json(retry).await;
         assert_eq!(retry.sequence, 1);
@@ -4377,7 +4645,7 @@ mod tests {
             "GET",
             "/_admin/vaults/acme/sync/bootstrap",
             None,
-            TEST_NOW,
+            TEST_NOW + 1,
         )
         .await;
         assert_eq!(admin_bootstrap.status(), StatusCode::OK);
@@ -4641,7 +4909,7 @@ mod tests {
             "POST",
             &accept_path,
             None,
-            TEST_NOW,
+            TEST_NOW + 2,
         )
         .await;
         assert_eq!(accept.status(), StatusCode::OK);
@@ -4655,7 +4923,7 @@ mod tests {
             "POST",
             &accept_path,
             None,
-            TEST_NOW,
+            TEST_NOW + 1,
         )
         .await;
         assert_eq!(retry.status(), StatusCode::OK);
@@ -4790,7 +5058,7 @@ mod tests {
             "POST",
             &accept_path,
             None,
-            TEST_NOW,
+            TEST_NOW + 1,
         )
         .await;
         assert_eq!(accept.status(), StatusCode::OK);
@@ -4979,7 +5247,7 @@ mod tests {
             "POST",
             &format!("/_admin/shared-folder-invitations/{}/accept", invitation.id),
             None,
-            TEST_NOW,
+            TEST_NOW + 1,
         )
         .await;
         assert_eq!(accept.status(), StatusCode::OK);
@@ -5156,8 +5424,13 @@ mod tests {
         .await;
         assert_eq!(remove_connection_member.status(), StatusCode::OK);
 
-        let locked_metadata =
-            get_metadata(router.clone(), &destination_member_keys, "dest", TEST_NOW).await;
+        let locked_metadata = get_metadata(
+            router.clone(),
+            &destination_member_keys,
+            "dest",
+            TEST_NOW + 1,
+        )
+        .await;
         assert_eq!(locked_metadata.status(), StatusCode::OK);
         let locked_metadata: VaultMetadataResponse = read_json(locked_metadata).await;
         assert_eq!(locked_metadata.mounted_folders[0].state, "locked");
