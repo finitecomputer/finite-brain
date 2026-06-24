@@ -9,7 +9,7 @@
 - Feature branch: `feature/rust-portable-v1-core`
 - Human owner: Austin
 - Started: 2026-06-24
-- Current status: grilling with docs; Product Client spine resolved, graph/replay projection pending
+- Current status: grilling with docs; graph/replay boundary resolved, OKF import execution pending
 - Skill setup status: `AGENTS.md`, `CONTEXT.md`, and `docs/agents/*` already exist
 
 ## Goal
@@ -21,8 +21,10 @@ This is a hard-cut continuation from the Rust Portable v1 core PR.
 ## Durable Artifacts
 
 - CONTEXT updates: root `CONTEXT.md` now distinguishes `Product Client`,
-  `Product Client Spine`, `Smoke UI`, and `Hard Cut`.
-- ADRs: `docs/adr/0004-build-a-first-party-product-client.md`
+  `Product Client Spine`, `Graph View`, `Graph Replay`, `Smoke UI`, and
+  `Hard Cut`.
+- ADRs: `docs/adr/0004-build-a-first-party-product-client.md`,
+  `docs/adr/0005-derive-graph-and-replay-from-client-decrypted-indexes.md`
 - PRD issue: pending.
 - Slice issues: pending.
 - Issue sessions: pending.
@@ -92,12 +94,16 @@ Out of scope:
   `docs/adr/0004-build-a-first-party-product-client.md`.
 - The minimum Product Client Spine must land before graph/replay, OKF import
   execution, and agent working-tree materialization build on top.
+- Graph View and Graph Replay are derived from the Product Client's decrypted
+  local Page index and applied sync history. The server remains sync/object
+  metadata aware, not graph aware. See
+  `docs/adr/0005-derive-graph-and-replay-from-client-decrypted-indexes.md`.
 
 ## Open Questions
 
-- Should Graph View and replay be derived purely from the Product Client's
-  decrypted local Page index, or should the server expose an encrypted/object
-  metadata graph to help layout and replay?
+- Should OKF import execution be entirely Product Client owned, or should the
+  Rust server provide an import endpoint that accepts an OKF bundle and performs
+  server-side encryption/upload work?
 
 ## Escalations
 

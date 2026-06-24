@@ -44,6 +44,18 @@ Grants, decrypt readable Pages, edit one Page, encrypt and write the Page back
 as a signed revision, and pull/apply sync records without losing unresolved
 local edits.
 
+### Graph View
+
+A Product Client view over the active User's decrypted accessible Pages. It
+renders Page nodes and Page relationships only after Folder Keys are open and
+visibility filtering has been applied.
+
+### Graph Replay
+
+A Product Client playback of graph/index changes derived from the client's
+applied sync history and decrypted Page index. It is not a server-side graph
+event log.
+
 ### Hard Cut
 
 A compatibility boundary where FiniteBrain does not carry legacy route,
