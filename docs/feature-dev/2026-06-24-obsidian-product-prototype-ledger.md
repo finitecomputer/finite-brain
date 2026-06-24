@@ -89,6 +89,47 @@
   machine after loading browser background services; in-app browser
   verification succeeded.
 
+### `#33` Folder And Page Context Menus
+
+- Baseline: `ef28643`
+- Implementation checkpoint: implemented inside the shell foundation and
+  verified before local branch review
+- Status: implementation complete; behavior is covered by Product Client seam
+  tests and browser-visible shell smoke
+- Owner: current orchestrator thread; this slice was absorbed into the initial
+  Obsidian shell pass because context menu wiring shares the same sidebar tree,
+  selection, and workspace state.
+- Current implementation:
+  - Folder context menus include open folder, new Page, new Folder inside,
+    copy Folder id, manage access, share folder, and disabled delete
+    affordances.
+  - Page context menus include open Page, copy Page id, copy Folder id, graph
+    view routing, and disabled delete affordance.
+  - Context menus clamp to the viewport so tooltips/menus do not render off
+    screen in normal desktop viewports.
+  - Context actions either update active Folder/Page/workspace/sidebar state or
+    produce explicit activity-log output for intentionally stubbed operations.
+  - Menu routing for Manage Access and Share Folder was later tightened in
+    `#35` so FiniteBrain-specific actions open the Access inspector directly.
+- Review:
+  - Standards axis: self-review against ADR 0004 and the Obsidian product
+    direction found the simple DOM menu appropriate for the static
+    Rust-served prototype.
+  - Spec axis: #33 acceptance criteria are covered by `contextMenuItemsForTarget`
+    tests, viewport positioning helper behavior, menu routing, and the browser
+    shell smoke.
+- Verification:
+  - `node --check crates/finite-brain-server/src/product-client.js`
+  - `node crates/finite-brain-server/src/product-client.test.js`
+  - `cargo test -p finite-brain-server product_client_serves_spine_assets_and_config -- --nocapture`
+  - `cargo test --workspace`
+  - `cargo clippy --workspace --all-targets -- -D warnings`
+  - `cargo fmt --check`
+  - `git diff --check`
+  - Browser smoke through the in-app browser: `/client` renders the context menu
+    host and Obsidian shell, and later Access/Graph actions route into their
+    workspace surfaces.
+
 ### `#34` Graph View Workspace Pane
 
 - Baseline: `fa0532d`
