@@ -50,25 +50,30 @@ UI at `/smoke/ui`.
 work in a Vault Working Tree with ordinary file tools; `fbrain` handles the
 state that normal filesystem operations cannot explain.
 
+Use `fbrain` as the agent-facing command. During repo development, either run
+the same command through Cargo from the repository root:
+`cargo run -p finite-brain-cli --bin fbrain -- <args>`, or build once and run
+`target/debug/fbrain`.
+
 ```sh
-cargo run -p finite-brain-cli --bin fbrain -- auth status
-cargo run -p finite-brain-cli --bin fbrain -- auth login --nsec <nsec-or-hex-secret>
-cargo run -p finite-brain-cli --bin fbrain -- signer public-key
-cargo run -p finite-brain-cli --bin fbrain -- signer sign --kind text --content "hello"
-cargo run -p finite-brain-cli --bin fbrain -- open <vault-id> ./my-vault
+fbrain auth status
+fbrain auth login --nsec <nsec-or-hex-secret>
+fbrain signer public-key
+fbrain signer sign --kind text --content "hello"
+fbrain open <vault-id> ./my-vault
 cd ./my-vault
-cargo run -p finite-brain-cli --bin fbrain -- status --json
-cargo run -p finite-brain-cli --bin fbrain -- daemon status
-cargo run -p finite-brain-cli --bin fbrain -- sync now --json
-cargo run -p finite-brain-cli --bin fbrain -- unlock --all
-cargo run -p finite-brain-cli --bin fbrain -- conflicts
-cargo run -p finite-brain-cli --bin fbrain -- activity
-cargo run -p finite-brain-cli --bin fbrain -- access explain <folder>
-cargo run -p finite-brain-cli --bin fbrain -- vault metadata --vault <vault-id>
-cargo run -p finite-brain-cli --bin fbrain -- folder create notes --vault <vault-id> --name Notes --path Notes
-cargo run -p finite-brain-cli --bin fbrain -- permissions add-member --vault <vault-id> --target <npub>
-cargo run -p finite-brain-cli --bin fbrain -- invites create --vault <vault-id> --target <npub> --folder <folder-id>
-cargo run -p finite-brain-cli --bin fbrain -- share link --vault <vault-id> --folder <folder-id> --target <npub>
+fbrain status --json
+fbrain daemon status
+fbrain sync now --json
+fbrain unlock --all
+fbrain conflicts
+fbrain activity
+fbrain access explain <folder>
+fbrain vault metadata --vault <vault-id>
+fbrain folder create notes --vault <vault-id> --name Notes --path Notes
+fbrain permissions add-member --vault <vault-id> --target <npub>
+fbrain invites create --vault <vault-id> --target <npub> --folder <folder-id>
+fbrain share link --vault <vault-id> --folder <folder-id> --target <npub>
 ```
 
 The current CLI provides the MVP local control surface, prototype local

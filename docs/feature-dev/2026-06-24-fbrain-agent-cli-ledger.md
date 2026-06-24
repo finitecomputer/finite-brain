@@ -42,7 +42,7 @@ sync states, activity, and access explanations.
 - Agent briefs: pending
 - Review packets: `docs/feature-dev/2026-06-24-issue-38-fbrain-agent-cli-review-packet.md`
 - Local CodeRabbit report: pending
-- PR URL: pending
+- PR URL: `https://github.com/finitecomputer/finite-brain/pull/42`
 
 ## Commands
 
@@ -78,7 +78,7 @@ sync states, activity, and access explanations.
 
 | Issue | Fixed point | Worker session | Commit | Review result | Checks |
 | --- | --- | --- | --- | --- | --- |
-| `#38` fbrain MVP CLI control surface | `e2e9759` | current thread | this commit | pass | `fmt`, `check`, `clippy`, `test`, `build`, live smoke |
+| `#38` fbrain MVP CLI control surface | `e2e9759` | current thread | `6869a30` | pass | `fmt`, `check`, `clippy`, `test`, `build`, live smoke |
 
 ## Open Questions
 
