@@ -44,6 +44,8 @@ This is a hard-cut continuation from the Rust Portable v1 core PR.
 - Runbook: `docs/runbooks/product-client-parity-local-staging.md`
 - Local CodeRabbit report:
   `docs/feature-dev/2026-06-24-local-coderabbit-product-parity-round-2.md`
+- PR CodeRabbit/fallback report:
+  `docs/feature-dev/2026-06-24-pr-coderabbit-product-parity-round-2.md`
 - PR URL: existing staging PR is `https://github.com/finitecomputer/finite-brain/pull/15`.
 
 ## Commands
