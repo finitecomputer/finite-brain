@@ -21,6 +21,9 @@ const RESERVED_TOP_LEVEL_NAMES: [&str; 3] = [".finitebrain", "_admin", ".git"];
 const FOLDER_OBJECT_VERSION: &str = "finite-folder-object-v1";
 const CIPHER_AES_256_GCM: &str = "AES-256-GCM";
 const APP_SPECIFIC_KIND: u16 = 30_078;
+const MAX_USER_ID_LEN: usize = 128;
+const MAX_DISPLAY_NAME_LEN: usize = 128;
+const MAX_SAFE_RELATIVE_PATH_LEN: usize = 1024;
 
 /// Returns the crate name used in workspace status surfaces.
 pub fn crate_name() -> &'static str {
@@ -145,7 +148,10 @@ impl UserId {
     pub fn new(value: impl Into<String>) -> Result<Self, CoreError> {
         let value = value.into();
         let normalized = normalize_nfc(&value);
-        if normalized.is_empty() || contains_nul_or_control(&normalized) {
+        if normalized.is_empty()
+            || normalized.len() > MAX_USER_ID_LEN
+            || contains_nul_or_control(&normalized)
+        {
             return Err(CoreError::InvalidId {
                 field: "user_id",
                 value,
@@ -176,6 +182,7 @@ impl DisplayName {
         let value = value.into();
         let normalized = normalize_nfc(&value);
         if normalized.is_empty()
+            || normalized.len() > MAX_DISPLAY_NAME_LEN
             || normalized.contains('/')
             || contains_nul_or_control(&normalized)
             || normalized == "."
@@ -209,6 +216,7 @@ impl SafeRelativePath {
         let normalized = normalize_nfc(&value);
 
         if normalized.is_empty()
+            || normalized.len() > MAX_SAFE_RELATIVE_PATH_LEN
             || normalized.starts_with('/')
             || normalized.contains('\\')
             || contains_nul_or_control(&normalized)
@@ -1633,6 +1641,9 @@ mod tests {
         );
         assert!(DisplayName::new("folder_name", "bad/name").is_err());
         assert!(DisplayName::new("folder_name", "bad\u{0}name").is_err());
+        assert!(DisplayName::new("folder_name", "x".repeat(MAX_DISPLAY_NAME_LEN + 1)).is_err());
+        assert!(SafeRelativePath::new("page_path", format!("{}.md", "x".repeat(1025))).is_err());
+        assert!(UserId::new("x".repeat(MAX_USER_ID_LEN + 1)).is_err());
         assert!(ObjectId::new("too-short").is_err());
         assert!(ObjectId::new("object_id_with_extension.md").is_err());
     }

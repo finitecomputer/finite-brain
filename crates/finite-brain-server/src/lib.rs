@@ -41,6 +41,7 @@ use time::format_description::well_known::Rfc3339;
 const DEFAULT_PUBLIC_BASE_URL: &str = "http://127.0.0.1:3015";
 const DEFAULT_MAX_AUTH_SKEW_SECONDS: u64 = 60;
 const MAX_REQUEST_BODY_BYTES: usize = 1024 * 1024;
+const MAX_SYNC_RECORDS_LIMIT: u64 = 1_000;
 const NOSTR_AUTHORIZATION_HEADER: &str = "x-nostr-authorization";
 const FINITEBRAIN_NOSTR_HEADER: &str = "x-finitebrain-nostr";
 const APP_SPECIFIC_KIND: u16 = 30_078;
@@ -59,7 +60,7 @@ pub struct HealthStatus {
 pub struct ServerState {
     store: Arc<Mutex<BrainStore>>,
     public_base_url: Arc<str>,
-    auth_now_unix_seconds: u64,
+    auth_now_unix_seconds: Option<u64>,
     max_auth_skew_seconds: u64,
 }
 
@@ -69,16 +70,21 @@ impl ServerState {
         Self {
             store: Arc::new(Mutex::new(store)),
             public_base_url: Arc::<str>::from(public_base_url.into()),
-            auth_now_unix_seconds: current_unix_seconds(),
+            auth_now_unix_seconds: None,
             max_auth_skew_seconds: DEFAULT_MAX_AUTH_SKEW_SECONDS,
         }
     }
 
     /// Override the auth validation clock for deterministic tests.
     pub fn with_auth_clock(mut self, now_unix_seconds: u64, max_skew_seconds: u64) -> Self {
-        self.auth_now_unix_seconds = now_unix_seconds;
+        self.auth_now_unix_seconds = Some(now_unix_seconds);
         self.max_auth_skew_seconds = max_skew_seconds;
         self
+    }
+
+    fn auth_now_unix_seconds(&self) -> u64 {
+        self.auth_now_unix_seconds
+            .unwrap_or_else(current_unix_seconds)
     }
 }
 
@@ -137,7 +143,7 @@ impl From<StoreError> for ApiError {
                 Self::new(StatusCode::NOT_FOUND, value.to_string())
             }
             StoreError::Database { .. } => {
-                Self::new(StatusCode::INTERNAL_SERVER_ERROR, value.to_string())
+                Self::new(StatusCode::INTERNAL_SERVER_ERROR, "internal server error")
             }
         }
     }
@@ -1195,7 +1201,14 @@ async fn create_folder_handler(
         Some(1),
     )?;
     let event_json = event.as_json();
-    let grants = grant_requests_to_metadata(&request.grants, &folder.id, &actor, Some(event_json))?;
+    let grant_created_at = server_timestamp(&state);
+    let grants = grant_requests_to_metadata(
+        &request.grants,
+        &folder.id,
+        &actor,
+        Some(event_json),
+        &grant_created_at,
+    )?;
 
     mutate_as_admin(state, vault_id, actor, event, payload, |store, vault_id| {
         store.create_folder(vault_id, &folder, &access_user_ids, &grants)
@@ -1234,7 +1247,14 @@ async fn finish_folder_setup_handler(
         Some(current_key_version),
     )?;
     let event_json = event.as_json();
-    let grants = grant_requests_to_metadata(&request.grants, &folder_id, &actor, Some(event_json))?;
+    let grant_created_at = server_timestamp(&state);
+    let grants = grant_requests_to_metadata(
+        &request.grants,
+        &folder_id,
+        &actor,
+        Some(event_json),
+        &grant_created_at,
+    )?;
 
     mutate_as_admin(state, vault_id, actor, event, payload, |store, vault_id| {
         store.finish_folder_setup(vault_id, &folder_id, &grants)
@@ -1273,8 +1293,14 @@ async fn grant_folder_access_handler(
         Some(request.target_npub.as_str()),
         Some(current_key_version),
     )?;
-    let grant =
-        grant_request_to_metadata(&request.grant, &folder_id, &actor, Some(event.as_json()))?;
+    let grant_created_at = server_timestamp(&state);
+    let grant = grant_request_to_metadata(
+        &request.grant,
+        &folder_id,
+        &actor,
+        Some(event.as_json()),
+        &grant_created_at,
+    )?;
 
     mutate_as_admin(state, vault_id, actor, event, payload, |store, vault_id| {
         store.grant_folder_access(vault_id, &folder_id, &target, &grant)
@@ -1313,7 +1339,14 @@ async fn remove_folder_access_handler(
         Some(request.new_key_version),
     )?;
     let event_json = event.as_json();
-    let grants = grant_requests_to_metadata(&request.grants, &folder_id, &actor, Some(event_json))?;
+    let grant_created_at = server_timestamp(&state);
+    let grants = grant_requests_to_metadata(
+        &request.grants,
+        &folder_id,
+        &actor,
+        Some(event_json),
+        &grant_created_at,
+    )?;
     let mut reencrypted_records = Vec::new();
     for record in request.reencrypted_records {
         if record.key_version != request.new_key_version {
@@ -1385,10 +1418,15 @@ async fn create_share_link_handler(
         Some(request.recipient_npub.as_str()),
         Some(current_key_version),
     )?;
-    let grant =
-        grant_request_to_metadata(&request.grant, &folder_id, &actor, Some(event.as_json()))?;
-    let actor_user_id = UserId::new(actor.clone())?;
     let created_at = server_timestamp(&state);
+    let grant = grant_request_to_metadata(
+        &request.grant,
+        &folder_id,
+        &actor,
+        Some(event.as_json()),
+        &created_at,
+    )?;
+    let actor_user_id = UserId::new(actor.clone())?;
     let id = generated_link_id(
         "share-link",
         &[
@@ -1546,14 +1584,15 @@ async fn create_shared_folder_invitation_handler(
         Some(destination_admin.as_str()),
         Some(current_key_version),
     )?;
+    let created_at = server_timestamp(&state);
     let grant = grant_request_to_metadata(
         &request.grant,
         &source_folder_id,
         &actor,
         Some(event.as_json()),
+        &created_at,
     )?;
     let actor_user_id = UserId::new(actor)?;
-    let created_at = server_timestamp(&state);
     let id = generated_link_id(
         "shared-folder-invitation",
         &[
@@ -1691,6 +1730,7 @@ async fn update_shared_folder_connection_members_handler(
                     &connection.source_folder_id,
                     actor.as_str(),
                     None,
+                    &now,
                 )?;
                 store.add_shared_folder_connection_member(
                     &connection_id,
@@ -1712,6 +1752,7 @@ async fn update_shared_folder_connection_members_handler(
                     &connection.source_folder_id,
                     actor.as_str(),
                     None,
+                    &now,
                 )?;
                 let reencrypted_records = rotation_records_from_requests(
                     &connection.source_vault_id,
@@ -1763,6 +1804,7 @@ async fn revoke_shared_folder_connection_handler(
             &connection.source_folder_id,
             actor.as_str(),
             None,
+            &now,
         )?;
         let reencrypted_records = rotation_records_from_requests(
             &connection.source_vault_id,
@@ -1972,11 +2014,8 @@ async fn sync_records_handler(
     ensure_metadata_visible(&stored, &actor)?;
     let pull = {
         let store = state.store.lock().map_err(lock_error)?;
-        store.pull_sync_records(
-            &vault_id,
-            query.after.unwrap_or(0),
-            query.limit.unwrap_or(100),
-        )?
+        let limit = query.limit.unwrap_or(100).clamp(1, MAX_SYNC_RECORDS_LIMIT);
+        store.pull_sync_records(&vault_id, query.after.unwrap_or(0), limit)?
     };
     let records = pull
         .records
@@ -2071,7 +2110,7 @@ fn validate_request_auth(
     let mut expected = HttpAuthValidation::new(
         method.as_str(),
         expected_url,
-        state.auth_now_unix_seconds,
+        state.auth_now_unix_seconds(),
         state.max_auth_skew_seconds,
     );
     if let Some(body) = body {
@@ -2100,6 +2139,7 @@ fn accept_object_revision(
     };
     ensure_folder_visible(&stored, &folder_id, &actor_npub)?;
     ensure_folder_key_version(&stored, &folder_id, request.key_version)?;
+    let request_key_version = request.key_version;
 
     let (record, revision) = validate_object_revision_record(
         &vault_id,
@@ -2111,6 +2151,9 @@ fn accept_object_revision(
     )?;
     let outcome = {
         let mut store = state.store.lock().map_err(lock_error)?;
+        let stored = store.load_vault(&vault_id)?;
+        ensure_folder_visible(&stored, &folder_id, &actor_npub)?;
+        ensure_folder_key_version(&stored, &folder_id, request_key_version)?;
         store.submit_sync_record(&vault_id, &SyncRecordInput::FolderObjectRevision(record))?
     };
 
@@ -2234,6 +2277,8 @@ fn accept_object_tombstone(
     let payload: FolderObjectTombstonePayload = validate_tombstone_event(&event, &expected)?;
     let outcome = {
         let mut store = state.store.lock().map_err(lock_error)?;
+        let stored = store.load_vault(&vault_id)?;
+        ensure_folder_visible(&stored, &folder_id, &actor_npub)?;
         store.submit_sync_record(
             &vault_id,
             &SyncRecordInput::FolderObjectTombstone(FolderObjectTombstoneSyncRecord {
@@ -2362,6 +2407,7 @@ fn grant_requests_to_metadata(
     folder_id: &FolderId,
     issuer_npub: &str,
     access_change_event_json: Option<String>,
+    default_created_at: &str,
 ) -> Result<Vec<FolderKeyGrantMetadata>, ApiError> {
     requests
         .iter()
@@ -2371,6 +2417,7 @@ fn grant_requests_to_metadata(
                 folder_id,
                 issuer_npub,
                 access_change_event_json.clone(),
+                default_created_at,
             )
         })
         .collect()
@@ -2381,6 +2428,7 @@ fn grant_request_to_metadata(
     folder_id: &FolderId,
     issuer_npub: &str,
     access_change_event_json: Option<String>,
+    default_created_at: &str,
 ) -> Result<FolderKeyGrantMetadata, ApiError> {
     Ok(FolderKeyGrantMetadata {
         id: request.id.clone(),
@@ -2394,7 +2442,7 @@ fn grant_request_to_metadata(
         created_at: request
             .created_at
             .clone()
-            .unwrap_or_else(|| "2026-06-23T00:00:00.000Z".to_owned()),
+            .unwrap_or_else(|| default_created_at.to_owned()),
     })
 }
 
@@ -2917,7 +2965,7 @@ fn current_unix_seconds() -> u64 {
 }
 
 fn server_timestamp(state: &ServerState) -> String {
-    OffsetDateTime::from_unix_timestamp(state.auth_now_unix_seconds as i64)
+    OffsetDateTime::from_unix_timestamp(state.auth_now_unix_seconds() as i64)
         .unwrap_or(OffsetDateTime::UNIX_EPOCH)
         .format(&Rfc3339)
         .unwrap_or_else(|_| "1970-01-01T00:00:00Z".to_owned())
@@ -2973,6 +3021,7 @@ mod tests {
     fn server_state_defaults_to_portable_v1_auth_skew() {
         let state = ServerState::new(BrainStore::open_in_memory().unwrap(), TEST_BASE_URL);
         assert_eq!(state.max_auth_skew_seconds, 60);
+        assert_eq!(state.auth_now_unix_seconds, None);
     }
 
     #[tokio::test]

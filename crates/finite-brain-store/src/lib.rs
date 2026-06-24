@@ -12,11 +12,15 @@ use finite_brain_core::{
 };
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use sha2::{Digest, Sha256};
+use time::OffsetDateTime;
+use time::format_description::well_known::Rfc3339;
 
 const GRANT_FORMAT_NIP59: &str = "NIP-59";
 const MAX_PULL_LIMIT: u64 = 1_000;
+const MAX_BOOTSTRAP_FOLDERS: usize = 1_000;
+const MAX_BOOTSTRAP_GRANTS: usize = 10_000;
 const APP_SPECIFIC_KIND: u16 = 30_078;
-const ACCEPTED_AT: &str = "2026-06-23T00:00:00.000Z";
+const MIGRATION_TIMESTAMP: &str = "2026-06-23T00:00:00.000Z";
 
 /// Returns the crate name used in workspace status surfaces.
 pub fn crate_name() -> &'static str {
@@ -637,6 +641,16 @@ impl BrainStore {
         output: &BootstrapOutput,
         grants: &[FolderKeyGrantMetadata],
     ) -> Result<(), StoreError> {
+        if output.vault.folders.len() > MAX_BOOTSTRAP_FOLDERS {
+            return Err(StoreError::BrokenInvariant {
+                reason: format!("bootstrap folder count exceeds limit {MAX_BOOTSTRAP_FOLDERS}"),
+            });
+        }
+        if grants.len() > MAX_BOOTSTRAP_GRANTS {
+            return Err(StoreError::BrokenInvariant {
+                reason: format!("bootstrap grant count exceeds limit {MAX_BOOTSTRAP_GRANTS}"),
+            });
+        }
         validate_bootstrap_output(output)?;
         validate_required_grants(&output.vault, &output.required_key_grants, grants)?;
 
@@ -1013,7 +1027,7 @@ impl BrainStore {
         for folder_id in initial_folder_access {
             ensure_folder_exists(&self.conn, vault_id, folder_id)?;
         }
-        let initial_folder_access_json = folder_id_vec_json(initial_folder_access);
+        let initial_folder_access_json = folder_id_vec_json(initial_folder_access)?;
 
         self.conn
             .execute(
@@ -2188,7 +2202,7 @@ impl BrainStore {
             tx.execute_batch(SCHEMA_V1)?;
             tx.execute(
                 "INSERT INTO schema_migrations (version, applied_at) VALUES (?1, ?2)",
-                params![1, ACCEPTED_AT],
+                params![1, MIGRATION_TIMESTAMP],
             )?;
         }
 
@@ -2196,7 +2210,7 @@ impl BrainStore {
             tx.execute_batch(SCHEMA_V2)?;
             tx.execute(
                 "INSERT INTO schema_migrations (version, applied_at) VALUES (?1, ?2)",
-                params![2, ACCEPTED_AT],
+                params![2, MIGRATION_TIMESTAMP],
             )?;
         }
 
@@ -2204,7 +2218,7 @@ impl BrainStore {
             tx.execute_batch(SCHEMA_V3)?;
             tx.execute(
                 "INSERT INTO schema_migrations (version, applied_at) VALUES (?1, ?2)",
-                params![3, ACCEPTED_AT],
+                params![3, MIGRATION_TIMESTAMP],
             )?;
         }
 
@@ -2212,7 +2226,7 @@ impl BrainStore {
             tx.execute_batch(SCHEMA_V4)?;
             tx.execute(
                 "INSERT INTO schema_migrations (version, applied_at) VALUES (?1, ?2)",
-                params![4, ACCEPTED_AT],
+                params![4, MIGRATION_TIMESTAMP],
             )?;
         }
 
@@ -3553,15 +3567,26 @@ fn validate_link_timestamp(field: &'static str, value: &str) -> Result<(), Store
             reason: format!("{field} must be non-empty and printable"),
         });
     }
+    OffsetDateTime::parse(value, &Rfc3339).map_err(|_| StoreError::BrokenInvariant {
+        reason: format!("{field} must be RFC3339/ISO 8601 UTC timestamp"),
+    })?;
     Ok(())
 }
 
-fn folder_id_vec_json(folder_ids: &[FolderId]) -> String {
+fn folder_id_vec_json(folder_ids: &[FolderId]) -> Result<String, StoreError> {
     let values = folder_ids
         .iter()
         .map(ToString::to_string)
         .collect::<Vec<_>>();
-    serde_json::to_string(&values).expect("folder id vector serializes")
+    serde_json::to_string(&values).map_err(|error| StoreError::Database {
+        message: error.to_string(),
+    })
+}
+
+fn current_timestamp() -> String {
+    OffsetDateTime::now_utc()
+        .format(&Rfc3339)
+        .unwrap_or_else(|_| MIGRATION_TIMESTAMP.to_owned())
 }
 
 fn folder_id_vec_from_json(value: &str) -> Result<Vec<FolderId>, CoreError> {
@@ -3696,7 +3721,7 @@ fn insert_sync_record(
             input.actor_npub().as_str(),
             input.client_created_at(),
             input.payload_json(),
-            ACCEPTED_AT,
+            current_timestamp(),
             input.record_event_kind()
         ],
     )?;
@@ -4356,7 +4381,7 @@ fn insert_vault(tx: &Transaction<'_>, vault: &Vault) -> Result<(), StoreError> {
             vault_kind_str(vault.kind),
             vault.name.as_str(),
             vault.owner_user_id.as_ref().map(UserId::as_str),
-            "2026-06-23T00:00:00.000Z"
+            current_timestamp()
         ],
     )
     .map_err(map_insert_error("vault_id", vault.id.as_str()))?;
@@ -4408,7 +4433,7 @@ fn insert_folder(
             folder.current_key_version,
             folder.shared_folder_source,
             setup_incomplete,
-            "2026-06-23T00:00:00.000Z"
+            current_timestamp()
         ],
     )
     .map_err(map_insert_error("folder_id", folder.id.as_str()))?;
@@ -4604,6 +4629,20 @@ mod tests {
             vec!["general".to_owned(), "vault-ops".to_owned()]
         );
         assert_same_grants(&stored.grants, &grants);
+    }
+
+    #[test]
+    fn bootstrap_rejects_oversized_batches_before_deep_validation() {
+        let mut output = bootstrap_organization_vault("acme", "Acme", "npub-admin").unwrap();
+        output.vault.folders = vec![strategy_folder(); MAX_BOOTSTRAP_FOLDERS + 1];
+        let mut store = BrainStore::open_in_memory().unwrap();
+
+        assert_eq!(
+            store.create_vault_bootstrap(&output, &[]).unwrap_err(),
+            StoreError::BrokenInvariant {
+                reason: format!("bootstrap folder count exceeds limit {MAX_BOOTSTRAP_FOLDERS}")
+            }
+        );
     }
 
     #[test]
@@ -4950,6 +4989,33 @@ mod tests {
                 .as_ref()
                 .unwrap()
                 .contains("restricted")
+        );
+    }
+
+    #[test]
+    fn link_timestamps_must_be_rfc3339() {
+        let mut store = store_with_strategy_folder();
+        let vault_id = VaultId::new("acme").unwrap();
+        let admin = UserId::new("npub-admin").unwrap();
+        let target = UserId::new("npub-target").unwrap();
+
+        assert_eq!(
+            store
+                .create_vault_invitation(
+                    &vault_id,
+                    "invitation-bad-time",
+                    &target,
+                    "invite-bad-time",
+                    "/_admin/vault-invitation-links/invite-bad-time/accept",
+                    &[],
+                    &admin,
+                    "not-a-timestamp",
+                    "2026-06-23T00:00:00.000Z",
+                )
+                .unwrap_err(),
+            StoreError::BrokenInvariant {
+                reason: "expiresAt must be RFC3339/ISO 8601 UTC timestamp".to_owned()
+            }
         );
     }
 

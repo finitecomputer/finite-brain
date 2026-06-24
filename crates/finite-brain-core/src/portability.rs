@@ -266,6 +266,7 @@ pub fn export_okf_bundle(input: OkfExportInput) -> Result<OkfBundle, Portability
     let mut manifest_folders = Vec::new();
     let mut page_bundle_paths = BTreeMap::new();
     let mut opened_page_paths = BTreeSet::new();
+    let mut bundle_paths = BTreeSet::new();
 
     for page in &input.opened_pages {
         let page_key = (page.folder_id.clone(), page.page_path.as_str().to_owned());
@@ -276,7 +277,7 @@ pub fn export_okf_bundle(input: OkfExportInput) -> Result<OkfBundle, Portability
             });
         }
         let bundle_path = content_bundle_path(page)?;
-        if files.contains_key(&bundle_path) {
+        if !bundle_paths.insert(bundle_path.clone()) {
             return Err(PortabilityError::DuplicateBundlePath { path: bundle_path });
         }
         page_bundle_paths.insert(page_key, bundle_path);
@@ -750,6 +751,32 @@ mod tests {
                 .objects
                 .iter()
                 .all(|object| !object.path.contains("Board"))
+        );
+    }
+
+    #[test]
+    fn okf_export_rejects_duplicate_bundle_paths() {
+        assert_eq!(
+            export_okf_bundle(OkfExportInput {
+                exported_at: "2026-06-23T00:00:00.000Z".to_owned(),
+                exported_by_npub: UserId::new("npub-admin").unwrap(),
+                source_vault: sample_vault(),
+                opened_pages: vec![
+                    page(
+                        "concepts",
+                        "obj_000000000001",
+                        "Same",
+                        "index.md",
+                        "# First",
+                    ),
+                    page("board", "obj_000000000002", "Same", "index.md", "# Second"),
+                ],
+                omissions: Vec::new(),
+            })
+            .unwrap_err(),
+            PortabilityError::DuplicateBundlePath {
+                path: "content/Same/index.md".to_owned()
+            }
         );
     }
 

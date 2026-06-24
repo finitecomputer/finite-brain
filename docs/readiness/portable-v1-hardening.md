@@ -89,7 +89,7 @@ Evidence:
 | `rusqlite` with `bundled` | store | SQLite persistence from day one with deterministic local builds. |
 | `serde` / `serde_json` | core/server/store | Stable DTOs, canonical payload parsing, route JSON, and stored opaque payload JSON. |
 | `sha2` | core/server/store | SHA-256 for ciphertext hashes, deterministic ids, auth payload hashes, and backup/export checks. |
-| `time` | server | RFC3339 server timestamps for route-created invitations, shares, and access mutations. |
+| `time` | server/store | RFC3339 server/store timestamps and link timestamp validation. |
 | `tokio` | app/server tests | Async runtime for the development HTTP app and route tests. |
 | `tower` | server tests | Route-level `oneshot` tests without binding ports. |
 | `tempfile` | store/server tests | Isolated SQLite backup/restore and Smoke UI route tests. |

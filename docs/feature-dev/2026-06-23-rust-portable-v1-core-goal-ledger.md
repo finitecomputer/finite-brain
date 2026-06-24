@@ -10,7 +10,7 @@
 - Feature branch: `feature/rust-portable-v1-core`
 - Human owner: Austin
 - Started: 2026-06-23
-- Current status: implementing slices
+- Current status: local CodeRabbit findings addressed; opening staging PR
 - Skill setup status: `AGENTS.md` and `docs/agents/*` created for both repos
 
 ## Goal
@@ -44,9 +44,9 @@ new `finite-nostr` Rust crate so other Finite repos can reuse it.
   - `finitecomputer/finite-brain#13` development-only Smoke UI
   - `finitecomputer/finite-brain#14` Portable v1 hardening, compatibility, and end-to-end readiness
 - Issue sessions: tracked in the Issue Session Ledger below
-- Agent briefs: pending
-- Review packets: pending
-- Local CodeRabbit report: pending
+- Agent briefs: generated slice issues plus this ledger
+- Review packets: direct orchestrator review results captured in the Issue Session Ledger
+- Local CodeRabbit report: `docs/feature-dev/2026-06-24-local-coderabbit-round-1.md`
 - PR URL: pending
 
 ## Commands
@@ -89,6 +89,7 @@ new `finite-nostr` Rust crate so other Finite repos can reuse it.
 
 | Issue | Fixed point | Worker session | Commit | Review result | Checks |
 | --- | --- | --- | --- | --- | --- |
+| Local CodeRabbit round 1 | `8baa2cb` | Orchestrator direct cleanup | `52e5628` | All 11 local findings addressed: bounded identifiers/paths, RFC3339 link timestamps, runtime store timestamps, fallible JSON serialization, bootstrap caps, OKF duplicate bundle paths, route sync limit clamp, dynamic auth clock, grant fallback timestamps, locked object write checks, and generic database errors | `cargo fmt --check`; targeted core/store/server tests; `cargo test`; `cargo clippy --all-targets -- -D warnings`; `cargo build`; `git diff --check`; local `/health`, `/smoke/bootstrap`, `/smoke/ui`, and `/smoke/ui.js` curl smoke |
 | `finite-brain#14` | `64ae9e9a39d78db1f7e523982e9bd04e925109cf` | Orchestrator direct implementation | `9bf2b84` | Standards/spec review passed; hardening added explicit Portable v1 limits, compatibility auth header aliases, SQLite restore/rebuild evidence, dependency/security/error/smoke matrix documentation, and runtime route smoke evidence | `cargo fmt --check`; `cargo test`; `cargo clippy --all-targets -- -D warnings`; `cargo build`; `git diff --check`; local `/health`, `/smoke/bootstrap`, `/smoke/ui`, and `/smoke/ui.js` curl smoke |
 | `finite-brain#13` | `2d9026f2bca5b27e3cf4e1448749749ec0a511d0` | Orchestrator direct implementation | `ff5cb09` | Standards/spec review passed after adding dev-only routes, static HTML/CSS/JS, route controls for bootstrap, metadata, folders, objects, sync, invites, Share Links, shared Folder invitations, connections, mounts, export, and SQLite-backed route coverage | `cargo fmt --check`; `cargo test -p finite-brain-server smoke_ui_serves_static_assets_and_sqlite_flow_works -- --nocapture`; `cargo test`; `cargo clippy --all-targets -- -D warnings`; `git diff --check` |
 | `finite-brain#12` | `ad343867783b1ff622e347781b0eda5569110e4a` | Orchestrator direct implementation | `9740c1b` | Standards/spec review passed; encrypted export route/store filtering landed alongside client-side OKF bundle generation, import conflict planning, LLM Wiki conventions, and local-search privacy boundary | `cargo fmt --check`; `cargo test`; `cargo clippy --all-targets -- -D warnings`; `git diff --check` |
