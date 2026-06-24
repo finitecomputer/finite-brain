@@ -10,7 +10,7 @@
 - Feature branch: `feature/rust-portable-v1-core`
 - Human owner: Austin
 - Started: 2026-06-23
-- Current status: staging PR open; PR CodeRabbit review requested
+- Current status: staging PR open; PR CodeRabbit fallback review fixes committed and verified
 - Skill setup status: `AGENTS.md` and `docs/agents/*` created for both repos
 
 ## Goal
@@ -47,6 +47,8 @@ new `finite-nostr` Rust crate so other Finite repos can reuse it.
 - Agent briefs: generated slice issues plus this ledger
 - Review packets: direct orchestrator review results captured in the Issue Session Ledger
 - Local CodeRabbit report: `docs/feature-dev/2026-06-24-local-coderabbit-round-1.md`
+- PR CodeRabbit fallback report:
+  `docs/feature-dev/2026-06-24-pr-coderabbit-fallback-round-1.md`
 - PR URL: `https://github.com/finitecomputer/finite-brain/pull/15`
 
 ## Commands
@@ -89,6 +91,7 @@ new `finite-nostr` Rust crate so other Finite repos can reuse it.
 
 | Issue | Fixed point | Worker session | Commit | Review result | Checks |
 | --- | --- | --- | --- | --- | --- |
+| PR CodeRabbit fallback round 1 | `49b012e` | `Meitner` `019ef729-99cf-7312-8d11-e21f4d600f9e` | `ce212e7` | CodeRabbit stayed silent after PR trigger, so fallback review was used. All 6 fallback findings addressed: NIP-59 grant wrapper validation, RFC3339 signed timestamps, admin/control-record visibility, bootstrap control records, signed event preservation, and diff hygiene. | `cargo fmt --check`; `cargo test`; `cargo clippy --all-targets -- -D warnings`; `cargo build`; `git diff --check` |
 | Local CodeRabbit round 1 | `8baa2cb` | Orchestrator direct cleanup | `f28a55e` | All 11 local findings addressed: bounded identifiers/paths, RFC3339 link timestamps, runtime store timestamps, fallible JSON serialization, bootstrap caps, OKF duplicate bundle paths, route sync limit clamp, dynamic auth clock, grant fallback timestamps, locked object write checks, and generic database errors | `cargo fmt --check`; targeted core/store/server tests; `cargo test`; `cargo clippy --all-targets -- -D warnings`; `cargo build`; `git diff --check`; local `/health`, `/smoke/bootstrap`, `/smoke/ui`, and `/smoke/ui.js` curl smoke |
 | `finite-brain#14` | `64ae9e9a39d78db1f7e523982e9bd04e925109cf` | Orchestrator direct implementation | `9bf2b84` | Standards/spec review passed; hardening added explicit Portable v1 limits, compatibility auth header aliases, SQLite restore/rebuild evidence, dependency/security/error/smoke matrix documentation, and runtime route smoke evidence | `cargo fmt --check`; `cargo test`; `cargo clippy --all-targets -- -D warnings`; `cargo build`; `git diff --check`; local `/health`, `/smoke/bootstrap`, `/smoke/ui`, and `/smoke/ui.js` curl smoke |
 | `finite-brain#13` | `2d9026f2bca5b27e3cf4e1448749749ec0a511d0` | Orchestrator direct implementation | `ff5cb09` | Standards/spec review passed after adding dev-only routes, static HTML/CSS/JS, route controls for bootstrap, metadata, folders, objects, sync, invites, Share Links, shared Folder invitations, connections, mounts, export, and SQLite-backed route coverage | `cargo fmt --check`; `cargo test -p finite-brain-server smoke_ui_serves_static_assets_and_sqlite_flow_works -- --nocapture`; `cargo test`; `cargo clippy --all-targets -- -D warnings`; `git diff --check` |
