@@ -32,7 +32,7 @@
           <label for="vaultIdInput">Vault</label>
           <div class="inline-control">
             <input id="vaultIdInput" value="smoke" autocomplete="off" spellcheck="false" />
-            <button id="loadVaultButton" type="button">Load</button>
+            <button id="loadVaultButton" class="primary-action" type="button">Load</button>
           </div>
           <p id="authDetail" class="muted-copy">Connect a signer to load protected Vault state.</p>
         </section>
@@ -60,6 +60,20 @@
         </header>
 
         <section class="dashboard-grid">
+          <article class="panel wide spine-panel">
+            <div>
+              <p class="eyebrow">Smoke path</p>
+              <h3>Product Client Spine</h3>
+            </div>
+            <ol class="spine-list">
+              <li id="spineSigner">Connect NIP-07 signer</li>
+              <li id="spineAuth">Prepare signed auth requests</li>
+              <li id="spineVault">Load Vault metadata</li>
+              <li id="spineKeys">Open Folder Key Grants</li>
+              <li id="spinePages">Decrypt and edit Pages</li>
+            </ol>
+          </article>
+
           <article class="panel">
             <h3>Vault State</h3>
             <dl class="facts">
@@ -85,17 +99,6 @@
           <article class="panel">
             <h3>Mounts</h3>
             <ol id="mountList" class="plain-list"></ol>
-          </article>
-
-          <article class="panel wide">
-            <h3>Product Client Spine</h3>
-            <ol class="spine-list">
-              <li id="spineSigner">Connect NIP-07 signer</li>
-              <li id="spineAuth">Prepare signed auth requests</li>
-              <li id="spineVault">Load Vault metadata</li>
-              <li id="spineKeys">Open Folder Key Grants</li>
-              <li id="spinePages">Decrypt and edit Pages</li>
-            </ol>
           </article>
 
           <article class="panel wide">
@@ -127,8 +130,8 @@ Start writing here.</textarea>
             <div class="action-row">
               <button id="openFolderKeyButton" type="button">Open key</button>
               <button id="encryptDraftButton" type="button">Encrypt draft</button>
-              <button id="savePageButton" type="button">Save Page</button>
-              <button id="syncBootstrapButton" type="button">Pull sync</button>
+              <button id="savePageButton" class="primary-action" type="button">Save Page</button>
+              <button id="syncBootstrapButton" class="secondary-action" type="button">Pull sync</button>
             </div>
           </article>
 
@@ -161,7 +164,9 @@ Start writing here.</textarea>
             </label>
             <div class="action-row">
               <button id="planOkfImportButton" type="button">Plan OKF import</button>
-              <button id="executeOkfImportButton" type="button">Import encrypted Pages</button>
+              <button id="executeOkfImportButton" class="primary-action" type="button">
+                Import encrypted Pages
+              </button>
             </div>
             <ol id="okfPlanList" class="plain-list replay-list"></ol>
           </article>
@@ -171,7 +176,7 @@ Start writing here.</textarea>
               <h3>Graph View</h3>
               <div class="inline-control graph-controls">
                 <input id="graphFilterInput" placeholder="Filter graph" autocomplete="off" spellcheck="false" />
-                <button id="renderGraphButton" type="button">Render graph</button>
+                <button id="renderGraphButton" class="primary-action" type="button">Render graph</button>
                 <button id="replayGraphButton" type="button">Replay</button>
               </div>
             </div>

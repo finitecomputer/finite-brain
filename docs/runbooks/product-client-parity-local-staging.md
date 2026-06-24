@@ -42,7 +42,7 @@ curl -fsS http://127.0.0.1:4015/health
 curl -fsS http://127.0.0.1:4015/client | rg 'FiniteBrain|Product Client|OKF'
 curl -fsS http://127.0.0.1:4015/client/config.json
 curl -fsS http://127.0.0.1:4015/client/app.js | rg 'buildAuthEventTemplate|buildPageWriteRequest|buildGraphProjection|buildReplayFrames|parseOkfBundle|prepareOkfImportWrites'
-curl -fsS http://127.0.0.1:4015/client/app.css | rg 'product-shell|graph|okf'
+curl -fsS http://127.0.0.1:4015/client/app.css | rg 'app-shell|graph|okf'
 ```
 
 Expected result:

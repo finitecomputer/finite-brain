@@ -71,7 +71,7 @@ const FiniteBrainProductClient = (() => {
         id: folder.id,
         path: folder.path,
         status,
-        label: `${folder.path} (${folder.access}, v${folder.currentKeyVersion})`,
+        label: `${folder.path} - ${folder.access} - key v${folder.currentKeyVersion}`,
         detail: flags.join(", "),
       };
     });
@@ -962,6 +962,7 @@ const FiniteBrainProductClient = (() => {
     list.replaceChildren();
     if (!rows.length) {
       const item = document.createElement("li");
+      item.className = "empty-row";
       item.textContent = emptyText;
       list.appendChild(item);
       return;
