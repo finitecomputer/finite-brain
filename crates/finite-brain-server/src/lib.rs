@@ -8,9 +8,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use axum::body::Bytes;
 use axum::extract::{OriginalUri, Path as AxumPath, Query, State};
-use axum::http::header::AUTHORIZATION;
+use axum::http::header::{AUTHORIZATION, CONTENT_TYPE};
 use axum::http::{HeaderMap, Method, StatusCode, Uri};
-use axum::response::{IntoResponse, Response};
+use axum::response::{Html, IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use base64::Engine;
@@ -626,6 +626,9 @@ pub fn router_with_state(state: ServerState) -> Router {
         .route("/", get(root_handler))
         .route("/health", get(health_handler))
         .route("/smoke/bootstrap", get(bootstrap_smoke_handler))
+        .route("/smoke/ui", get(smoke_ui_handler))
+        .route("/smoke/ui.css", get(smoke_ui_css_handler))
+        .route("/smoke/ui.js", get(smoke_ui_js_handler))
         .route("/_admin/vaults", post(create_vault_handler))
         .route(
             "/_admin/vaults/{vault_id}/metadata",
@@ -762,6 +765,24 @@ async fn bootstrap_smoke_handler() -> Result<Json<BootstrapSmokeSummary>, ApiErr
     finite_brain_core::smoke_bootstrap_summary()
         .map(Json)
         .map_err(|error| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))
+}
+
+async fn smoke_ui_handler() -> Html<&'static str> {
+    Html(include_str!("smoke-ui.html"))
+}
+
+async fn smoke_ui_css_handler() -> impl IntoResponse {
+    (
+        [(CONTENT_TYPE, "text/css; charset=utf-8")],
+        include_str!("smoke-ui.css"),
+    )
+}
+
+async fn smoke_ui_js_handler() -> impl IntoResponse {
+    (
+        [(CONTENT_TYPE, "text/javascript; charset=utf-8")],
+        include_str!("smoke-ui.js"),
+    )
 }
 
 async fn create_vault_handler(
@@ -2990,6 +3011,101 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn smoke_ui_serves_static_assets_and_sqlite_flow_works() {
+        let temp_dir = tempfile::TempDir::new().expect("temp sqlite dir");
+        let db_path = temp_dir.path().join("smoke-ui.sqlite3");
+        let router = sqlite_test_router(&db_path);
+
+        let ui_response = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/smoke/ui")
+                    .body(Body::empty())
+                    .expect("valid ui request"),
+            )
+            .await
+            .expect("ui response");
+        assert_eq!(ui_response.status(), StatusCode::OK);
+        let ui_body = to_bytes(ui_response.into_body(), 16 * 1024)
+            .await
+            .expect("ui body");
+        let ui_body = std::str::from_utf8(&ui_body).expect("ui utf8");
+        assert!(ui_body.contains("Development only"));
+        assert!(ui_body.contains("FiniteBrain Smoke UI"));
+        assert!(ui_body.contains("Invitations and Share Links"));
+        assert!(ui_body.contains("Connections and mounts"));
+
+        let css_response = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/smoke/ui.css")
+                    .body(Body::empty())
+                    .expect("valid css request"),
+            )
+            .await
+            .expect("css response");
+        assert_eq!(css_response.status(), StatusCode::OK);
+        let css_body = to_bytes(css_response.into_body(), 16 * 1024)
+            .await
+            .expect("css body");
+        let css_body = std::str::from_utf8(&css_body).expect("css utf8");
+        assert!(css_body.contains(".topbar"));
+
+        let js_response = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/smoke/ui.js")
+                    .body(Body::empty())
+                    .expect("valid js request"),
+            )
+            .await
+            .expect("js response");
+        assert_eq!(js_response.status(), StatusCode::OK);
+        let js_body = to_bytes(js_response.into_body(), 16 * 1024)
+            .await
+            .expect("js body");
+        let js_body = std::str::from_utf8(&js_body).expect("js utf8");
+        assert!(js_body.contains("bootstrapButton"));
+        assert!(js_body.contains("createShareLinkButton"));
+        assert!(js_body.contains("mountsButton"));
+
+        let keys = Keys::generate();
+        let create = post_vault(
+            router,
+            &keys,
+            &create_vault_body("smoke", "organization"),
+            TEST_NOW,
+            None,
+            None,
+            None,
+        )
+        .await;
+        assert_eq!(create.status(), StatusCode::OK);
+
+        let reopened = sqlite_test_router(&db_path);
+        let metadata = get_metadata(reopened.clone(), &keys, "smoke", TEST_NOW).await;
+        assert_eq!(metadata.status(), StatusCode::OK);
+        let metadata: VaultMetadataResponse = read_json(metadata).await;
+        assert_eq!(metadata.vault_id, "smoke");
+        assert_eq!(metadata.folders.len(), 2);
+        assert!(metadata.folders.iter().any(|folder| folder.id == "general"));
+
+        let sync_bootstrap = authed_request(
+            reopened,
+            &keys,
+            "GET",
+            "/_admin/vaults/smoke/sync/bootstrap",
+            None,
+            TEST_NOW,
+        )
+        .await;
+        assert_eq!(sync_bootstrap.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
     async fn valid_auth_creates_vault_and_metadata_contains_no_pages() {
         let keys = Keys::generate();
         let body = create_vault_body("acme", "organization");
@@ -4580,6 +4696,11 @@ mod tests {
     fn test_state() -> ServerState {
         let store = BrainStore::open_in_memory().unwrap();
         ServerState::new(store, TEST_BASE_URL).with_auth_clock(TEST_NOW, 60)
+    }
+
+    fn sqlite_test_router(path: &std::path::Path) -> Router {
+        let store = BrainStore::open(path).unwrap();
+        router_with_state(ServerState::new(store, TEST_BASE_URL).with_auth_clock(TEST_NOW, 60))
     }
 
     async fn router_with_bootstrapped_org(keys: &Keys) -> Router {
