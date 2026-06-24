@@ -99,6 +99,40 @@
           </article>
 
           <article class="panel wide">
+            <h3>Page Loop</h3>
+            <div class="form-grid">
+              <label>
+                Folder
+                <input id="pageFolderIdInput" value="general" autocomplete="off" spellcheck="false" />
+              </label>
+              <label>
+                Object
+                <input id="pageObjectIdInput" value="obj_000000000001" autocomplete="off" spellcheck="false" />
+              </label>
+              <label>
+                Base revision
+                <input id="pageBaseRevisionInput" value="" autocomplete="off" spellcheck="false" />
+              </label>
+              <label>
+                Folder key
+                <input id="folderKeyInput" placeholder="base64 raw AES-256 key" autocomplete="off" spellcheck="false" />
+              </label>
+            </div>
+            <label class="page-editor-label">
+              Page content
+              <textarea id="pageDraftInput" rows="7" spellcheck="true"># New Page
+
+Start writing here.</textarea>
+            </label>
+            <div class="action-row">
+              <button id="openFolderKeyButton" type="button">Open key</button>
+              <button id="encryptDraftButton" type="button">Encrypt draft</button>
+              <button id="savePageButton" type="button">Save Page</button>
+              <button id="syncBootstrapButton" type="button">Pull sync</button>
+            </div>
+          </article>
+
+          <article class="panel wide">
             <h3>Activity</h3>
             <pre id="activityLog">Ready.</pre>
           </article>

@@ -5,10 +5,19 @@ const FiniteBrainProductClient = (() => {
     pubkeyHex: null,
     activeVaultId: "smoke",
     metadata: null,
+    keyring: null,
     lastError: null,
+    preparedWrite: null,
+    preparedWriteTarget: null,
+    projection: createClientProjection(),
   };
 
   const $ = (id) => document.getElementById(id);
+  const CIPHER = "AES-256-GCM";
+  const FOLDER_OBJECT_VERSION = "finite-folder-object-v1";
+  const REVISION_VERSION = "finite-folder-object-revision-v1";
+  const APP_EVENT_KIND = 30078;
+  const BECH32_CHARSET = "qpzry9x8gf2tvdw0s3jn54khce6mua7l";
 
   function shortKey(value) {
     if (!value) return "-";
@@ -74,6 +83,319 @@ const FiniteBrainProductClient = (() => {
     }));
   }
 
+  function bytesToBase64(bytes) {
+    let binary = "";
+    for (const byte of bytes) binary += String.fromCharCode(byte);
+    return btoa(binary);
+  }
+
+  function base64ToBytes(value) {
+    const binary = atob(value);
+    const bytes = new Uint8Array(binary.length);
+    for (let index = 0; index < binary.length; index += 1) {
+      bytes[index] = binary.charCodeAt(index);
+    }
+    return bytes;
+  }
+
+  function hexToBytes(value) {
+    if (!/^[0-9a-fA-F]+$/.test(value) || value.length % 2 !== 0) {
+      throw new Error("hex value is invalid");
+    }
+    const bytes = new Uint8Array(value.length / 2);
+    for (let index = 0; index < bytes.length; index += 1) {
+      bytes[index] = Number.parseInt(value.slice(index * 2, index * 2 + 2), 16);
+    }
+    return bytes;
+  }
+
+  function convertBits(data, fromBits, toBits, pad) {
+    let accumulator = 0;
+    let bits = 0;
+    const result = [];
+    const maxValue = (1 << toBits) - 1;
+    for (const value of data) {
+      if (value < 0 || value >> fromBits !== 0) throw new Error("invalid bech32 source value");
+      accumulator = (accumulator << fromBits) | value;
+      bits += fromBits;
+      while (bits >= toBits) {
+        bits -= toBits;
+        result.push((accumulator >> bits) & maxValue);
+      }
+    }
+    if (pad && bits > 0) {
+      result.push((accumulator << (toBits - bits)) & maxValue);
+    } else if (bits >= fromBits || ((accumulator << (toBits - bits)) & maxValue) !== 0) {
+      throw new Error("invalid bech32 padding");
+    }
+    return result;
+  }
+
+  function bech32Polymod(values) {
+    const generators = [0x3b6a57b2, 0x26508e6d, 0x1ea119fa, 0x3d4233dd, 0x2a1462b3];
+    let checksum = 1;
+    for (const value of values) {
+      const top = checksum >> 25;
+      checksum = ((checksum & 0x1ffffff) << 5) ^ value;
+      for (let index = 0; index < 5; index += 1) {
+        if ((top >> index) & 1) checksum ^= generators[index];
+      }
+    }
+    return checksum;
+  }
+
+  function bech32HrpExpand(hrp) {
+    const result = [];
+    for (let index = 0; index < hrp.length; index += 1) {
+      result.push(hrp.charCodeAt(index) >> 5);
+    }
+    result.push(0);
+    for (let index = 0; index < hrp.length; index += 1) {
+      result.push(hrp.charCodeAt(index) & 31);
+    }
+    return result;
+  }
+
+  function bech32Encode(hrp, data) {
+    const values = [...bech32HrpExpand(hrp), ...data, 0, 0, 0, 0, 0, 0];
+    const polymod = bech32Polymod(values) ^ 1;
+    const checksum = [];
+    for (let index = 0; index < 6; index += 1) {
+      checksum.push((polymod >> (5 * (5 - index))) & 31);
+    }
+    return `${hrp}1${[...data, ...checksum].map((value) => BECH32_CHARSET[value]).join("")}`;
+  }
+
+  function npubFromHex(pubkeyHex) {
+    return bech32Encode("npub", convertBits(hexToBytes(pubkeyHex), 8, 5, true));
+  }
+
+  function createClientProjection() {
+    return {
+      pages: new Map(),
+      seenEventIds: new Set(),
+      localDrafts: new Map(),
+      conflicts: [],
+    };
+  }
+
+  function pageKey(folderId, objectId) {
+    return `${folderId}/${objectId}`;
+  }
+
+  function createSessionKeyring() {
+    return {
+      keys: new Map(),
+      openedGrants: [],
+    };
+  }
+
+  function folderKeyId(vaultId, folderId, keyVersion) {
+    return `${vaultId}:${folderId}:${keyVersion}`;
+  }
+
+  async function importFolderKey(keyring, { vaultId, folderId, keyVersion, folderKey }) {
+    const rawKey = base64ToBytes(folderKey);
+    if (rawKey.length !== 32) throw new Error("Folder Key must be 32 bytes");
+    const cryptoKey = await crypto.subtle.importKey("raw", rawKey, "AES-GCM", false, [
+      "encrypt",
+      "decrypt",
+    ]);
+    const id = folderKeyId(vaultId, folderId, keyVersion);
+    keyring.keys.set(id, {
+      cryptoKey,
+      folderId,
+      keyVersion,
+      rawKey,
+      vaultId,
+    });
+    return keyring.keys.get(id);
+  }
+
+  async function openFolderKeyGrantPlaintext(keyring, grantPlaintext) {
+    if (grantPlaintext.version !== "finite-folder-key-grant-v1") {
+      throw new Error("unsupported Folder Key Grant version");
+    }
+    const opened = await importFolderKey(keyring, grantPlaintext);
+    keyring.openedGrants.push({
+      folderId: grantPlaintext.folderId,
+      issuerNpub: grantPlaintext.issuerNpub,
+      keyVersion: grantPlaintext.keyVersion,
+      recipientNpub: grantPlaintext.recipientNpub,
+      vaultId: grantPlaintext.vaultId,
+    });
+    return opened;
+  }
+
+  function canonicalFolderObjectAad({ vaultId, folderId, objectId, keyVersion }) {
+    return `{"version":${JSON.stringify(FOLDER_OBJECT_VERSION)},"vaultId":${JSON.stringify(
+      vaultId
+    )},"folderId":${JSON.stringify(folderId)},"objectId":${JSON.stringify(
+      objectId
+    )},"keyVersion":${keyVersion}}`;
+  }
+
+  function canonicalEnvelope({ keyVersion, nonce, ciphertext }) {
+    return `{"version":${JSON.stringify(FOLDER_OBJECT_VERSION)},"cipher":${JSON.stringify(
+      CIPHER
+    )},"keyVersion":${keyVersion},"nonce":${JSON.stringify(nonce)},"ciphertext":${JSON.stringify(
+      ciphertext
+    )}}`;
+  }
+
+  async function encryptFolderObject(keyring, input) {
+    const key = keyring.keys.get(folderKeyId(input.vaultId, input.folderId, input.keyVersion));
+    if (!key) throw new Error(`No Folder Key opened for ${input.folderId} v${input.keyVersion}`);
+    const nonce = input.nonceBytes || crypto.getRandomValues(new Uint8Array(12));
+    if (nonce.length !== 12) throw new Error("AES-GCM nonce must be 12 bytes");
+    const aad = new TextEncoder().encode(canonicalFolderObjectAad(input));
+    const plaintext = new TextEncoder().encode(input.plaintext);
+    const ciphertext = await crypto.subtle.encrypt(
+      { name: "AES-GCM", iv: nonce, additionalData: aad },
+      key.cryptoKey,
+      plaintext
+    );
+    return canonicalEnvelope({
+      keyVersion: input.keyVersion,
+      nonce: bytesToBase64(nonce),
+      ciphertext: bytesToBase64(new Uint8Array(ciphertext)),
+    });
+  }
+
+  async function openFolderObject(keyring, input) {
+    const envelope = typeof input.ciphertext === "string" ? JSON.parse(input.ciphertext) : input.ciphertext;
+    const key = keyring.keys.get(folderKeyId(input.vaultId, input.folderId, envelope.keyVersion));
+    if (!key) {
+      return {
+        folderId: input.folderId,
+        objectId: input.objectId,
+        revision: input.revision,
+        status: "locked",
+      };
+    }
+    const aad = new TextEncoder().encode(
+      canonicalFolderObjectAad({
+        vaultId: input.vaultId,
+        folderId: input.folderId,
+        objectId: input.objectId,
+        keyVersion: envelope.keyVersion,
+      })
+    );
+    const plaintext = await crypto.subtle.decrypt(
+      {
+        name: "AES-GCM",
+        iv: base64ToBytes(envelope.nonce),
+        additionalData: aad,
+      },
+      key.cryptoKey,
+      base64ToBytes(envelope.ciphertext)
+    );
+    return {
+      folderId: input.folderId,
+      objectId: input.objectId,
+      revision: input.revision,
+      status: "ready",
+      text: new TextDecoder().decode(plaintext),
+    };
+  }
+
+  async function ciphertextHash(envelopeJson) {
+    return sha256Hex(envelopeJson);
+  }
+
+  function revisionCreatedAt(createdAtUnix) {
+    return new Date(createdAtUnix * 1000).toISOString();
+  }
+
+  function canonicalRevisionPayload(input) {
+    const baseRevision = input.baseRevision === undefined ? null : input.baseRevision;
+    return `{"version":${JSON.stringify(REVISION_VERSION)},"vaultId":${JSON.stringify(
+      input.vaultId
+    )},"folderId":${JSON.stringify(input.folderId)},"objectId":${JSON.stringify(
+      input.objectId
+    )},"operation":${JSON.stringify(input.operation)},"revision":${
+      input.revision
+    },"baseRevision":${baseRevision === null ? "null" : baseRevision},"keyVersion":${
+      input.keyVersion
+    },"cipher":${JSON.stringify(CIPHER)},"ciphertextHash":${JSON.stringify(
+      input.ciphertextHash
+    )},"authorNpub":${JSON.stringify(input.authorNpub)},"createdAt":${JSON.stringify(
+      input.createdAt
+    )}}`;
+  }
+
+  async function buildPageWriteRequest(keyring, input) {
+    const baseRevision =
+      input.baseRevision === "" || input.baseRevision === undefined || input.baseRevision === null
+        ? null
+        : Number(input.baseRevision);
+    const revision = baseRevision === null ? 1 : baseRevision + 1;
+    const envelopeJson = await encryptFolderObject(keyring, {
+      folderId: input.folderId,
+      keyVersion: input.keyVersion,
+      nonceBytes: input.nonceBytes,
+      objectId: input.objectId,
+      plaintext: input.plaintext,
+      vaultId: input.vaultId,
+    });
+    const createdAtUnix = input.createdAtUnix || Math.floor(Date.now() / 1000);
+    const payload = canonicalRevisionPayload({
+      authorNpub: input.authorNpub,
+      baseRevision,
+      ciphertextHash: await ciphertextHash(envelopeJson),
+      createdAt: revisionCreatedAt(createdAtUnix),
+      folderId: input.folderId,
+      keyVersion: input.keyVersion,
+      objectId: input.objectId,
+      operation: input.operation || (baseRevision === null ? "create" : "update"),
+      revision,
+      vaultId: input.vaultId,
+    });
+    const eventTemplate = {
+      kind: APP_EVENT_KIND,
+      created_at: createdAtUnix,
+      tags: [],
+      content: payload,
+    };
+    const revisionEvent = await input.signEvent(eventTemplate);
+    return {
+      baseRevision,
+      keyVersion: input.keyVersion,
+      cipher: CIPHER,
+      ciphertext: envelopeJson,
+      revisionEvent,
+    };
+  }
+
+  function mergeSyncProjection(projection, sync) {
+    const next = {
+      pages: new Map(projection.pages),
+      seenEventIds: new Set(projection.seenEventIds),
+      localDrafts: new Map(projection.localDrafts),
+      conflicts: [...projection.conflicts],
+    };
+    for (const record of sync.records || []) {
+      if (next.seenEventIds.has(record.recordEventId)) continue;
+      next.seenEventIds.add(record.recordEventId);
+    }
+    for (const object of sync.objects || []) {
+      const key = pageKey(object.folderId, object.objectId);
+      const localDraft = next.localDrafts.get(key);
+      if (localDraft && object.revision > localDraft.baseRevision) {
+        next.conflicts.push({
+          folderId: object.folderId,
+          objectId: object.objectId,
+          localBaseRevision: localDraft.baseRevision,
+          serverRevision: object.revision,
+          status: "conflict",
+        });
+        continue;
+      }
+      next.pages.set(key, object);
+    }
+    return next;
+  }
+
   function setPill(id, text, tone) {
     const element = $(id);
     element.textContent = text;
@@ -123,6 +445,10 @@ const FiniteBrainProductClient = (() => {
 
     $("connectSignerButton").disabled = !deriveSignerState(window.nostr).canConnect;
     $("loadVaultButton").disabled = state.signerStatus !== "connected" || !state.config;
+    $("openFolderKeyButton").disabled = !state.metadata;
+    $("encryptDraftButton").disabled = !state.keyring;
+    $("savePageButton").disabled = !state.preparedWrite || state.signerStatus !== "connected";
+    $("syncBootstrapButton").disabled = state.signerStatus !== "connected" || !state.config;
     $("vaultIdInput").value = state.activeVaultId;
 
     setText("workspaceTitle", state.metadata?.name || "Open a Vault");
@@ -143,8 +469,8 @@ const FiniteBrainProductClient = (() => {
     $("spineSigner").className = state.signerStatus === "connected" ? "done" : "waiting";
     $("spineAuth").className = state.signerStatus === "connected" && state.config ? "done" : "waiting";
     $("spineVault").className = state.metadata ? "done" : "waiting";
-    $("spineKeys").className = "waiting";
-    $("spinePages").className = "waiting";
+    $("spineKeys").className = state.keyring?.openedGrants.length ? "done" : "waiting";
+    $("spinePages").className = state.preparedWrite ? "done" : "waiting";
   }
 
   function utf8Base64(text) {
@@ -250,6 +576,105 @@ const FiniteBrainProductClient = (() => {
     render();
   }
 
+  function activePageInput() {
+    return {
+      baseRevision: $("pageBaseRevisionInput").value.trim(),
+      folderId: $("pageFolderIdInput").value.trim() || "general",
+      objectId: $("pageObjectIdInput").value.trim() || "obj_000000000001",
+      text: $("pageDraftInput").value,
+    };
+  }
+
+  function currentFolderKeyVersion(folderId) {
+    const folder = (state.metadata?.folders || []).find((candidate) => candidate.id === folderId);
+    return folder?.currentKeyVersion || 1;
+  }
+
+  async function openEnteredFolderKey() {
+    if (!state.keyring) state.keyring = createSessionKeyring();
+    const input = activePageInput();
+    const folderKey = $("folderKeyInput").value.trim();
+    if (!folderKey) throw new Error("Paste a base64 raw Folder Key first");
+    await openFolderKeyGrantPlaintext(state.keyring, {
+      version: "finite-folder-key-grant-v1",
+      vaultId: state.activeVaultId,
+      folderId: input.folderId,
+      keyVersion: currentFolderKeyVersion(input.folderId),
+      issuerNpub: "npub-local-session",
+      recipientNpub: state.pubkeyHex ? npubFromHex(state.pubkeyHex) : "npub-local-session",
+      folderKey,
+      issuedAt: new Date().toISOString(),
+    });
+    log("Opened Folder Key into the in-memory session keyring.", {
+      folderId: input.folderId,
+      keyVersion: currentFolderKeyVersion(input.folderId),
+    });
+    render();
+  }
+
+  async function prepareDraftWrite() {
+    if (!state.keyring) throw new Error("Open a Folder Key before encrypting a Page draft");
+    if (!state.pubkeyHex) throw new Error("Connect a signer before preparing a signed Page write");
+    const input = activePageInput();
+    const authorNpub = npubFromHex(state.pubkeyHex);
+    const keyVersion = currentFolderKeyVersion(input.folderId);
+    state.preparedWrite = await buildPageWriteRequest(state.keyring, {
+      authorNpub,
+      baseRevision: input.baseRevision,
+      folderId: input.folderId,
+      keyVersion,
+      objectId: input.objectId,
+      plaintext: input.text,
+      signEvent: (event) => window.nostr.signEvent(event),
+      vaultId: state.activeVaultId,
+    });
+    state.preparedWriteTarget = {
+      folderId: input.folderId,
+      objectId: input.objectId,
+    };
+    state.projection.localDrafts.set(pageKey(input.folderId, input.objectId), {
+      baseRevision: state.preparedWrite.baseRevision || 0,
+      text: input.text,
+    });
+    log("Encrypted Page draft and prepared signed revision request.", {
+      folderId: input.folderId,
+      objectId: input.objectId,
+      baseRevision: state.preparedWrite.baseRevision,
+      keyVersion,
+    });
+    render();
+  }
+
+  async function savePreparedPage() {
+    if (!state.preparedWrite) throw new Error("Prepare a Page write before saving");
+    const target = state.preparedWriteTarget || activePageInput();
+    const path = `/_admin/vaults/${encodeURIComponent(state.activeVaultId)}/folders/${encodeURIComponent(
+      target.folderId
+    )}/objects/${encodeURIComponent(target.objectId)}`;
+    const result = await protectedRequest(path, {
+      method: "PUT",
+      body: JSON.stringify(state.preparedWrite),
+    });
+    state.projection.localDrafts.delete(pageKey(target.folderId, target.objectId));
+    state.preparedWrite = null;
+    state.preparedWriteTarget = null;
+    $("pageBaseRevisionInput").value = String(result.revision);
+    log("Saved encrypted Page revision.", result);
+    render();
+  }
+
+  async function pullSyncBootstrap() {
+    const path = `/_admin/vaults/${encodeURIComponent(state.activeVaultId)}/sync/bootstrap`;
+    const sync = await protectedRequest(path);
+    state.projection = mergeSyncProjection(state.projection, sync);
+    log("Pulled sync bootstrap into local projection.", {
+      conflicts: state.projection.conflicts,
+      pages: state.projection.pages.size,
+      seenEvents: state.projection.seenEventIds.size,
+    });
+    render();
+  }
+
   function bind() {
     $("connectSignerButton").addEventListener("click", () => {
       connectSigner().catch((error) => {
@@ -265,6 +690,34 @@ const FiniteBrainProductClient = (() => {
         render();
       });
     });
+    $("openFolderKeyButton").addEventListener("click", () => {
+      openEnteredFolderKey().catch((error) => {
+        state.lastError = error.message;
+        log("Failed to open Folder Key.", { error: error.message });
+        render();
+      });
+    });
+    $("encryptDraftButton").addEventListener("click", () => {
+      prepareDraftWrite().catch((error) => {
+        state.lastError = error.message;
+        log("Failed to encrypt Page draft.", { error: error.message });
+        render();
+      });
+    });
+    $("savePageButton").addEventListener("click", () => {
+      savePreparedPage().catch((error) => {
+        state.lastError = error.message;
+        log("Failed to save Page.", { error: error.message });
+        render();
+      });
+    });
+    $("syncBootstrapButton").addEventListener("click", () => {
+      pullSyncBootstrap().catch((error) => {
+        state.lastError = error.message;
+        log("Failed to pull sync.", { error: error.message });
+        render();
+      });
+    });
   }
 
   async function start() {
@@ -274,10 +727,18 @@ const FiniteBrainProductClient = (() => {
   }
 
   return {
+    buildPageWriteRequest,
     buildAuthEventTemplate,
+    createClientProjection,
+    createSessionKeyring,
     deriveSignerState,
+    encryptFolderObject,
+    mergeSyncProjection,
     metadataFolderRows,
     metadataMountRows,
+    npubFromHex,
+    openFolderKeyGrantPlaintext,
+    openFolderObject,
     shortKey,
     start,
   };

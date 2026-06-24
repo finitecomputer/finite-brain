@@ -3430,6 +3430,8 @@ mod tests {
         assert!(client_body.contains("Product Client"));
         assert!(client_body.contains("Connect signer"));
         assert!(client_body.contains("Open a Vault"));
+        assert!(client_body.contains("Page Loop"));
+        assert!(client_body.contains("Save Page"));
         assert!(client_body.contains("/client/app.js"));
 
         let config_response = router
@@ -3490,8 +3492,13 @@ mod tests {
         assert!(js_body.contains("window.FiniteBrainProductClient"));
         assert!(js_body.contains("deriveSignerState"));
         assert!(js_body.contains("buildAuthEventTemplate"));
+        assert!(js_body.contains("buildPageWriteRequest"));
+        assert!(js_body.contains("createSessionKeyring"));
+        assert!(js_body.contains("openFolderObject"));
+        assert!(js_body.contains("mergeSyncProjection"));
         assert!(js_body.contains("metadataFolderRows"));
         assert!(js_body.contains("kind: 27235"));
+        assert!(js_body.contains("kind: APP_EVENT_KIND"));
         assert!(js_body.contains("/metadata"));
     }
 

@@ -64,6 +64,17 @@ input {
   padding: 8px 10px;
 }
 
+textarea {
+  width: 100%;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: #17191d;
+  color: var(--text);
+  font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  padding: 10px;
+  resize: vertical;
+}
+
 h1,
 h2,
 h3,
@@ -165,6 +176,25 @@ label,
 
 .panel.wide {
   grid-column: 1 / -1;
+}
+
+.form-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(130px, 1fr));
+  gap: 10px;
+}
+
+.page-editor-label {
+  display: grid;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.action-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
 }
 
 .primary-action {
@@ -284,7 +314,8 @@ pre {
 
 @media (max-width: 880px) {
   .app-shell,
-  .dashboard-grid {
+  .dashboard-grid,
+  .form-grid {
     grid-template-columns: 1fr;
   }
 
