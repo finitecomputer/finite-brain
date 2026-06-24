@@ -486,6 +486,11 @@ See [[Sync Append Log]] for the broader model.
 
 Vault Invitations are npub-bound and single use.
 
+They are intentionally different from Folder shares.
+
+An organization invite answers: can this npub join this Vault?
+A Folder share answers: can this npub or destination Vault see this one Folder?
+
 An invitation has a lifecycle:
 
 - pending;
@@ -493,9 +498,11 @@ An invitation has a lifecycle:
 - revoked;
 - expired.
 
-Accepting an invite makes the recipient a Vault member and grants the initial Folder access selected by the admin.
+Accepting an invite makes the recipient a Vault member and grants the initial Folder access selected by the admin. The invite is bound to one npub, so forwarding the link should not let a different identity claim it.
 
 This keeps organization membership separate from Folder-level sharing.
+
+Related pages: [[Invite Lifecycle]], [[Binary Folder Access]], and [[Shared Folder Mounts]].
 `,
   },
   {
@@ -535,6 +542,10 @@ The export shape includes:
 - deterministic conflict behavior on import.
 
 Unreadable or inaccessible Folders are not exported as plaintext. They remain encrypted server state.
+
+This makes OKF useful as a portability and agent handoff format without weakening the main crypto model. A client can export what it can decrypt, explain what it omitted, and later import the bundle by encrypting new Folder Objects through the normal Page write path.
+
+Related pages: [[OKF Import Conflicts]], [[Working Tree Projection]], and [[Backup and Restore]].
 `,
   },
   {
@@ -614,6 +625,14 @@ Links:
 - [[OKF Export Shape]]
 
 The graph should show only Pages the active client can decrypt.
+
+This note intentionally links across several Folders so the graph view has visible cross-folder edges. If a Folder Key is missing, the graph should shrink instead of showing server-side plaintext guesses.
+
+Good smoke checks:
+
+- filter by "sync" and confirm the sync pages remain connected;
+- open Restricted Lab and confirm restricted links appear only when readable;
+- switch to replay and confirm frames are derived from readable Page changes.
 `,
   },
   {
@@ -625,7 +644,14 @@ The graph should show only Pages the active client can decrypt.
 
 Graph replay is derived from local decrypted Page history.
 
-For now, this fixture is static dummy content. It still helps test that graph surfaces are built from readable Pages and Folder Keys, not from server-side plaintext indexing.
+For now, this fixture is static demo content. It still helps test that graph surfaces are built from readable Pages and Folder Keys, not from server-side plaintext indexing.
+
+Replay should feel like watching the client rebuild its local understanding:
+
+- a Page appears after its Folder Object decrypts;
+- links appear after the Page text is indexed;
+- filtered-out or inaccessible Pages do not create readable nodes;
+- a rebootstrap can rebuild the same graph from current state.
 
 Useful related notes:
 
@@ -799,6 +825,8 @@ This avoids trusting caller-supplied user ids for protected Vault operations.
 
 Folder Object creates, updates, moves, and deletes are signed events.
 
+The signature covers the intent of the revision, while the encrypted payload holds the private Page content. That split lets the server validate ordering and authorship without reading the Page.
+
 Create/update/move writes include:
 
 - vaultId;
@@ -814,6 +842,8 @@ Create/update/move writes include:
 Deletes create tombstones instead of silently removing history.
 
 The server validates the signed event against the submitted encrypted payload before appending the record.
+
+This keeps the sync log audit-friendly: clients can tell who attempted a write, which object changed, and whether the encrypted bytes match the signed revision metadata.
 `,
   },
   {
@@ -901,6 +931,8 @@ This is intentionally simpler than real-time collaborative editing.
 
 Vault invites are singleton and npub-bound.
 
+They should behave like a traditional one-person invite link in a business app: only the intended recipient can accept it, it cannot be reused after success, and an admin can revoke it before acceptance.
+
 States:
 
 - pending;
@@ -911,6 +943,8 @@ States:
 An accepted invite cannot be accepted again by another npub. Revoking a pending invite prevents future acceptance, but it does not silently remove already-created membership from an accepted invite.
 
 Folder access after joining still depends on the initial Folder choices and grants.
+
+That final point matters for demos: being a Vault member does not automatically mean every restricted Folder opens.
 `,
   },
   {
@@ -942,6 +976,8 @@ This avoids copying private content between organizations while still supporting
 
 FiniteBrain currently keeps Folder access binary.
 
+Binary means the product only answers one question for a Folder: does this user have access? It does not yet separate viewer, commenter, editor, or owner roles.
+
 For a given Folder:
 
 - allowed means read and write encrypted content;
@@ -950,6 +986,8 @@ For a given Folder:
 - restricted access lists name additional members.
 
 Role-based editor/viewer permissions are intentionally deferred until the product really needs them.
+
+The upside is that Folder Keys and product language stay aligned. If a client can open the Folder Key, the Folder is available. If it cannot, the UI should say access is missing rather than pretending the Folder is empty.
 `,
   },
   {
@@ -1093,6 +1131,10 @@ Useful frame events:
 - Folder access lost after refresh.
 
 Replay is not a separate authoritative event model. It is a Product Client visualization.
+
+A good replay implementation should be boringly reproducible. Given the same current encrypted projection, opened Folder Keys, and applied sync records, the client should rebuild the same visible frames.
+
+That makes replay a debugging tool too: when a Page is missing from graph view, the replay can show whether the Folder Key never opened, the object failed to decrypt, or the graph index did not see the link.
 `,
   },
   {
@@ -1174,6 +1216,10 @@ Before production, keep pressure on:
 - migration tests.
 
 The smoke client should make these boundaries visible without pretending the prototype is already production-hardened.
+
+The goal is not to scare users with crypto internals. The goal is to keep engineering honest while the UI says simple things like "access missing", "key opened", "write rejected because the page changed", or "server cannot read this page".
+
+This Folder is admin-only so operational notes can exist in the same Vault without leaking into ordinary member views.
 `,
   },
 ];

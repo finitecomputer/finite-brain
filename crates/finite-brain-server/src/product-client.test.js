@@ -94,6 +94,31 @@ assert.equal(folderRows[0].status, "ready");
 assert.equal(folderRows[1].status, "locked");
 assert.match(folderRows[1].detail, /source/);
 assert.match(folderRows[1].detail, /locked/);
+const badgeLabels = (badges) => Array.from(badges, (badge) => badge.label);
+assert.deepEqual(
+  badgeLabels(client.accessBadgesForFolder(folderRows[1], new Set(["restricted"]))),
+  ["restricted", "shared", "locked", "key open", "v3"]
+);
+assert.deepEqual(
+  badgeLabels(client.sidebarAccessBadgesForFolder(folderRows[0])),
+  []
+);
+assert.deepEqual(
+  badgeLabels(client.sidebarAccessBadgesForFolder(folderRows[1])),
+  ["restricted", "shared", "locked"]
+);
+assert.equal(
+  JSON.stringify(client.accessActionRoute("share-folder", { folderId: "restricted" })),
+  JSON.stringify({ folderId: "restricted", intent: "share", sidebarMode: "access" })
+);
+assert.equal(
+  JSON.stringify(client.accessActionRoute("manage-access", { folderId: "restricted" })),
+  JSON.stringify({ folderId: "restricted", intent: "manage", sidebarMode: "access" })
+);
+assert.equal(client.accessActionRoute("delete-folder", { folderId: "restricted" }), null);
+assert.equal(client.accessPanelState("share", folderRows[1]).status, "share");
+assert.match(client.accessPanelState("share", folderRows[1]).detail, /safe placeholder/);
+assert.equal(client.accessPanelState("manage", folderRows[1]).title, "Manage Restricted");
 
 (async () => {
   const event = await client.buildAuthEventTemplate(

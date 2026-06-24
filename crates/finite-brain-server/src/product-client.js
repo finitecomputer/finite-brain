@@ -16,6 +16,8 @@ const FiniteBrainProductClient = (() => {
     selectedPageKey: null,
     activeWorkspaceView: "page",
     activeSidebarMode: "files",
+    activeAccessFolderId: null,
+    activeAccessIntent: "inspect",
     expandedFolderIds: new Set(),
     contextMenuTarget: null,
   };
@@ -89,14 +91,103 @@ const FiniteBrainProductClient = (() => {
       return {
         access: folder.access,
         accessLabel,
+        accessUserIds: folder.accessUserIds || [],
         currentKeyVersion: folder.currentKeyVersion,
         id: folder.id,
         path: folder.path,
+        setupIncomplete: Boolean(folder.setupIncomplete),
+        sharedFolderSource: Boolean(folder.sharedFolderSource),
         status,
         label: `${folder.path} - ${accessLabel} - key v${folder.currentKeyVersion}`,
         detail: flags.join(", "),
       };
     });
+  }
+
+  function accessBadgesForFolder(row, openedFolderIds = new Set()) {
+    if (!row) return [];
+    const badges = [];
+    if (row.access === "admin_only") {
+      badges.push({ kind: "access", label: "admin", tone: "warn" });
+    } else if (row.access === "restricted") {
+      badges.push({ kind: "access", label: "restricted", tone: "warn" });
+    } else if (row.access === "all_members") {
+      badges.push({ kind: "access", label: "all", tone: "muted" });
+    } else {
+      badges.push({ kind: "access", label: row.accessLabel || "access", tone: "muted" });
+    }
+    if (row.sharedFolderSource) badges.push({ kind: "shared", label: "shared", tone: "ready" });
+    if (row.setupIncomplete) badges.push({ kind: "setup", label: "setup", tone: "error" });
+    if (row.status === "locked" || (row.pageCount > 0 && row.readableCount === 0)) {
+      badges.push({ kind: "locked", label: "locked", tone: "warn" });
+    }
+    if (openedFolderIds.has(row.id)) badges.push({ kind: "key", label: "key open", tone: "ready" });
+    badges.push({ kind: "version", label: `v${row.currentKeyVersion || 1}`, tone: "muted" });
+    return badges;
+  }
+
+  function sidebarAccessBadgesForFolder(row, openedFolderIds = new Set()) {
+    const visibleKinds = new Set(["access", "shared", "setup", "locked"]);
+    return accessBadgesForFolder(row, openedFolderIds).filter((badge) => {
+      if (badge.kind === "access") return row.access !== "all_members";
+      return visibleKinds.has(badge.kind);
+    });
+  }
+
+  function accessActionRoute(action, target) {
+    if (!target?.folderId) return null;
+    if (action === "share-folder") {
+      return { folderId: target.folderId, intent: "share", sidebarMode: "access" };
+    }
+    if (action === "manage-access") {
+      return { folderId: target.folderId, intent: "manage", sidebarMode: "access" };
+    }
+    if (action === "inspect-access") {
+      return { folderId: target.folderId, intent: "inspect", sidebarMode: "access" };
+    }
+    return null;
+  }
+
+  function accessPanelState(intent, row) {
+    if (!row) {
+      return {
+        detail: "Load a Vault and select a Folder to inspect access.",
+        primaryLabel: "Manage",
+        secondaryLabel: "Share",
+        status: "empty",
+        title: "No Folder selected",
+        tone: "muted",
+      };
+    }
+    const pageDetail = readerFolderDetail(row);
+    if (intent === "share") {
+      return {
+        detail: `${pageDetail}. Share flow is surfaced here; backend invite creation is still a safe placeholder in this prototype.`,
+        primaryLabel: "Share",
+        secondaryLabel: "Manage",
+        status: "share",
+        title: `Share ${row.path}`,
+        tone: "ready",
+      };
+    }
+    if (intent === "manage") {
+      return {
+        detail: `${pageDetail}. Access management is visible here; grant changes are not executed from this prototype panel yet.`,
+        primaryLabel: "Manage",
+        secondaryLabel: "Share",
+        status: "manage",
+        title: `Manage ${row.path}`,
+        tone: row.status === "ready" ? "ready" : "warn",
+      };
+    }
+    return {
+      detail: pageDetail,
+      primaryLabel: "Manage",
+      secondaryLabel: "Share",
+      status: row.accessLabel,
+      title: row.path,
+      tone: row.status === "ready" ? "ready" : "warn",
+    };
   }
 
   function metadataMountRows(metadata) {
@@ -1220,6 +1311,12 @@ const FiniteBrainProductClient = (() => {
     render();
   }
 
+  function selectAccessFolder(folderId, intent = "inspect") {
+    state.activeAccessFolderId = folderId;
+    state.activeAccessIntent = intent;
+    selectReaderFolder(folderId, { selectFirstPage: false });
+  }
+
   function toggleReaderFolder(folderId) {
     const isExpanded = state.expandedFolderIds.has(folderId);
     state.selectedFolderId = folderId;
@@ -1333,6 +1430,34 @@ const FiniteBrainProductClient = (() => {
     element.className = `pill ${tone || "muted"}`;
   }
 
+  function openedGrantFolderIds() {
+    return new Set((state.keyring?.openedGrants || []).map((grant) => grant.folderId));
+  }
+
+  function appendAccessBadges(parent, badges) {
+    if (!badges.length) return;
+    const row = document.createElement("span");
+    row.className = "access-badge-row";
+    for (const badge of badges) {
+      const element = document.createElement("span");
+      element.className = `access-badge ${badge.tone || "muted"}`;
+      element.textContent = badge.label;
+      row.appendChild(element);
+    }
+    parent.appendChild(row);
+  }
+
+  function renderAccessBadgeRow(id, badges) {
+    const row = $(id);
+    row.replaceChildren();
+    for (const badge of badges) {
+      const element = document.createElement("span");
+      element.className = `access-badge ${badge.tone || "muted"}`;
+      element.textContent = badge.label;
+      row.appendChild(element);
+    }
+  }
+
   function setText(id, text) {
     $(id).textContent = text;
   }
@@ -1430,14 +1555,20 @@ const FiniteBrainProductClient = (() => {
       log("Copied Folder ID.", { folderId: target.folderId });
       return;
     }
-    if (item.action === "manage-access") {
-      setSidebarMode("access");
-      log("Opened Folder access panel.", { folderId: target.folderId });
+    const accessRoute = accessActionRoute(item.action, target);
+    if (accessRoute) {
+      state.activeAccessFolderId = accessRoute.folderId;
+      state.activeAccessIntent = accessRoute.intent;
+      state.selectedFolderId = accessRoute.folderId;
+      state.expandedFolderIds.add(accessRoute.folderId);
+      $("pageFolderIdInput").value = accessRoute.folderId;
+      $("okfDestinationFolderInput").value = accessRoute.folderId;
+      setSidebarMode(accessRoute.sidebarMode);
+      log(accessRoute.intent === "share" ? "Opened Folder share panel." : "Opened Folder access panel.", {
+        folderId: accessRoute.folderId,
+        intent: accessRoute.intent,
+      });
       return;
-    }
-    if (item.action === "share-folder") {
-      setSidebarMode("access");
-      log("Share Folder flow is surfaced in the access/share slice.", { folderId: target.folderId });
     }
   }
 
@@ -1542,13 +1673,28 @@ const FiniteBrainProductClient = (() => {
 
   function renderAccessPanel() {
     const rows = readerFolderRows(state.metadata);
+    const openedFolders = openedGrantFolderIds();
+    const activeFolderId = state.activeAccessFolderId || state.selectedFolderId;
+    const activeRow = rows.find((row) => row.id === activeFolderId) || rows[0] || null;
+    if (activeRow && !state.activeAccessFolderId && !state.selectedFolderId) {
+      state.activeAccessFolderId = activeRow.id;
+    }
+    const panel = accessPanelState(state.activeAccessIntent, activeRow);
     setPill("accessFolderCount", `${rows.length}`, rows.length ? "ready" : "muted");
+    setText("accessFolderTitle", panel.title);
+    setPill("accessFolderStatus", panel.status, panel.tone);
+    setText("accessFolderDetail", panel.detail);
+    setText("accessManageButton", "Manage");
+    setText("accessShareButton", "Share");
+    $("accessManageButton").disabled = !activeRow;
+    $("accessShareButton").disabled = !activeRow;
+    renderAccessBadgeRow("accessBadgeRow", accessBadgesForFolder(activeRow, openedFolders));
     setList("accessFolderList", rows, "Load a Vault to inspect access", (item, row) => {
       const button = obsidianTreeButton(
         row.path,
         `${row.accessLabel} - key v${row.currentKeyVersion || 1}${row.detail ? ` - ${row.detail}` : ""}`,
-        `obsidian-folder-button ${row.status}${row.id === state.selectedFolderId ? " active" : ""}`,
-        () => selectReaderFolder(row.id, { selectFirstPage: false }),
+        `obsidian-folder-button ${row.status}${row.id === activeRow?.id ? " active" : ""}`,
+        () => selectAccessFolder(row.id),
         {
           contextTarget: {
             type: "folder",
@@ -1557,6 +1703,7 @@ const FiniteBrainProductClient = (() => {
           },
         }
       );
+      appendAccessBadges(button, accessBadgesForFolder(row, openedFolders));
       item.appendChild(button);
     });
   }
@@ -1588,6 +1735,7 @@ const FiniteBrainProductClient = (() => {
           },
         }
       );
+      appendAccessBadges(button, sidebarAccessBadgesForFolder(row, openedGrantFolderIds()));
       item.appendChild(button);
       const childPages = readerPageRows(row.id);
       if (expanded && childPages.length) {
@@ -2151,6 +2299,22 @@ const FiniteBrainProductClient = (() => {
     $("ribbonAccessButton").addEventListener("click", () => {
       setSidebarMode("access");
     });
+    $("accessManageButton").addEventListener("click", () => {
+      const folderId = state.activeAccessFolderId || state.selectedFolderId;
+      if (!folderId) return;
+      state.activeAccessIntent = "manage";
+      state.activeAccessFolderId = folderId;
+      log("Access management is visible in the prototype panel.", { folderId });
+      render();
+    });
+    $("accessShareButton").addEventListener("click", () => {
+      const folderId = state.activeAccessFolderId || state.selectedFolderId;
+      if (!folderId) return;
+      state.activeAccessIntent = "share";
+      state.activeAccessFolderId = folderId;
+      log("Share flow is visible in the prototype panel.", { folderId });
+      render();
+    });
     $("sidebarSearchInput").addEventListener("input", () => {
       renderSearchPanel();
     });
@@ -2249,6 +2413,9 @@ const FiniteBrainProductClient = (() => {
   }
 
   return {
+    accessActionRoute,
+    accessBadgesForFolder,
+    accessPanelState,
     buildPageWriteRequest,
     buildAuthEventTemplate,
     buildGraphProjection,
@@ -2278,6 +2445,7 @@ const FiniteBrainProductClient = (() => {
     readerFolderRows,
     readerPageRows,
     searchPageRows,
+    sidebarAccessBadgesForFolder,
     shortKey,
     start,
     workspaceChromeState,

@@ -66,6 +66,18 @@
             <span>Access</span>
             <span id="accessFolderCount" class="pill muted">0</span>
           </div>
+          <div id="accessFolderInspector" class="access-inspector">
+            <div class="access-inspector-header">
+              <span id="accessFolderTitle">No Folder selected</span>
+              <span id="accessFolderStatus" class="pill muted">empty</span>
+            </div>
+            <div id="accessBadgeRow" class="access-badge-row" aria-label="Folder access badges"></div>
+            <p id="accessFolderDetail" class="muted-copy">Load a Vault and select a Folder to inspect access.</p>
+            <div class="access-action-row">
+              <button id="accessManageButton" type="button">Manage</button>
+              <button id="accessShareButton" type="button">Share</button>
+            </div>
+          </div>
           <ol id="accessFolderList" class="obsidian-file-tree access-list"></ol>
         </section>
 

@@ -127,3 +127,45 @@
   - In-app browser verification: Graph tab active, ribbon active, Page pane
     hidden, Graph pane visible, shell state `graph`, graph stats present, and
     Fit/Reset controls present.
+
+### `#35` Access And Sharing Shell Surface
+
+- Baseline: `44e134f`
+- Implementation checkpoint: this commit
+- Status: implementation complete; local checks and visual smoke passed
+- Owner: current orchestrator thread using direct implementation for the
+  Obsidian access/share shell slice.
+- Current implementation:
+  - Added a compact Access inspector inside the left sidebar with selected
+    Folder title, status pill, badges, detail text, and Manage/Share actions.
+  - Added deterministic access badge projection for admin-only, restricted,
+    shared, setup, locked, open-key, and key-version states.
+  - Added Folder menu routing so Manage Access and Share Folder select the
+    Folder, switch to the Access sidebar, and set the visible intent instead of
+    only logging.
+  - Added compact sidebar badges for restricted/admin/shared/locked states
+    while keeping full badge detail in the Access inspector.
+  - Kept OKF import and Page write controls in the existing Advanced client
+    tools drawer.
+  - Expanded the smoke docs seed content so every seeded Folder has richer
+    FiniteBrain-themed pages for local UX testing.
+- Review:
+  - Standards axis: self-review against `AGENTS.md`, `CONTEXT.md`, ADR 0004,
+    and ADR 0005 found no worthy follow-up before commit.
+  - Spec axis: #35 acceptance criteria are covered by helper tests, panel
+    rendering, menu routing, and the retained advanced/dev drawer.
+- Verification:
+  - `node --check scripts/seed-smoke-doc-pages.mjs`
+  - `node --check crates/finite-brain-server/src/product-client.js`
+  - `node crates/finite-brain-server/src/product-client.test.js`
+  - `cargo test -p finite-brain-server product_client_serves_spine_assets_and_config -- --nocapture`
+  - `cargo test --workspace`
+  - `cargo clippy --workspace --all-targets -- -D warnings`
+  - `cargo fmt --check`
+  - `git diff --check`
+  - Smoke DB reseeded with 53 encrypted current objects; all 53 opened through
+    the Product Client decrypt path.
+  - Local server rebuilt and restarted on `http://127.0.0.1:4015/client`.
+  - In-app browser verification: Access ribbon switches the sidebar to the new
+    inspector, no-signer state is disabled and explicit, and the page remains
+    in the Obsidian shell.
