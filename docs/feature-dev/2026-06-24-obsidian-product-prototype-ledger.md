@@ -293,3 +293,27 @@
   - `cargo test --workspace`
   - `cargo clippy --workspace --all-targets -- -D warnings`
   - `git diff --check`
+
+## PR Review And CI
+
+- PR: `finitecomputer/finite-brain#30`
+- PR CodeRabbit trigger: `@coderabbit full review`
+- PR CodeRabbit result: unavailable; no bot response appeared and the local CLI
+  reported the repo is not connected to an accessible CodeRabbit organization.
+- PR fallback report:
+  `docs/feature-dev/2026-06-24-pr-coderabbit-obsidian-product-prototype.md`
+- CI result: GitHub Actions jobs failed before runner steps.
+- CI blocker annotation: recent account payments failed or the spending limit
+  needs to be increased.
+- Local CI-equivalent evidence remains green:
+  - `node --check crates/finite-brain-server/src/product-client.js`
+  - `node --check scripts/seed-smoke-doc-pages.mjs`
+  - `node --check scripts/verify-obsidian-product-client.mjs`
+  - `node crates/finite-brain-server/src/product-client.test.js`
+  - `node scripts/seed-smoke-doc-pages.mjs`
+  - `node scripts/verify-obsidian-product-client.mjs`
+  - `cargo test -p finite-brain-server product_client_serves_spine_assets_and_config -- --nocapture`
+  - `cargo fmt --check`
+  - `cargo test --workspace`
+  - `cargo clippy --workspace --all-targets -- -D warnings`
+  - `git diff --check`
