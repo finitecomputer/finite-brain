@@ -24,4 +24,3 @@ FiniteBrain Rust follows the Finite engineering style:
 - Prefer explicit control flow for protocol, storage, sync, and crypto-adjacent code.
 - Put explicit limits on loops, batches, payloads, fanout, sync windows, and retry work.
 - Keep compatibility hard cuts before first users unless real user data exists.
-

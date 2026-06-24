@@ -31,7 +31,7 @@ use finite_brain_store::{
     StoredShareLink, StoredSharedFolderConnection, StoredSharedFolderInvitation, StoredSyncRecord,
     StoredVault, StoredVaultInvitation, SyncRecordInput, SyncRecordType,
 };
-use finite_nostr::{HttpAuthValidation, NostrPrimitiveError, NostrPublicKey};
+use finite_nostr::{HttpAuthValidation, NostrPrimitiveError, NostrPublicKey, validate_gift_wrap};
 use nostr::Event;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -350,6 +350,7 @@ pub struct SyncBootstrapResponse {
     pub latest_sequence: u64,
     pub objects: Vec<ObjectResponse>,
     pub object_count: usize,
+    pub control_records: Vec<SyncRecordResponse>,
     pub current_state_kind: String,
 }
 
@@ -1210,9 +1211,15 @@ async fn create_folder_handler(
         &grant_created_at,
     )?;
 
-    mutate_as_admin(state, vault_id, actor, event, payload, |store, vault_id| {
-        store.create_folder(vault_id, &folder, &access_user_ids, &grants)
-    })
+    mutate_as_admin_with_grants(
+        state,
+        vault_id,
+        actor,
+        event,
+        payload,
+        grants.clone(),
+        |store, vault_id| store.create_folder(vault_id, &folder, &access_user_ids, &grants),
+    )
     .map(Json)
 }
 
@@ -1256,9 +1263,15 @@ async fn finish_folder_setup_handler(
         &grant_created_at,
     )?;
 
-    mutate_as_admin(state, vault_id, actor, event, payload, |store, vault_id| {
-        store.finish_folder_setup(vault_id, &folder_id, &grants)
-    })
+    mutate_as_admin_with_grants(
+        state,
+        vault_id,
+        actor,
+        event,
+        payload,
+        grants.clone(),
+        |store, vault_id| store.finish_folder_setup(vault_id, &folder_id, &grants),
+    )
     .map(Json)
 }
 
@@ -1302,9 +1315,15 @@ async fn grant_folder_access_handler(
         &grant_created_at,
     )?;
 
-    mutate_as_admin(state, vault_id, actor, event, payload, |store, vault_id| {
-        store.grant_folder_access(vault_id, &folder_id, &target, &grant)
-    })
+    mutate_as_admin_with_grants(
+        state,
+        vault_id,
+        actor,
+        event,
+        payload,
+        vec![grant.clone()],
+        |store, vault_id| store.grant_folder_access(vault_id, &folder_id, &target, &grant),
+    )
     .map(Json)
 }
 
@@ -1374,16 +1393,24 @@ async fn remove_folder_access_handler(
         reencrypted_records.push(record);
     }
 
-    mutate_as_admin(state, vault_id, actor, event, payload, |store, vault_id| {
-        store.rotate_folder_key_for_access_removal(
-            vault_id,
-            &folder_id,
-            &target,
-            request.new_key_version,
-            &grants,
-            &reencrypted_records,
-        )
-    })
+    mutate_as_admin_with_grants(
+        state,
+        vault_id,
+        actor,
+        event,
+        payload,
+        grants.clone(),
+        |store, vault_id| {
+            store.rotate_folder_key_for_access_removal(
+                vault_id,
+                &folder_id,
+                &target,
+                request.new_key_version,
+                &grants,
+                &reencrypted_records,
+            )
+        },
+    )
     .map(Json)
 }
 
@@ -1492,7 +1519,13 @@ async fn accept_share_link_handler(
     let now = server_timestamp(&state);
     let share_link = {
         let mut store = state.store.lock().map_err(lock_error)?;
-        store.accept_share_link(&share_link_id, &actor, &now)?
+        let share_link = store.accept_share_link(&share_link_id, &actor, &now)?;
+        append_folder_key_grant_record(
+            &mut store,
+            &share_link.vault_id,
+            &share_link.folder_key_grant,
+        )?;
+        share_link
     };
     Ok(Json(share_link_response(share_link)))
 }
@@ -1671,13 +1704,19 @@ async fn accept_shared_folder_invitation_handler(
             &invitation.source_vault_id,
             &invitation.source_folder_id,
         );
-        store.accept_shared_folder_invitation(
+        let invitation = store.accept_shared_folder_invitation(
             &invitation_id,
             &actor,
             &connection_id,
             &mount_id,
             &now,
-        )?
+        )?;
+        append_folder_key_grant_record(
+            &mut store,
+            &invitation.source_vault_id,
+            &invitation.folder_key_grant,
+        )?;
+        invitation
     };
     Ok(Json(shared_folder_invitation_response(invitation)))
 }
@@ -1732,13 +1771,15 @@ async fn update_shared_folder_connection_members_handler(
                     None,
                     &now,
                 )?;
-                store.add_shared_folder_connection_member(
+                let connection = store.add_shared_folder_connection_member(
                     &connection_id,
                     &actor,
                     &target,
                     &grant,
                     &now,
-                )?
+                )?;
+                append_folder_key_grant_record(&mut store, &connection.source_vault_id, &grant)?;
+                connection
             }
             "remove" => {
                 let new_key_version = request.new_key_version.ok_or_else(|| {
@@ -1761,14 +1802,18 @@ async fn update_shared_folder_connection_members_handler(
                     new_key_version,
                     request.reencrypted_records,
                 )?;
-                store.remove_shared_folder_connection_member(
+                let connection = store.remove_shared_folder_connection_member(
                     &connection_id,
                     &actor,
                     &target,
                     new_key_version,
                     &grants,
                     &reencrypted_records,
-                )?
+                )?;
+                for grant in &grants {
+                    append_folder_key_grant_record(&mut store, &connection.source_vault_id, grant)?;
+                }
+                connection
             }
             _ => {
                 return Err(ApiError::new(
@@ -1813,14 +1858,18 @@ async fn revoke_shared_folder_connection_handler(
             request.new_key_version,
             request.reencrypted_records,
         )?;
-        store.revoke_shared_folder_connection(
+        let connection = store.revoke_shared_folder_connection(
             &connection_id,
             &actor,
             request.new_key_version,
             &grants,
             &reencrypted_records,
             &now,
-        )?
+        )?;
+        for grant in &grants {
+            append_folder_key_grant_record(&mut store, &connection.source_vault_id, grant)?;
+        }
+        connection
     };
     Ok(Json(shared_folder_connection_response(connection)))
 }
@@ -1947,7 +1996,7 @@ async fn get_object_handler(
         folder_id: object.folder_id.to_string(),
         object_id: object.object_id.as_str().to_owned(),
         revision: object.revision,
-        ciphertext: object.payload_json,
+        ciphertext: object_ciphertext(&object.payload_json),
         deleted: object.deleted,
     }))
 }
@@ -1981,9 +2030,15 @@ async fn sync_bootstrap_handler(
             folder_id: object.folder_id.to_string(),
             object_id: object.object_id.as_str().to_owned(),
             revision: object.revision,
-            ciphertext: object.payload_json,
+            ciphertext: object_ciphertext(&object.payload_json),
             deleted: object.deleted,
         })
+        .collect::<Vec<_>>();
+    let control_records = bootstrap
+        .control_records
+        .into_iter()
+        .filter(|record| record_visible(&stored, record, &actor))
+        .map(sync_record_response)
         .collect::<Vec<_>>();
 
     Ok(Json(SyncBootstrapResponse {
@@ -1991,6 +2046,7 @@ async fn sync_bootstrap_handler(
         latest_sequence: bootstrap.latest_sequence,
         object_count: objects.len(),
         objects,
+        control_records,
         current_state_kind: bootstrap.current_state_kind.to_owned(),
     }))
 }
@@ -2179,6 +2235,10 @@ fn validate_object_revision_record(
         ));
     }
     let revision = request.base_revision.map_or(1, |base| base + 1);
+    let base_revision = request.base_revision;
+    let key_version = request.key_version;
+    let cipher = request.cipher;
+    let ciphertext = request.ciphertext;
     let event = event_from_value(request.revision_event)?;
     let expected = RevisionValidation {
         vault_id: vault_id.clone(),
@@ -2186,23 +2246,34 @@ fn validate_object_revision_record(
         object_id: object_id.clone(),
         operation,
         revision,
-        base_revision: request.base_revision,
-        key_version: request.key_version,
-        envelope_json: request.ciphertext.clone(),
+        base_revision,
+        key_version,
+        envelope_json: ciphertext.clone(),
         author_npub: actor_npub.to_owned(),
-        created_at: expected_created_at(&event),
+        created_at: expected_created_at(&event)?,
     };
     let payload: FolderObjectRevisionPayload = validate_revision_event(&event, &expected)?;
+    let payload_json = serde_json::json!({
+        "recordType": "folder_object_revision",
+        "folderId": folder_id.to_string(),
+        "objectId": object_id.as_str(),
+        "baseRevision": base_revision,
+        "keyVersion": key_version,
+        "cipher": cipher,
+        "ciphertext": ciphertext,
+        "revisionEvent": event,
+    })
+    .to_string();
     Ok((
         FolderObjectRevisionSyncRecord {
             record_event_id: event.id.to_hex(),
             folder_id: folder_id.clone(),
             object_id: object_id.clone(),
             revision,
-            base_revision: request.base_revision,
+            base_revision,
             actor_npub: UserId::new(actor_npub.to_owned())?,
             client_created_at: payload.created_at,
-            payload_json: request.ciphertext,
+            payload_json,
             record_event_kind: event.kind.as_u16(),
         },
         revision,
@@ -2272,9 +2343,17 @@ fn accept_object_tombstone(
         revision,
         base_revision: request.base_revision,
         author_npub: actor_npub.clone(),
-        deleted_at: expected_created_at(&event),
+        deleted_at: expected_created_at(&event)?,
     };
     let payload: FolderObjectTombstonePayload = validate_tombstone_event(&event, &expected)?;
+    let payload_json = serde_json::json!({
+        "recordType": "folder_object_tombstone",
+        "folderId": folder_id.to_string(),
+        "objectId": object_id.as_str(),
+        "baseRevision": request.base_revision,
+        "tombstoneEvent": event,
+    })
+    .to_string();
     let outcome = {
         let mut store = state.store.lock().map_err(lock_error)?;
         let stored = store.load_vault(&vault_id)?;
@@ -2289,8 +2368,7 @@ fn accept_object_tombstone(
                 base_revision: request.base_revision,
                 actor_npub: UserId::new(actor_npub)?,
                 client_created_at: payload.deleted_at,
-                payload_json: serde_json::to_string(&serde_json::json!({"deleted": true}))
-                    .expect("static JSON serializes"),
+                payload_json,
                 record_event_kind: event.kind.as_u16(),
             }),
         )?
@@ -2343,7 +2421,7 @@ fn validate_admin_access_change_value(
         target_npub: target_npub.map(ToOwned::to_owned),
         key_version,
         note: hint.note,
-        created_at: expected_created_at(&event),
+        created_at: expected_created_at(&event)?,
     };
     let payload = validate_admin_access_change_event(&event, &expected)?;
     Ok((event, payload))
@@ -2360,15 +2438,69 @@ fn mutate_as_admin<F>(
 where
     F: FnOnce(&mut BrainStore, &VaultId) -> Result<(), StoreError>,
 {
+    mutate_as_admin_with_grants(
+        state,
+        vault_id,
+        actor_npub,
+        event,
+        payload,
+        Vec::new(),
+        mutation,
+    )
+}
+
+fn mutate_as_admin_with_grants<F>(
+    state: ServerState,
+    vault_id: VaultId,
+    actor_npub: String,
+    event: Event,
+    payload: AdminAccessChangePayload,
+    grants: Vec<FolderKeyGrantMetadata>,
+    mutation: F,
+) -> Result<VaultMetadataResponse, ApiError>
+where
+    F: FnOnce(&mut BrainStore, &VaultId) -> Result<(), StoreError>,
+{
     let stored = {
         let mut store = state.store.lock().map_err(lock_error)?;
         let stored = store.load_vault(&vault_id)?;
         ensure_vault_admin(&stored, &actor_npub)?;
         mutation(&mut store, &vault_id)?;
+        for grant in &grants {
+            append_folder_key_grant_record(&mut store, &vault_id, grant)?;
+        }
         append_admin_access_change_record(&mut store, &vault_id, &actor_npub, &event, &payload)?;
         store.load_vault(&vault_id)?
     };
     Ok(metadata_response(stored))
+}
+
+fn append_folder_key_grant_record(
+    store: &mut BrainStore,
+    vault_id: &VaultId,
+    grant: &FolderKeyGrantMetadata,
+) -> Result<(), ApiError> {
+    let event = Event::from_json(grant.wrapped_event_json.clone()).map_err(|_| {
+        ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "folder key grant wrapped event JSON did not parse",
+        )
+    })?;
+    let payload_json = serde_json::to_string(&folder_key_grant_response(grant.clone()))
+        .map_err(|_| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, "internal server error"))?;
+    store.submit_sync_record(
+        vault_id,
+        &SyncRecordInput::Control(ControlSyncRecord {
+            record_event_id: event.id.to_hex(),
+            record_type: SyncRecordType::FolderKeyGrant,
+            folder_id: Some(grant.folder_id.clone()),
+            actor_npub: grant.issuer_npub.clone(),
+            client_created_at: grant.created_at.clone(),
+            payload_json,
+            record_event_kind: event.kind.as_u16(),
+        }),
+    )?;
+    Ok(())
 }
 
 fn append_admin_access_change_record(
@@ -2430,12 +2562,14 @@ fn grant_request_to_metadata(
     access_change_event_json: Option<String>,
     default_created_at: &str,
 ) -> Result<FolderKeyGrantMetadata, ApiError> {
+    let recipient_npub = UserId::new(request.recipient_npub.clone())?;
+    validate_folder_key_grant_wrapper(&request.wrapped_event_json, &recipient_npub)?;
     Ok(FolderKeyGrantMetadata {
         id: request.id.clone(),
         folder_id: folder_id.clone(),
         key_version: request.key_version,
         issuer_npub: UserId::new(issuer_npub.to_owned())?,
-        recipient_npub: UserId::new(request.recipient_npub.clone())?,
+        recipient_npub,
         format: "NIP-59".to_owned(),
         wrapped_event_json: request.wrapped_event_json.clone(),
         access_change_event_json,
@@ -2446,8 +2580,37 @@ fn grant_request_to_metadata(
     })
 }
 
-fn expected_created_at(event: &Event) -> String {
-    event.created_at.as_secs().to_string()
+fn validate_folder_key_grant_wrapper(
+    wrapped_event_json: &str,
+    recipient_npub: &UserId,
+) -> Result<(), ApiError> {
+    let event = Event::from_json(wrapped_event_json).map_err(|_| {
+        ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "folder key grant wrapped event JSON did not parse",
+        )
+    })?;
+    let recipient = NostrPublicKey::parse(recipient_npub.as_str()).map_err(|error| {
+        ApiError::new(
+            StatusCode::BAD_REQUEST,
+            format!("invalid folder key grant recipient: {error}"),
+        )
+    })?;
+    validate_gift_wrap(&event, recipient).map_err(|error| {
+        ApiError::new(
+            StatusCode::BAD_REQUEST,
+            format!("invalid folder key grant wrapper: {error}"),
+        )
+    })
+}
+
+fn expected_created_at(event: &Event) -> Result<String, ApiError> {
+    format_unix_timestamp(event.created_at.as_secs()).ok_or_else(|| {
+        ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "signed event created_at is outside RFC3339 timestamp range",
+        )
+    })
 }
 
 fn ensure_vault_admin(stored: &StoredVault, actor_npub: &str) -> Result<(), ApiError> {
@@ -2552,10 +2715,41 @@ fn folder_visible(stored: &StoredVault, folder_id: &FolderId, actor_npub: &str) 
 }
 
 fn record_visible(stored: &StoredVault, record: &StoredSyncRecord, actor_npub: &str) -> bool {
-    record
-        .folder_id
-        .as_ref()
-        .is_none_or(|folder_id| folder_visible(stored, folder_id, actor_npub))
+    let is_admin = stored
+        .vault
+        .admins
+        .iter()
+        .any(|admin| admin.as_str() == actor_npub);
+    match record.record_type {
+        SyncRecordType::FolderObjectRevision | SyncRecordType::FolderObjectTombstone => record
+            .folder_id
+            .as_ref()
+            .is_some_and(|folder_id| folder_visible(stored, folder_id, actor_npub)),
+        SyncRecordType::FolderKeyGrant => {
+            is_admin || grant_payload_recipient(&record.payload_json).as_deref() == Some(actor_npub)
+        }
+        SyncRecordType::VaultAdminAccessChange => is_admin,
+    }
+}
+
+fn grant_payload_recipient(payload_json: &str) -> Option<String> {
+    serde_json::from_str::<serde_json::Value>(payload_json)
+        .ok()?
+        .get("recipientNpub")?
+        .as_str()
+        .map(ToOwned::to_owned)
+}
+
+fn object_ciphertext(payload_json: &str) -> String {
+    serde_json::from_str::<serde_json::Value>(payload_json)
+        .ok()
+        .and_then(|value| {
+            value
+                .get("ciphertext")
+                .and_then(serde_json::Value::as_str)
+                .map(ToOwned::to_owned)
+        })
+        .unwrap_or_else(|| payload_json.to_owned())
 }
 
 fn sync_record_response(record: StoredSyncRecord) -> SyncRecordResponse {
@@ -2965,10 +3159,15 @@ fn current_unix_seconds() -> u64 {
 }
 
 fn server_timestamp(state: &ServerState) -> String {
-    OffsetDateTime::from_unix_timestamp(state.auth_now_unix_seconds() as i64)
-        .unwrap_or(OffsetDateTime::UNIX_EPOCH)
+    format_unix_timestamp(state.auth_now_unix_seconds())
+        .unwrap_or_else(|| "1970-01-01T00:00:00Z".to_owned())
+}
+
+fn format_unix_timestamp(unix_seconds: u64) -> Option<String> {
+    OffsetDateTime::from_unix_timestamp(unix_seconds as i64)
+        .ok()?
         .format(&Rfc3339)
-        .unwrap_or_else(|_| "1970-01-01T00:00:00Z".to_owned())
+        .ok()
 }
 
 fn generated_link_id(prefix: &str, parts: &[&str], hash_bytes: usize) -> String {
@@ -3453,6 +3652,16 @@ mod tests {
         assert!(first_pull.has_more);
         assert_eq!(first_pull.next_sequence, 1);
         assert_eq!(first_pull.records[0].record_type, "folder_object_revision");
+        assert!(
+            first_pull.records[0]
+                .payload_json
+                .contains("\"revisionEvent\"")
+        );
+        assert!(
+            first_pull.records[0]
+                .payload_json
+                .contains("\"ciphertext\"")
+        );
 
         let second_pull = authed_request(
             router.clone(),
@@ -3468,6 +3677,11 @@ mod tests {
         assert_eq!(second_pull.count, 1);
         assert!(!second_pull.has_more);
         assert_eq!(second_pull.records[0].revision, Some(2));
+        assert!(
+            second_pull.records[0]
+                .payload_json
+                .contains("\"revisionEvent\"")
+        );
 
         let move_body = object_write_body(
             &keys,
@@ -3528,7 +3742,7 @@ mod tests {
         assert_error(get_deleted, StatusCode::NOT_FOUND, "object not found").await;
 
         let bootstrap = authed_request(
-            router,
+            router.clone(),
             &keys,
             "GET",
             "/_admin/vaults/acme/sync/bootstrap",
@@ -3540,6 +3754,26 @@ mod tests {
         let bootstrap: SyncBootstrapResponse = read_json(bootstrap).await;
         assert_eq!(bootstrap.latest_sequence, 4);
         assert!(bootstrap.objects[0].deleted);
+        let tombstone_pull = authed_request(
+            router,
+            &keys,
+            "GET",
+            "/_admin/vaults/acme/sync/records?after=3&limit=10",
+            None,
+            TEST_NOW,
+        )
+        .await;
+        assert_eq!(tombstone_pull.status(), StatusCode::OK);
+        let tombstone_pull: SyncPullResponse = read_json(tombstone_pull).await;
+        assert_eq!(
+            tombstone_pull.records[0].record_type,
+            "folder_object_tombstone"
+        );
+        assert!(
+            tombstone_pull.records[0]
+                .payload_json
+                .contains("\"tombstoneEvent\"")
+        );
     }
 
     #[tokio::test]
@@ -3989,6 +4223,54 @@ mod tests {
             .expect("strategy folder metadata");
         assert_eq!(strategy.current_key_version, 1);
         assert_eq!(strategy.access_user_ids, vec![member_npub.clone()]);
+
+        let admin_bootstrap = authed_request(
+            router.clone(),
+            &admin_keys,
+            "GET",
+            "/_admin/vaults/acme/sync/bootstrap",
+            None,
+            TEST_NOW,
+        )
+        .await;
+        assert_eq!(admin_bootstrap.status(), StatusCode::OK);
+        let admin_bootstrap: SyncBootstrapResponse = read_json(admin_bootstrap).await;
+        assert!(
+            admin_bootstrap
+                .control_records
+                .iter()
+                .filter(|record| record.record_type == "folder_key_grant")
+                .count()
+                >= 2
+        );
+        assert!(
+            admin_bootstrap
+                .control_records
+                .iter()
+                .any(|record| record.record_type == "vault_admin_access_change")
+        );
+
+        let member_pull = authed_request(
+            router.clone(),
+            &member_keys,
+            "GET",
+            "/_admin/vaults/acme/sync/records?after=0&limit=20",
+            None,
+            TEST_NOW,
+        )
+        .await;
+        assert_eq!(member_pull.status(), StatusCode::OK);
+        let member_pull: SyncPullResponse = read_json(member_pull).await;
+        assert!(
+            member_pull
+                .records
+                .iter()
+                .all(|record| record.record_type != "vault_admin_access_change")
+        );
+        assert!(member_pull.records.iter().any(|record| {
+            record.record_type == "folder_key_grant"
+                && record.payload_json.contains(member_npub.as_str())
+        }));
 
         let object_path = "/_admin/vaults/acme/folders/strategy/objects/obj_000000000001";
         let create_object_body = object_write_body(
@@ -5053,7 +5335,7 @@ mod tests {
             key_version: fixture.key_version,
             envelope_json: fixture.envelope_json,
             author_npub,
-            created_at: TEST_NOW.to_string(),
+            created_at: test_rfc3339(),
         };
         let payload = FolderObjectRevisionPayload::new(&expected);
         sign_app_event(
@@ -5071,7 +5353,7 @@ mod tests {
             revision: fixture.revision,
             base_revision: fixture.base_revision,
             author_npub: npub(keys),
-            deleted_at: TEST_NOW.to_string(),
+            deleted_at: test_rfc3339(),
         };
         let payload = FolderObjectTombstonePayload::new(&expected);
         sign_app_event(keys, payload.canonical_json(), tombstone_tags(&expected))
@@ -5134,7 +5416,7 @@ mod tests {
             target_npub: target_npub.map(ToOwned::to_owned),
             key_version,
             note: None,
-            created_at: TEST_NOW.to_string(),
+            created_at: test_rfc3339(),
         };
         let payload = AdminAccessChangePayload::new(&expected);
         sign_app_event(
@@ -5176,13 +5458,22 @@ mod tests {
         key_version: u32,
         recipient_npub: &str,
     ) -> serde_json::Value {
+        let recipient = NostrPublicKey::parse(recipient_npub).unwrap();
+        let gift_wrap = EventBuilder::new(Kind::GiftWrap, "encrypted grant placeholder")
+            .tag(Tag::public_key(recipient.as_protocol()))
+            .finalize(&Keys::generate())
+            .unwrap();
         serde_json::json!({
             "id": id,
             "keyVersion": key_version,
             "recipientNpub": recipient_npub,
-            "wrappedEventJson": "{\"kind\":1059}",
+            "wrappedEventJson": gift_wrap.as_json(),
             "createdAt": "2026-06-23T00:00:00.000Z",
         })
+    }
+
+    fn test_rfc3339() -> String {
+        format_unix_timestamp(TEST_NOW).unwrap()
     }
 
     #[allow(clippy::too_many_arguments)]

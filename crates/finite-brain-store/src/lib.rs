@@ -20,6 +20,7 @@ const MAX_PULL_LIMIT: u64 = 1_000;
 const MAX_BOOTSTRAP_FOLDERS: usize = 1_000;
 const MAX_BOOTSTRAP_GRANTS: usize = 10_000;
 const APP_SPECIFIC_KIND: u16 = 30_078;
+const NIP59_GIFT_WRAP_KIND: u16 = 1_059;
 const MIGRATION_TIMESTAMP: &str = "2026-06-23T00:00:00.000Z";
 
 /// Returns the crate name used in workspace status surfaces.
@@ -585,6 +586,8 @@ pub struct SyncBootstrap {
     pub latest_sequence: u64,
     /// Current encrypted objects.
     pub objects: Vec<CurrentEncryptedObject>,
+    /// Current control records needed to rebuild readable access state.
+    pub control_records: Vec<StoredSyncRecord>,
     /// Object count.
     pub object_count: usize,
     /// Current state kind string.
@@ -2023,11 +2026,21 @@ impl BrainStore {
     pub fn sync_bootstrap(&self, vault_id: &VaultId) -> Result<SyncBootstrap, StoreError> {
         self.require_vault_exists(vault_id)?;
         let objects = self.load_current_objects(vault_id)?;
+        let control_records = load_sync_records(&self.conn, vault_id)?
+            .into_iter()
+            .filter(|record| {
+                matches!(
+                    record.record_type,
+                    SyncRecordType::FolderKeyGrant | SyncRecordType::VaultAdminAccessChange
+                )
+            })
+            .collect::<Vec<_>>();
         Ok(SyncBootstrap {
             vault_id: vault_id.clone(),
             latest_sequence: self.latest_sequence(vault_id)?,
             object_count: objects.len(),
             objects,
+            control_records,
             current_state_kind: "current_encrypted_vault_state",
         })
     }
@@ -3185,10 +3198,18 @@ fn validate_sync_input(input: &SyncRecordInput) -> Result<(), StoreError> {
             reason: "payload JSON is required".to_owned(),
         });
     }
-    if input.record_event_kind() != APP_SPECIFIC_KIND {
+    let expected_kind = match input {
+        SyncRecordInput::Control(record)
+            if record.record_type == SyncRecordType::FolderKeyGrant =>
+        {
+            NIP59_GIFT_WRAP_KIND
+        }
+        _ => APP_SPECIFIC_KIND,
+    };
+    if input.record_event_kind() != expected_kind {
         return Err(StoreError::InvalidRecord {
             reason: format!(
-                "expected event kind {APP_SPECIFIC_KIND}, got {}",
+                "expected event kind {expected_kind}, got {}",
                 input.record_event_kind()
             ),
         });
@@ -3847,6 +3868,28 @@ fn load_sync_records_tx(
     vault_id: &VaultId,
 ) -> Result<Vec<StoredSyncRecord>, StoreError> {
     let mut stmt = tx.prepare(
+        r#"
+        SELECT sequence, record_event_id, record_type, folder_id, object_id, revision,
+               actor_npub, client_created_at, payload_json, accepted_at, record_event_kind
+        FROM vault_record_index
+        WHERE vault_id = ?1
+        ORDER BY sequence
+        "#,
+    )?;
+    let rows = stmt.query_map(params![vault_id.as_str()], stored_sync_record_from_row)?;
+
+    let mut records = Vec::new();
+    for row in rows {
+        records.push(row?);
+    }
+    Ok(records)
+}
+
+fn load_sync_records(
+    conn: &Connection,
+    vault_id: &VaultId,
+) -> Result<Vec<StoredSyncRecord>, StoreError> {
+    let mut stmt = conn.prepare(
         r#"
         SELECT sequence, record_event_id, record_type, folder_id, object_id, revision,
                actor_npub, client_created_at, payload_json, accepted_at, record_event_kind

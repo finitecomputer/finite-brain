@@ -35,4 +35,3 @@ metadata, but does not decrypt Folder Objects.
   Vault or Folder concepts.
 - FiniteBrain's product crypto can validate its own domain-specific context.
 - Store and server code remain policy callers rather than crypto owners.
-
