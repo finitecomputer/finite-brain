@@ -11,8 +11,9 @@ Objects, Folder Key Grants, sync, sharing, OKF import/export, and compatibility.
 ### FiniteBrain Policy
 
 Application-specific behavior for Vaults, Folders, access, sync, storage,
-sharing, OKF, and smoke UI. FiniteBrain Policy belongs in the `finite-brain`
-workspace, not in `finite-nostr`.
+sharing, OKF, hardening rules, the Product Client, and the Smoke UI.
+FiniteBrain Policy belongs in the `finite-brain` workspace, not in
+`finite-nostr`.
 
 ### Reusable Nostr Primitive
 

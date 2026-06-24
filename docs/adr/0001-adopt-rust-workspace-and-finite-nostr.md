@@ -9,8 +9,8 @@ Date: 2026-06-23
 FiniteBrain is being rebuilt from scratch in Rust from the FiniteBrain Portable
 v1 specification. The rebuild needs production-shaped module boundaries early:
 domain validation, encrypted object handling, sync rules, storage, HTTP APIs,
-and smoke-test UI should be separable without turning the first crate into a
-catch-all.
+the Product Client, and development smoke tooling should be separable without
+turning the first crate into a catch-all.
 
 The rebuild also uses Nostr primitives that are useful outside FiniteBrain:
 NIP-19 identity encoding, Nostr event construction and validation, NIP-44
@@ -28,7 +28,9 @@ The intended workspace shape is:
 - `crates/finite-brain-store`: SQLite storage, schema, migrations, and
   transaction boundaries.
 - `crates/finite-brain-server`: HTTP/API surface and request validation.
-- `crates/finite-brain-app`: runnable smoke server and tiny development UI.
+- `crates/finite-brain-app`: application server binary that wires runtime
+  configuration, SQLite state, HTTP routes, the Product Client, and the
+  development Smoke UI.
 
 Reusable generic Nostr primitives live in a separate repository and crate:
 
