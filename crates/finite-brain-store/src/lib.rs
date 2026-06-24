@@ -5911,6 +5911,34 @@ mod tests {
     }
 
     #[test]
+    fn sync_pull_caps_large_client_limits() {
+        let mut store = store_with_strategy_folder();
+        let vault_id = VaultId::new("acme").unwrap();
+
+        for index in 1..=(MAX_PULL_LIMIT + 2) {
+            let object_id = format!("obj_{index:012}");
+            store
+                .submit_sync_record(
+                    &vault_id,
+                    &revision_record(
+                        &format!("event-capped-page-{index}"),
+                        &object_id,
+                        1,
+                        None,
+                        &object_id,
+                    ),
+                )
+                .unwrap();
+        }
+
+        let pull = store.pull_sync_records(&vault_id, 0, u64::MAX).unwrap();
+        assert_eq!(pull.count, MAX_PULL_LIMIT as usize);
+        assert!(pull.has_more);
+        assert_eq!(pull.next_sequence, MAX_PULL_LIMIT);
+        assert_eq!(pull.latest_sequence, MAX_PULL_LIMIT + 2);
+    }
+
+    #[test]
     fn sync_cursor_expiry_requires_rebootstrap() {
         let mut store = store_with_strategy_folder();
         let vault_id = VaultId::new("acme").unwrap();
@@ -5965,6 +5993,55 @@ mod tests {
             assert_eq!(bootstrap.objects[0].revision, 1);
             assert!(!bootstrap.objects[0].deleted);
         }
+    }
+
+    #[test]
+    fn sqlite_backup_copy_restores_append_log_and_can_rebuild_projection() {
+        let temp = TempDir::new().unwrap();
+        let source_db = temp.path().join("source.sqlite3");
+        let restored_db = temp.path().join("restored.sqlite3");
+        let vault_id = VaultId::new("acme").unwrap();
+        let object_id = "obj_000000000001";
+
+        {
+            let mut store = BrainStore::open(&source_db).unwrap();
+            bootstrap_org_and_strategy_folder(&mut store);
+            store
+                .submit_sync_record(
+                    &vault_id,
+                    &revision_record("event-create-backup", object_id, 1, None, "create"),
+                )
+                .unwrap();
+            store
+                .submit_sync_record(
+                    &vault_id,
+                    &revision_record("event-update-backup", object_id, 2, Some(1), "update"),
+                )
+                .unwrap();
+        }
+
+        std::fs::copy(&source_db, &restored_db).unwrap();
+
+        let mut restored = BrainStore::open(&restored_db).unwrap();
+        let bootstrap = restored.sync_bootstrap(&vault_id).unwrap();
+        assert_eq!(bootstrap.latest_sequence, 2);
+        assert_eq!(bootstrap.object_count, 1);
+        assert_eq!(bootstrap.objects[0].revision, 2);
+
+        restored
+            .conn
+            .execute(
+                "DELETE FROM current_encrypted_vault_objects WHERE vault_id = ?1",
+                params![vault_id.as_str()],
+            )
+            .unwrap();
+        assert_eq!(restored.sync_bootstrap(&vault_id).unwrap().object_count, 0);
+
+        restored.rebuild_current_projection(&vault_id).unwrap();
+        let rebuilt = restored.sync_bootstrap(&vault_id).unwrap();
+        assert_eq!(rebuilt.latest_sequence, 2);
+        assert_eq!(rebuilt.object_count, 1);
+        assert_eq!(rebuilt.objects[0].payload_json, "{\"body\":\"update\"}");
     }
 
     fn bootstrapped_org_store() -> BrainStore {

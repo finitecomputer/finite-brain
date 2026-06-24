@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use axum::body::Bytes;
-use axum::extract::{OriginalUri, Path as AxumPath, Query, State};
+use axum::extract::{DefaultBodyLimit, OriginalUri, Path as AxumPath, Query, State};
 use axum::http::header::{AUTHORIZATION, CONTENT_TYPE};
 use axum::http::{HeaderMap, Method, StatusCode, Uri};
 use axum::response::{Html, IntoResponse, Response};
@@ -39,7 +39,10 @@ use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
 
 const DEFAULT_PUBLIC_BASE_URL: &str = "http://127.0.0.1:3015";
-const DEFAULT_MAX_AUTH_SKEW_SECONDS: u64 = 300;
+const DEFAULT_MAX_AUTH_SKEW_SECONDS: u64 = 60;
+const MAX_REQUEST_BODY_BYTES: usize = 1024 * 1024;
+const NOSTR_AUTHORIZATION_HEADER: &str = "x-nostr-authorization";
+const FINITEBRAIN_NOSTR_HEADER: &str = "x-finitebrain-nostr";
 const APP_SPECIFIC_KIND: u16 = 30_078;
 
 /// Development status returned by the first smoke path.
@@ -750,6 +753,7 @@ pub fn router_with_state(state: ServerState) -> Router {
             "/_admin/vaults/{vault_id}/sync/records",
             get(sync_records_handler).post(submit_sync_record_handler),
         )
+        .layer(DefaultBodyLimit::max(MAX_REQUEST_BODY_BYTES))
         .with_state(state)
 }
 
@@ -2047,6 +2051,8 @@ fn validate_request_auth(
 ) -> Result<NostrPublicKey, ApiError> {
     let authorization = headers
         .get(AUTHORIZATION)
+        .or_else(|| headers.get(NOSTR_AUTHORIZATION_HEADER))
+        .or_else(|| headers.get(FINITEBRAIN_NOSTR_HEADER))
         .ok_or_else(|| auth_error_message("valid Nostr authorization is required"))?
         .to_str()
         .map_err(|_| auth_error_message("valid Nostr authorization is required"))?;
@@ -2963,6 +2969,12 @@ mod tests {
         );
     }
 
+    #[test]
+    fn server_state_defaults_to_portable_v1_auth_skew() {
+        let state = ServerState::new(BrainStore::open_in_memory().unwrap(), TEST_BASE_URL);
+        assert_eq!(state.max_auth_skew_seconds, 60);
+    }
+
     #[tokio::test]
     async fn health_route_returns_workspace_status_without_auth() {
         let response = test_router()
@@ -3152,6 +3164,36 @@ mod tests {
             "valid Nostr authorization is required",
         )
         .await;
+    }
+
+    #[tokio::test]
+    async fn protected_create_accepts_compatible_nostr_auth_header_aliases() {
+        for header_name in [NOSTR_AUTHORIZATION_HEADER, FINITEBRAIN_NOSTR_HEADER] {
+            let keys = Keys::generate();
+            let body = create_vault_body(header_name.replace('-', "_").as_str(), "organization");
+            let response =
+                post_vault_with_header(test_router(), &keys, &body, TEST_NOW, header_name).await;
+
+            assert_eq!(response.status(), StatusCode::OK);
+        }
+    }
+
+    #[tokio::test]
+    async fn protected_create_rejects_oversized_request_body() {
+        let body = "x".repeat(MAX_REQUEST_BODY_BYTES + 1);
+        let response = test_router()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/_admin/vaults")
+                    .header("content-type", "application/json")
+                    .body(Body::from(body))
+                    .expect("valid request"),
+            )
+            .await
+            .expect("oversized response");
+
+        assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
     }
 
     #[tokio::test]
@@ -4748,6 +4790,35 @@ mod tests {
                     .method("POST")
                     .uri("/_admin/vaults")
                     .header(AUTHORIZATION, auth)
+                    .header("content-type", "application/json")
+                    .body(Body::from(body.to_owned()))
+                    .expect("valid create request"),
+            )
+            .await
+            .expect("create response")
+    }
+
+    async fn post_vault_with_header(
+        router: Router,
+        keys: &Keys,
+        body: &str,
+        created_at: u64,
+        header_name: &'static str,
+    ) -> axum::response::Response {
+        let auth = auth_header(
+            keys,
+            "POST",
+            "/_admin/vaults",
+            Some(body.as_bytes()),
+            created_at,
+        );
+
+        router
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/_admin/vaults")
+                    .header(header_name, auth)
                     .header("content-type", "application/json")
                     .body(Body::from(body.to_owned()))
                     .expect("valid create request"),
