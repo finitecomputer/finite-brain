@@ -10,7 +10,7 @@
 - Feature branch: `feature/rust-portable-v1-core`
 - Human owner: Austin
 - Started: 2026-06-23
-- Current status: staging PR open; PR CodeRabbit fallback review fixes committed and verified
+- Current status: Feature Dev complete; non-draft staging PR open, reviewed, pushed, and mergeable
 - Skill setup status: `AGENTS.md` and `docs/agents/*` created for both repos
 
 ## Goal
@@ -22,7 +22,9 @@ new `finite-nostr` Rust crate so other Finite repos can reuse it.
 
 ## Durable Artifacts
 
-- CONTEXT updates: pending grill-with-docs
+- CONTEXT updates: root `CONTEXT.md`, `AGENTS.md`, and `docs/agents/*`
+  created for the Rust repo; companion `finite-nostr` has matching root
+  `CONTEXT.md`, `AGENTS.md`, and `docs/agents/*`
 - ADRs: `docs/adr/0001-adopt-rust-workspace-and-finite-nostr.md`,
   `docs/adr/0002-use-sqlite-from-day-one.md`,
   `docs/adr/0003-keep-folder-object-crypto-in-finite-brain-core.md`
