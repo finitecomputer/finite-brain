@@ -9,7 +9,7 @@
 - Feature branch: `feature/rust-portable-v1-core`
 - Human owner: Austin
 - Started: 2026-06-24
-- Current status: grilling with docs; first product-client boundary decision pending
+- Current status: grilling with docs; Product Client boundary resolved, minimum client workflow pending
 - Skill setup status: `AGENTS.md`, `CONTEXT.md`, and `docs/agents/*` already exist
 
 ## Goal
@@ -22,7 +22,7 @@ This is a hard-cut continuation from the Rust Portable v1 core PR.
 
 - CONTEXT updates: root `CONTEXT.md` now distinguishes `Product Client`,
   `Smoke UI`, and `Hard Cut`.
-- ADRs: pending only if a hard-to-reverse trade-off appears.
+- ADRs: `docs/adr/0004-build-a-first-party-product-client.md`
 - PRD issue: pending.
 - Slice issues: pending.
 - Issue sessions: pending.
@@ -84,9 +84,9 @@ Out of scope:
 
 ## Open Questions
 
-- Should the first Rust Product Client be a first-party browser app served by
-  the Rust server, replacing the Smoke UI as the primary local workflow, or
-  should it reuse/embed a SilverBullet-style editor surface?
+- What is the minimum first Product Client workflow that must land before graph
+  replay, OKF import execution, and agent working-tree materialization build on
+  top of it?
 
 ## Escalations
 
