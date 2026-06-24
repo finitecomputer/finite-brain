@@ -10,7 +10,7 @@
 - Feature branch: `feature/rust-portable-v1-core`
 - Human owner: Austin
 - Started: 2026-06-23
-- Current status: local CodeRabbit findings addressed; opening staging PR
+- Current status: staging PR open; PR CodeRabbit review requested
 - Skill setup status: `AGENTS.md` and `docs/agents/*` created for both repos
 
 ## Goal
@@ -47,7 +47,7 @@ new `finite-nostr` Rust crate so other Finite repos can reuse it.
 - Agent briefs: generated slice issues plus this ledger
 - Review packets: direct orchestrator review results captured in the Issue Session Ledger
 - Local CodeRabbit report: `docs/feature-dev/2026-06-24-local-coderabbit-round-1.md`
-- PR URL: pending
+- PR URL: `https://github.com/finitecomputer/finite-brain/pull/15`
 
 ## Commands
 
