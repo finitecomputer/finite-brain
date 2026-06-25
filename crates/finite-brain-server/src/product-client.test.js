@@ -350,6 +350,12 @@ assert.equal(client.accessPanelState("manage", folderRows[1]).title, "Manage Res
   assert.equal(client.normalizeSidebarMode("search"), "search");
   assert.equal(client.normalizeSidebarMode("access"), "access");
   assert.equal(client.normalizeSidebarMode("bogus"), "files");
+  assert.equal(client.sidebarModeLabel("search"), "Search");
+  assert.equal(client.sidebarModeLabel("bogus"), "Files");
+  assert.equal(
+    JSON.stringify(client.commandPaletteCommands().map((row) => row.id)),
+    JSON.stringify(["files", "search", "access", "graph", "new-page", "refresh"])
+  );
   const searchRows = client.searchPageRows("folder key", [
     {
       folderId: "crypto",
@@ -370,6 +376,20 @@ assert.equal(client.accessPanelState("manage", folderRows[1]).title, "Manage Res
   ]);
   assert.equal(searchRows.length, 1);
   assert.equal(searchRows[0].detail, "crypto/folder-keys.md");
+  const paletteRows = client.commandPaletteRows("folder", [
+    {
+      folderId: "crypto",
+      key: "crypto/page-a",
+      objectId: "page-a",
+      path: "folder-keys.md",
+      status: "ready",
+      text: "# Folder Keys\n\nReadable key material stays client-side.",
+      title: "Folder Keys",
+    },
+  ]);
+  assert.equal(paletteRows.some((row) => row.id === "new-page"), true);
+  assert.equal(paletteRows.some((row) => row.kind === "page" && row.label === "Folder Keys"), true);
+  assert.equal(client.commandPaletteRows("", []).length, 6);
   const folderMenu = client.contextMenuItemsForTarget({ type: "folder", folderId: "crypto" });
   assert.equal(folderMenu.some((item) => item.action === "new-page"), true);
   assert.equal(folderMenu.some((item) => item.action === "share-folder"), true);
@@ -383,6 +403,9 @@ assert.equal(client.accessPanelState("manage", folderRows[1]).title, "Manage Res
   assert.equal(pageMenu.find((item) => item.action === "delete-page").disabled, true);
   const readerPages = client.readerPageRows("general", openedSync.objects);
   assert.equal(readerPages[0].label, "Hello");
+  assert.equal(readerPages[0].detail, "obj_000000000001.md - revision 1");
+  assert.equal(client.pagePathLabel(readerPages[0]), "general/obj_000000000001.md");
+  assert.equal(client.readerPageDetail(readerPages[0]), "obj_000000000001.md - revision 1");
   const emptyReadablePage = {
     folderId: "general",
     objectId: "obj_empty_page01",

@@ -32,6 +32,13 @@
           </svg>
           <span class="sr-only">Search</span>
         </button>
+        <button class="ribbon-button" id="ribbonCommandButton" type="button" title="Quick switcher" aria-label="Quick switcher" aria-pressed="false">
+          <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M5 7h14M5 12h10M5 17h6" />
+            <path d="m16 15 3 2-3 2" />
+          </svg>
+          <span class="sr-only">Quick switcher</span>
+        </button>
         <button class="ribbon-button" id="ribbonAccessButton" type="button" title="Vault access" aria-label="Vault access" aria-pressed="false">
           <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
             <path d="M7 11V8a5 5 0 0 1 10 0v3" />
@@ -46,7 +53,7 @@
         <header class="vault-header">
           <div>
             <p class="eyebrow">FiniteBrain</p>
-            <h1>Files</h1>
+            <h1 id="sidebarModeTitle">Files</h1>
           </div>
           <button id="connectSignerButton" class="icon-text-button" type="button">Connect signer</button>
         </header>
@@ -159,9 +166,11 @@
             Graph View
           </button>
           <div class="tab-spacer"></div>
-          <span id="configState" class="pill muted">config</span>
-          <span id="vaultState" class="pill muted">vault</span>
-          <span id="accessState" class="pill muted">access</span>
+          <div class="workspace-status-cluster" aria-label="Client status">
+            <span id="configState" class="pill muted">config</span>
+            <span id="vaultState" class="pill muted">vault</span>
+            <span id="accessState" class="pill muted">access</span>
+          </div>
         </header>
 
         <section
@@ -175,6 +184,7 @@
               <div>
                 <p class="eyebrow">Page</p>
                 <h2 id="readerPageTitle">No page selected</h2>
+                <p id="readerPagePath" class="page-path">No page path loaded</p>
               </div>
               <div class="page-header-actions">
                 <span id="readerPageMeta" class="pill muted">locked</span>
@@ -375,6 +385,36 @@ Start writing here.</textarea>
       </footer>
 
       <div id="contextMenu" class="context-menu" role="menu" hidden></div>
+      <div
+        id="commandPalette"
+        class="command-palette-backdrop"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="commandPaletteTitle"
+        hidden
+      >
+        <section class="command-palette-panel">
+          <header class="command-palette-header">
+            <div>
+              <p class="eyebrow">Navigate</p>
+              <h2 id="commandPaletteTitle">Quick switcher</h2>
+            </div>
+            <button id="closeCommandPaletteButton" class="sidebar-icon-button" type="button" title="Close" aria-label="Close quick switcher">
+              <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+                <path d="m7 7 10 10M17 7 7 17" />
+              </svg>
+            </button>
+          </header>
+          <input
+            id="commandPaletteInput"
+            aria-label="Search commands and pages"
+            placeholder="Search commands and pages"
+            autocomplete="off"
+            spellcheck="false"
+          />
+          <ol id="commandPaletteList" class="command-palette-list"></ol>
+        </section>
+      </div>
     </div>
 
     <script src="/client/app.js"></script>

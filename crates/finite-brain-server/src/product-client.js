@@ -21,6 +21,7 @@ const FiniteBrainProductClient = (() => {
     readerMode: "reading",
     expandedFolderIds: new Set(),
     contextMenuTarget: null,
+    commandPaletteOpen: false,
   };
 
   const $ = (id) => document.getElementById(id);
@@ -1285,10 +1286,7 @@ const FiniteBrainProductClient = (() => {
           ...page,
           title,
           label: title,
-          detail:
-            page.status === "ready"
-              ? `revision ${page.revision}`
-              : `locked ${page.folderId}/${page.objectId}`,
+          detail: readerPageDetail({ ...page, title }),
         };
       })
       .sort((left, right) => left.title.localeCompare(right.title));
@@ -1350,6 +1348,19 @@ const FiniteBrainProductClient = (() => {
     return `${count} ${count === 1 ? "page" : "pages"}`;
   }
 
+  function pagePathLabel(page) {
+    if (!page) return "No page path loaded";
+    return `${page.folderId}/${page.path || `${page.objectId}.md`}`;
+  }
+
+  function readerPageDetail(page) {
+    if (!page) return "";
+    if (page.status === "ready") {
+      return `${page.path || `${page.objectId}.md`} - revision ${page.revision || 0}`;
+    }
+    return `locked - ${page.folderId}/${page.objectId}`;
+  }
+
   function readerFolderDetail(row) {
     if (!row.pageCount) return `No pages yet - ${row.accessLabel}`;
     if (row.readableCount === row.pageCount) {
@@ -1389,8 +1400,47 @@ const FiniteBrainProductClient = (() => {
     return page?.title || metadata?.name || "Open a Vault";
   }
 
+  function sidebarModeLabel(mode) {
+    return (
+      {
+        access: "Access",
+        files: "Files",
+        search: "Search",
+      }[normalizeSidebarMode(mode)] || "Files"
+    );
+  }
+
   function normalizeSidebarMode(mode) {
     return ["files", "search", "access"].includes(mode) ? mode : "files";
+  }
+
+  function commandPaletteCommands() {
+    return [
+      { id: "files", kind: "command", label: "Files", detail: "Sidebar", target: "files" },
+      { id: "search", kind: "command", label: "Search", detail: "Sidebar", target: "search" },
+      { id: "access", kind: "command", label: "Access", detail: "Sidebar", target: "access" },
+      { id: "graph", kind: "command", label: "Graph View", detail: "Workspace", target: "graph" },
+      { id: "new-page", kind: "command", label: "New Page", detail: "Current Folder", target: "new-page" },
+      { id: "refresh", kind: "command", label: "Refresh Vault", detail: "Sync", target: "refresh" },
+    ];
+  }
+
+  function commandPaletteRows(query, pages = readablePages()) {
+    const needle = String(query || "").trim().toLowerCase();
+    const pageRows = pages.map((page) => ({
+      detail: pagePathLabel(page),
+      id: page.key || pageKey(page.folderId, page.objectId),
+      kind: "page",
+      label: page.title || pageTitleFromText(page.text ?? "", page.objectId),
+      pageKey: page.key || pageKey(page.folderId, page.objectId),
+    }));
+    const rows = [...commandPaletteCommands(), ...pageRows];
+    if (!needle) return rows.slice(0, 12);
+    return rows
+      .filter((row) =>
+        [row.label, row.detail, row.kind].filter(Boolean).join("\n").toLowerCase().includes(needle)
+      )
+      .slice(0, 12);
   }
 
   function searchPageRows(query, pages = readablePages()) {
@@ -1853,6 +1903,98 @@ const FiniteBrainProductClient = (() => {
     menu.replaceChildren();
   }
 
+  function closeCommandPalette() {
+    state.commandPaletteOpen = false;
+    const palette = $("commandPalette");
+    if (!palette) return;
+    palette.hidden = true;
+    setPressed("ribbonCommandButton", false);
+    $("ribbonCommandButton").className = "ribbon-button";
+  }
+
+  function runCommandPaletteRow(row) {
+    if (!row) return;
+    closeCommandPalette();
+    if (row.kind === "page") {
+      selectReaderPage(row.pageKey);
+      return;
+    }
+    if (row.target === "files" || row.target === "search" || row.target === "access") {
+      setSidebarMode(row.target);
+      return;
+    }
+    if (row.target === "graph") {
+      setWorkspaceView("graph");
+      return;
+    }
+    if (row.target === "new-page") {
+      startNewPageDraft();
+      return;
+    }
+    if (row.target === "refresh") {
+      refreshReader().catch((error) => {
+        state.lastError = error.message;
+        log("Failed to refresh Vault reader.", { error: error.message });
+        state.readerBusy = false;
+        render();
+      });
+    }
+  }
+
+  function renderCommandPalette() {
+    const palette = $("commandPalette");
+    if (!palette) return;
+    palette.hidden = !state.commandPaletteOpen;
+    setPressed("ribbonCommandButton", state.commandPaletteOpen);
+    $("ribbonCommandButton").className = `ribbon-button${state.commandPaletteOpen ? " utility-active" : ""}`;
+    if (!state.commandPaletteOpen) return;
+    const list = $("commandPaletteList");
+    const rows = commandPaletteRows($("commandPaletteInput").value);
+    list.replaceChildren();
+    if (!rows.length) {
+      const item = document.createElement("li");
+      item.className = "empty-row";
+      item.textContent = "No matching commands or Pages";
+      list.appendChild(item);
+      return;
+    }
+    rows.forEach((row, index) => {
+      const item = document.createElement("li");
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = `command-palette-row${index === 0 ? " active" : ""}`;
+      const copy = document.createElement("span");
+      const title = document.createElement("span");
+      title.className = "command-palette-row-title";
+      title.textContent = row.label;
+      const detail = document.createElement("span");
+      detail.className = "command-palette-row-detail";
+      detail.textContent = row.detail || "";
+      copy.appendChild(title);
+      copy.appendChild(detail);
+      const kind = document.createElement("span");
+      kind.className = "command-palette-row-kind";
+      kind.textContent = row.kind;
+      button.appendChild(copy);
+      button.appendChild(kind);
+      button.addEventListener("click", () => runCommandPaletteRow(row));
+      item.appendChild(button);
+      list.appendChild(item);
+    });
+  }
+
+  function openCommandPalette(seed = "") {
+    state.commandPaletteOpen = true;
+    closeContextMenu();
+    $("commandPaletteInput").value = seed;
+    renderCommandPalette();
+    if (typeof requestAnimationFrame === "function") {
+      requestAnimationFrame(() => $("commandPaletteInput").focus());
+    } else {
+      $("commandPaletteInput").focus?.();
+    }
+  }
+
   function positionContextMenu(menu, x, y, itemCount) {
     const estimatedWidth = 240;
     const estimatedHeight = Math.max(40, itemCount * 34 + 14);
@@ -1972,7 +2114,10 @@ const FiniteBrainProductClient = (() => {
     const button = document.createElement("button");
     button.type = "button";
     button.className = className;
-    button.textContent = label;
+    const title = document.createElement("span");
+    title.className = "obsidian-file-title";
+    title.textContent = label;
+    button.appendChild(title);
     appendObsidianDetail(button, detail);
     button.addEventListener("click", onClick);
     if (options.contextTarget) {
@@ -1993,6 +2138,7 @@ const FiniteBrainProductClient = (() => {
     $("ribbonFilesButton").className = `ribbon-button${mode === "files" ? " active" : ""}`;
     $("ribbonSearchButton").className = `ribbon-button${mode === "search" ? " active" : ""}`;
     $("ribbonAccessButton").className = `ribbon-button${mode === "access" ? " active" : ""}`;
+    setText("sidebarModeTitle", sidebarModeLabel(mode));
     setPressed("ribbonFilesButton", mode === "files");
     setPressed("ribbonSearchButton", mode === "search");
     setPressed("ribbonAccessButton", mode === "access");
@@ -2137,6 +2283,7 @@ const FiniteBrainProductClient = (() => {
     $("readerModeButton").disabled = !isReadablePage(page);
     if (!page) {
       setText("readerPageTitle", state.selectedFolderId ? "No readable page selected" : "No folder selected");
+      setText("readerPagePath", state.selectedFolderId || "No page path loaded");
       setPill("readerPageMeta", "empty", "muted");
       renderPageContent(null);
       renderLinkContext(null);
@@ -2146,9 +2293,10 @@ const FiniteBrainProductClient = (() => {
     }
 
     setText("readerPageTitle", page.title || page.objectId);
+    setText("readerPagePath", pagePathLabel(page));
     setPill(
       "readerPageMeta",
-      `${page.folderId} r${page.revision || 0}`,
+      `rev ${page.revision || 0}`,
       page.status === "ready" ? "ready" : "warn"
     );
     renderPageContent(page);
@@ -2210,6 +2358,7 @@ const FiniteBrainProductClient = (() => {
     renderReader();
     renderSearchPanel();
     renderAccessPanel();
+    renderCommandPalette();
     renderOkfPlan();
   }
 
@@ -2659,6 +2808,13 @@ const FiniteBrainProductClient = (() => {
     $("ribbonSearchButton").addEventListener("click", () => {
       setSidebarMode("search");
     });
+    $("ribbonCommandButton").addEventListener("click", () => {
+      if (state.commandPaletteOpen) {
+        closeCommandPalette();
+      } else {
+        openCommandPalette();
+      }
+    });
     $("ribbonAccessButton").addEventListener("click", () => {
       setSidebarMode("access");
     });
@@ -2680,6 +2836,20 @@ const FiniteBrainProductClient = (() => {
     });
     $("sidebarSearchInput").addEventListener("input", () => {
       renderSearchPanel();
+    });
+    $("commandPaletteInput").addEventListener("input", () => {
+      renderCommandPalette();
+    });
+    $("commandPaletteInput").addEventListener("keydown", (event) => {
+      if (event.key !== "Enter") return;
+      event.preventDefault();
+      runCommandPaletteRow(commandPaletteRows($("commandPaletteInput").value)[0]);
+    });
+    $("closeCommandPaletteButton").addEventListener("click", () => {
+      closeCommandPalette();
+    });
+    $("commandPalette").addEventListener("click", (event) => {
+      if (event.target === $("commandPalette")) closeCommandPalette();
     });
     $("obsidianNewPageButton").addEventListener("click", () => {
       startNewPageDraft();
@@ -2765,7 +2935,15 @@ const FiniteBrainProductClient = (() => {
       if (!menu.hidden && !menu.contains(event.target)) closeContextMenu();
     });
     document.addEventListener("keydown", (event) => {
-      if (event.key === "Escape") closeContextMenu();
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "p") {
+        event.preventDefault();
+        openCommandPalette();
+        return;
+      }
+      if (event.key === "Escape") {
+        closeContextMenu();
+        closeCommandPalette();
+      }
     });
   }
 
@@ -2783,6 +2961,8 @@ const FiniteBrainProductClient = (() => {
     buildAuthEventTemplate,
     buildGraphProjection,
     buildReplayFrames,
+    commandPaletteCommands,
+    commandPaletteRows,
     contextMenuItemsForTarget,
     createClientProjection,
     createSessionKeyring,
@@ -2806,15 +2986,18 @@ const FiniteBrainProductClient = (() => {
     openSyncObjects,
     parseOkfBundle,
     pageLinkContext,
+    pagePathLabel,
     pageStatsForText,
     plaintextGrantFromExportGrant,
     planOkfImport,
     prepareOkfImportWrites,
     readerFolderDetail,
     readerFolderRows,
+    readerPageDetail,
     readerPageRows,
     searchPageRows,
     sidebarAccessBadgesForFolder,
+    sidebarModeLabel,
     shortKey,
     start,
     workspaceChromeState,

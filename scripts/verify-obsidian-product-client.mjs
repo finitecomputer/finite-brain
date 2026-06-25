@@ -174,22 +174,29 @@ function checkStaticShell() {
     "file-sidebar",
     "ribbonFilesButton",
     "ribbonGraphButton",
+    "ribbonCommandButton",
     "ribbonAccessButton",
+    "sidebarModeTitle",
     "sidebar-icon-button",
     "searchSidebarPanel",
     "readerFolderList",
     "contextMenu",
     "pageWorkspace",
     "graphWorkspace",
+    "workspace-status-cluster",
     "graphEmptyState",
     "accessFolderInspector",
     "accessManageButton",
     "accessShareButton",
     "readerModeButton",
+    "readerPagePath",
     "outgoingLinkList",
     "backlinkList",
     "pageStatusDetail",
     "vaultStatusDetail",
+    "commandPalette",
+    "commandPaletteInput",
+    "commandPaletteList",
   ]) {
     assertIncludes(html, marker, "Product Client HTML");
   }
@@ -198,7 +205,10 @@ function checkStaticShell() {
     ".obsidian-shell",
     ".app-ribbon",
     ".obsidian-folder-button",
+    ".obsidian-file-title",
     ".context-menu",
+    ".command-palette-backdrop",
+    ".command-palette-row",
     ".graph-stage",
     ".graph-empty-state",
     ".graph-replay-overlay",
@@ -217,6 +227,7 @@ function checkStaticShell() {
   for (const marker of [
     "buildGraphProjection",
     "buildReplayFrames",
+    "commandPaletteRows",
     "workspaceChromeState",
     "accessBadgesForFolder",
     "accessActionRoute",
@@ -224,6 +235,8 @@ function checkStaticShell() {
     "pageLinkContext",
     "readerFolderRows",
     "readerPageRows",
+    "pagePathLabel",
+    "readerPageDetail",
   ]) {
     assertIncludes(js, marker, "Product Client JS");
   }
