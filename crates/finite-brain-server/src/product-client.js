@@ -18,13 +18,25 @@ const FiniteBrainProductClient = (() => {
     activeSidebarMode: "files",
     activeAccessFolderId: null,
     activeAccessIntent: "inspect",
+    accessBusy: false,
+    accessResult: null,
+    lastShareLinkId: null,
     readerMode: "reading",
+    vaultControlsCollapsedAfterLoad: false,
     expandedFolderIds: new Set(),
     contextMenuTarget: null,
     commandPaletteOpen: false,
   };
 
   const $ = (id) => document.getElementById(id);
+  const setOptionalDisabled = (id, disabled) => {
+    const element = $(id);
+    if (element) element.disabled = disabled;
+  };
+  const onOptionalClick = (id, handler) => {
+    const element = $(id);
+    if (element) element.addEventListener("click", handler);
+  };
   const CIPHER = "AES-256-GCM";
   const FOLDER_OBJECT_VERSION = "finite-folder-object-v1";
   const REVISION_VERSION = "finite-folder-object-revision-v1";
@@ -150,11 +162,7 @@ const FiniteBrainProductClient = (() => {
   }
 
   function sidebarAccessBadgesForFolder(row, openedFolderIds = new Set()) {
-    const visibleKinds = new Set(["access", "shared", "setup", "locked"]);
-    return accessBadgesForFolder(row, openedFolderIds).filter((badge) => {
-      if (badge.kind === "access") return row.access !== "all_members";
-      return visibleKinds.has(badge.kind);
-    });
+    return [];
   }
 
   function accessActionRoute(action, target) {
@@ -185,7 +193,7 @@ const FiniteBrainProductClient = (() => {
     const pageDetail = readerFolderDetail(row);
     if (intent === "share") {
       return {
-        detail: `${pageDetail}. Share flow is surfaced here; backend invite creation is still a safe placeholder in this prototype.`,
+        detail: `${pageDetail}. Choose who can see this Folder.`,
         primaryLabel: "Share",
         secondaryLabel: "Manage",
         status: "share",
@@ -195,7 +203,7 @@ const FiniteBrainProductClient = (() => {
     }
     if (intent === "manage") {
       return {
-        detail: `${pageDetail}. Access management is visible here; grant changes are not executed from this prototype panel yet.`,
+        detail: `${pageDetail}. Review who can open this Folder.`,
         primaryLabel: "Manage",
         secondaryLabel: "Share",
         status: "manage",
@@ -245,6 +253,10 @@ const FiniteBrainProductClient = (() => {
       bytes[index] = Number.parseInt(value.slice(index * 2, index * 2 + 2), 16);
     }
     return bytes;
+  }
+
+  function bytesToHex(bytes) {
+    return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
   }
 
   function convertBits(data, fromBits, toBits, pad) {
@@ -304,8 +316,42 @@ const FiniteBrainProductClient = (() => {
     return `${hrp}1${[...data, ...checksum].map((value) => BECH32_CHARSET[value]).join("")}`;
   }
 
+  function bech32Decode(value) {
+    const source = String(value || "").trim();
+    if (!source) throw new Error("bech32 value is empty");
+    if (source !== source.toLowerCase() && source !== source.toUpperCase()) {
+      throw new Error("bech32 value mixes upper and lower case");
+    }
+    const normalized = source.toLowerCase();
+    const separator = normalized.lastIndexOf("1");
+    if (separator < 1 || separator + 7 > normalized.length) {
+      throw new Error("bech32 value is malformed");
+    }
+    const hrp = normalized.slice(0, separator);
+    const data = normalized
+      .slice(separator + 1)
+      .split("")
+      .map((char) => {
+        const index = BECH32_CHARSET.indexOf(char);
+        if (index === -1) throw new Error("bech32 value has an invalid character");
+        return index;
+      });
+    if (bech32Polymod([...bech32HrpExpand(hrp), ...data]) !== 1) {
+      throw new Error("bech32 checksum is invalid");
+    }
+    return { hrp, data: data.slice(0, -6) };
+  }
+
   function npubFromHex(pubkeyHex) {
     return bech32Encode("npub", convertBits(hexToBytes(pubkeyHex), 8, 5, true));
+  }
+
+  function npubToHex(npub) {
+    const decoded = bech32Decode(npub);
+    if (decoded.hrp !== "npub") throw new Error("expected an npub");
+    const bytes = Uint8Array.from(convertBits(decoded.data, 5, 8, false));
+    if (bytes.length !== 32) throw new Error("npub must contain a 32-byte public key");
+    return bytesToHex(bytes);
   }
 
   function createClientProjection() {
@@ -489,7 +535,11 @@ const FiniteBrainProductClient = (() => {
   }
 
   function revisionCreatedAt(createdAtUnix) {
-    return new Date(createdAtUnix * 1000).toISOString();
+    return new Date(createdAtUnix * 1000).toISOString().replace(".000Z", "Z");
+  }
+
+  function accessChangeCreatedAt(createdAtUnix) {
+    return new Date(createdAtUnix * 1000).toISOString().replace(".000Z", "Z");
   }
 
   function canonicalRevisionPayload(input) {
@@ -507,6 +557,20 @@ const FiniteBrainProductClient = (() => {
     )},"authorNpub":${JSON.stringify(input.authorNpub)},"createdAt":${JSON.stringify(
       input.createdAt
     )}}`;
+  }
+
+  function revisionTags(input) {
+    return [
+      [
+        "d",
+        `finite-folder-object-revision:${input.vaultId}:${input.folderId}:${input.objectId}:${input.revision}`,
+      ],
+      ["vault", input.vaultId],
+      ["folder", input.folderId],
+      ["object", input.objectId],
+      ["operation", input.operation],
+      ["keyVersion", String(input.keyVersion)],
+    ];
   }
 
   async function buildPageWriteRequest(keyring, input) {
@@ -539,7 +603,14 @@ const FiniteBrainProductClient = (() => {
     const eventTemplate = {
       kind: APP_EVENT_KIND,
       created_at: createdAtUnix,
-      tags: [],
+      tags: revisionTags({
+        folderId: input.folderId,
+        objectId: input.objectId,
+        operation: input.operation || (baseRevision === null ? "create" : "update"),
+        keyVersion: input.keyVersion,
+        revision,
+        vaultId: input.vaultId,
+      }),
       content: payload,
     };
     const revisionEvent = await input.signEvent(eventTemplate);
@@ -1146,10 +1217,23 @@ const FiniteBrainProductClient = (() => {
     };
   }
 
+  function stableGraphHash(value) {
+    let hash = 2166136261;
+    for (const char of String(value || "")) {
+      hash ^= char.charCodeAt(0);
+      hash = Math.imul(hash, 16777619);
+    }
+    return hash >>> 0;
+  }
+
+  function stableUnitInterval(value) {
+    return stableGraphHash(value) / 0xffffffff;
+  }
+
   function graphLayout(graph, options = {}) {
     const width = Number(options.width || graphViewport.width);
     const height = Number(options.height || graphViewport.height);
-    const margin = Number(options.margin || 76);
+    const margin = Number(options.margin || 44);
     const centerX = width / 2;
     const centerY = height / 2;
     const positions = new Map();
@@ -1171,21 +1255,123 @@ const FiniteBrainProductClient = (() => {
       positions.set(orderedNodes[0].id, { x: centerX, y: centerY });
       return positions;
     }
-    const hasHub = orderedNodes.length > 4 && (degree.get(orderedNodes[0].id) || 0) > 1;
-    orderedNodes.forEach((node, index) => {
-      const isHub = hasHub && index === 0;
-      if (isHub) {
-        positions.set(node.id, { x: centerX, y: centerY });
-        return;
-      }
-      const ringIndex = hasHub ? index - 1 : index;
-      const ringCount = hasHub ? orderedNodes.length - 1 : orderedNodes.length;
-      const angle = (Math.PI * 2 * ringIndex) / ringCount - Math.PI / 2;
-      positions.set(node.id, {
-        x: Math.round(centerX + Math.cos(angle) * radiusX),
-        y: Math.round(centerY + Math.sin(angle) * radiusY),
+
+    const folderIds = [...new Set(orderedNodes.map((node) => node.folderId || ""))].sort();
+    const folderCenters = new Map();
+    folderIds.forEach((folderId, index) => {
+      const angle =
+        (Math.PI * 2 * index) / Math.max(1, folderIds.length) +
+        stableUnitInterval(`folder-angle:${folderId}`) * 0.82;
+      const radius = 0.42 + stableUnitInterval(`folder-radius:${folderId}`) * 0.38;
+      folderCenters.set(folderId, {
+        x: centerX + Math.cos(angle) * radiusX * radius,
+        y: centerY + Math.sin(angle) * radiusY * radius,
       });
     });
+
+    const hasHub = orderedNodes.length > 4 && (degree.get(orderedNodes[0].id) || 0) > 1;
+    const nodeState = orderedNodes.map((node) => {
+      const nodeDegree = degree.get(node.id) || 0;
+      const folderCenter = folderCenters.get(node.folderId || "") || { x: centerX, y: centerY };
+      const jitterAngle = stableUnitInterval(`node-angle:${node.id}`) * Math.PI * 2;
+      const jitterRadius = Math.sqrt(stableUnitInterval(`node-radius:${node.id}`)) * 136;
+      const scatterAngle = stableUnitInterval(`loose-angle:${node.id}`) * Math.PI * 2;
+      const scatterRadius = 0.2 + stableUnitInterval(`loose-radius:${node.id}`) * 0.72;
+      const looseX = centerX + Math.cos(scatterAngle) * radiusX * scatterRadius;
+      const looseY = centerY + Math.sin(scatterAngle) * radiusY * scatterRadius;
+      const fixed = hasHub && node.id === orderedNodes[0].id && orderedNodes.length < 18;
+      return {
+        fixed,
+        id: node.id,
+        loose: nodeDegree === 0,
+        x: fixed
+          ? centerX
+          : nodeDegree === 0
+            ? looseX
+            : folderCenter.x + Math.cos(jitterAngle) * jitterRadius,
+        y: fixed
+          ? centerY
+          : nodeDegree === 0
+            ? looseY
+            : folderCenter.y + Math.sin(jitterAngle) * jitterRadius,
+        vx: 0,
+        vy: 0,
+      };
+    });
+    const byId = new Map(nodeState.map((node) => [node.id, node]));
+    const links = graph.edges
+      .map((edge) => ({ source: byId.get(edge.source), target: byId.get(edge.target) }))
+      .filter((edge) => edge.source && edge.target);
+    const iterations = Math.min(220, Math.max(110, orderedNodes.length * 5));
+    const linkDistance = Math.max(76, Math.min(138, 112 - Math.sqrt(orderedNodes.length) * 0.8));
+    const repulsion = Math.max(380, Math.min(1120, 7600 / Math.sqrt(orderedNodes.length)));
+    for (let iteration = 0; iteration < iterations; iteration += 1) {
+      for (let leftIndex = 0; leftIndex < nodeState.length; leftIndex += 1) {
+        for (let rightIndex = leftIndex + 1; rightIndex < nodeState.length; rightIndex += 1) {
+          const left = nodeState[leftIndex];
+          const right = nodeState[rightIndex];
+          let dx = right.x - left.x;
+          let dy = right.y - left.y;
+          let distanceSq = dx * dx + dy * dy;
+          if (distanceSq < 0.01) {
+            dx = stableUnitInterval(`overlap-x:${left.id}:${right.id}`) - 0.5;
+            dy = stableUnitInterval(`overlap-y:${left.id}:${right.id}`) - 0.5;
+            distanceSq = dx * dx + dy * dy;
+          }
+          const distance = Math.sqrt(distanceSq);
+          const force = repulsion / Math.max(distanceSq, 160);
+          const fx = (dx / distance) * force;
+          const fy = (dy / distance) * force;
+          if (!left.fixed) {
+            left.vx -= fx;
+            left.vy -= fy;
+          }
+          if (!right.fixed) {
+            right.vx += fx;
+            right.vy += fy;
+          }
+        }
+      }
+      for (const link of links) {
+        const dx = link.target.x - link.source.x;
+        const dy = link.target.y - link.source.y;
+        const distance = Math.max(1, Math.sqrt(dx * dx + dy * dy));
+        const force = (distance - linkDistance) * 0.018;
+        const fx = (dx / distance) * force;
+        const fy = (dy / distance) * force;
+        if (!link.source.fixed) {
+          link.source.vx += fx;
+          link.source.vy += fy;
+        }
+        if (!link.target.fixed) {
+          link.target.vx -= fx;
+          link.target.vy -= fy;
+        }
+      }
+      for (const node of nodeState) {
+        if (node.fixed) {
+          node.x = centerX;
+          node.y = centerY;
+          node.vx = 0;
+          node.vy = 0;
+          continue;
+        }
+        const centerForce = node.loose ? 0.00035 : 0.0012;
+        node.vx += (centerX - node.x) * centerForce;
+        node.vy += (centerY - node.y) * centerForce;
+        node.vx *= 0.88;
+        node.vy *= 0.88;
+        node.x = Math.min(width - margin, Math.max(margin, node.x + node.vx));
+        node.y = Math.min(height - margin, Math.max(margin, node.y + node.vy));
+      }
+    }
+
+    for (const node of nodeState) {
+      positions.set(node.id, {
+        x: Math.round(node.fixed ? centerX : node.x),
+        y: Math.round(node.fixed ? centerY : node.y),
+      });
+    }
     return positions;
   }
 
@@ -1356,20 +1542,20 @@ const FiniteBrainProductClient = (() => {
   function readerPageDetail(page) {
     if (!page) return "";
     if (page.status === "ready") {
-      return `${page.path || `${page.objectId}.md`} - revision ${page.revision || 0}`;
+      return page.path || `${page.objectId}.md`;
     }
     return `locked - ${page.folderId}/${page.objectId}`;
   }
 
   function readerFolderDetail(row) {
-    if (!row.pageCount) return `No pages yet - ${row.accessLabel}`;
+    if (!row.pageCount) return "Empty";
     if (row.readableCount === row.pageCount) {
-      return `${pageCountLabel(row.pageCount)} readable - ${row.accessLabel}`;
+      return pageCountLabel(row.pageCount);
     }
     if (!row.readableCount) {
-      return `${pageCountLabel(row.pageCount)} present, Folder Key not open - ${row.accessLabel}`;
+      return "Locked";
     }
-    return `${row.readableCount}/${row.pageCount} readable - ${row.accessLabel}`;
+    return `${row.readableCount}/${row.pageCount}`;
   }
 
   function selectDefaultReaderTargets() {
@@ -1504,9 +1690,7 @@ const FiniteBrainProductClient = (() => {
     const pageActive = view !== "graph";
     return {
       graphHidden: pageActive,
-      graphTabClass: `workspace-tab${pageActive ? "" : " active"}`,
       pageHidden: !pageActive,
-      pageTabClass: `workspace-tab${pageActive ? " active" : ""}`,
       ribbonGraphClass: `ribbon-button${pageActive ? "" : " active"}`,
       shellView: pageActive ? "page" : "graph",
     };
@@ -1514,16 +1698,29 @@ const FiniteBrainProductClient = (() => {
 
   function renderWorkspaceChrome(page = selectedReaderPage()) {
     const chrome = workspaceChromeState(state.activeWorkspaceView);
-    document.querySelector(".obsidian-shell").dataset.workspaceView = chrome.shellView;
+    const workspaceTitle = workspaceTabTitle(state.metadata, page);
+    const shell = document.querySelector(".obsidian-shell");
+    shell.dataset.workspaceView = chrome.shellView;
+    shell.dataset.vaultLoaded = state.metadata ? "true" : "false";
     $("pageWorkspace").hidden = chrome.pageHidden;
     $("graphWorkspace").hidden = chrome.graphHidden;
-    $("pageTabButton").className = chrome.pageTabClass;
-    $("graphTabButton").className = chrome.graphTabClass;
-    $("pageTabButton").setAttribute("aria-selected", String(!chrome.pageHidden));
-    $("graphTabButton").setAttribute("aria-selected", String(!chrome.graphHidden));
     $("ribbonGraphButton").className = chrome.ribbonGraphClass;
     setPressed("ribbonGraphButton", !chrome.graphHidden);
-    setText("workspaceTitle", workspaceTabTitle(state.metadata, page));
+    document.title = chrome.shellView === "graph" ? "Graph View - FiniteBrain" : `${workspaceTitle} - FiniteBrain`;
+  }
+
+  function renderVaultControlChrome() {
+    const details = $("vaultControlDetails");
+    if (!details) return;
+    setText("vaultControlSummary", state.metadata?.name || state.activeVaultId || "smoke");
+    if (state.metadata && !state.vaultControlsCollapsedAfterLoad) {
+      details.open = false;
+      state.vaultControlsCollapsedAfterLoad = true;
+    }
+    if (!state.metadata && state.vaultControlsCollapsedAfterLoad) {
+      details.open = true;
+      state.vaultControlsCollapsedAfterLoad = false;
+    }
   }
 
   function nextDraftObjectId() {
@@ -1562,6 +1759,9 @@ const FiniteBrainProductClient = (() => {
   }
 
   function selectAccessFolder(folderId, intent = "inspect") {
+    if (state.activeAccessFolderId !== folderId || state.activeAccessIntent !== intent) {
+      state.accessResult = null;
+    }
     state.activeAccessFolderId = folderId;
     state.activeAccessIntent = intent;
     selectReaderFolder(folderId, { selectFirstPage: false });
@@ -1630,19 +1830,19 @@ const FiniteBrainProductClient = (() => {
     const readablePageCount = Number(options.readablePageCount || 0);
     if (readablePageCount <= 0) {
       return {
-        title: "No readable graph yet",
-        copy: "Open a vault with readable Pages to render the local link graph.",
+        title: "No graph yet",
+        copy: "Open a vault to build the local graph.",
       };
     }
     if (filterText) {
       return {
         title: "No matching Pages",
-        copy: "Clear or change the graph filter to bring readable Pages back into view.",
+        copy: "Clear or change the graph filter.",
       };
     }
     return {
-      title: "No graph links yet",
-      copy: "Readable Pages are open, but no Page links are available for this graph projection.",
+      title: "No links yet",
+      copy: "Readable pages are open, but none link to another page yet.",
     };
   }
 
@@ -1682,10 +1882,16 @@ const FiniteBrainProductClient = (() => {
     for (const node of graph.nodes) {
       const position = positions.get(node.id);
       const circle = document.createElementNS("http://www.w3.org/2000/svg", "circle");
-      circle.setAttribute("class", graph.edges.some((edge) => edge.source === node.id) ? "node focus" : "node");
+      const degree = edgeDegree.get(node.id) || 0;
+      const isSelected =
+        state.selectedPageKey && node.id === state.selectedPageKey;
+      circle.setAttribute(
+        "class",
+        `node${degree > 1 ? " focus" : ""}${isSelected ? " selected" : ""}`
+      );
       circle.setAttribute("cx", String(position.x));
       circle.setAttribute("cy", String(position.y));
-      circle.setAttribute("r", String(Math.min(18, 9 + (edgeDegree.get(node.id) || 0) * 1.5)));
+      circle.setAttribute("r", String(Math.min(5.6, 2.1 + degree * 0.36)));
       circle.setAttribute("data-folder-id", node.folderId);
       svg.appendChild(circle);
 
@@ -1700,6 +1906,7 @@ const FiniteBrainProductClient = (() => {
 
   function setPill(id, text, tone) {
     const element = $(id);
+    if (!element) return;
     element.textContent = text;
     element.className = `pill ${tone || "muted"}`;
   }
@@ -1723,6 +1930,7 @@ const FiniteBrainProductClient = (() => {
 
   function renderAccessBadgeRow(id, badges) {
     const row = $(id);
+    if (!row) return;
     row.replaceChildren();
     for (const badge of badges) {
       const element = document.createElement("span");
@@ -1733,11 +1941,13 @@ const FiniteBrainProductClient = (() => {
   }
 
   function setText(id, text) {
-    $(id).textContent = text;
+    const element = $(id);
+    if (element) element.textContent = text;
   }
 
   function setPressed(id, pressed) {
-    $(id).setAttribute("aria-pressed", String(Boolean(pressed)));
+    const element = $(id);
+    if (element) element.setAttribute("aria-pressed", String(Boolean(pressed)));
   }
 
   function appendInlineSegments(parent, text) {
@@ -1806,12 +2016,12 @@ const FiniteBrainProductClient = (() => {
     content.replaceChildren();
     if (!page) {
       content.className = "note-content note-content-empty";
-      content.textContent = "Open an accessible vault to read decrypted Pages here.";
+      content.textContent = "Open a vault to read pages.";
       return;
     }
     if (!isReadablePage(page)) {
       content.className = "note-content note-content-empty";
-      content.textContent = "This Page is present in sync, but its Folder Key is not open in this session.";
+      content.textContent = "This page is locked in this session.";
       return;
     }
     if (state.readerMode === "source") {
@@ -1824,40 +2034,11 @@ const FiniteBrainProductClient = (() => {
   }
 
   function renderPageStatus(page) {
-    const readableCount = readablePages().length;
-    const openedKeyCount = state.keyring?.openedGrants.length || 0;
-    setText(
-      "vaultStatusDetail",
-      `${state.activeVaultId || "vault"} | ${readableCount} readable Pages | ${openedKeyCount} keys open`
-    );
-    if (!isReadablePage(page)) {
-      setText("pageStatusDetail", "No readable page selected.");
-      return;
-    }
-    const stats = pageStatsForText(page.text);
-    const path = page.path || `${page.objectId}.md`;
-    setText(
-      "pageStatusDetail",
-      `${page.folderId}/${path} | ${stats.words} words | ${stats.links} links`
-    );
+    return page;
   }
 
   function renderLinkContext(page) {
-    const context = pageLinkContext(page, readablePages());
-    const renderLinkRow = (item, row) => {
-      const button = readerButton(
-        row.label,
-        row.detail,
-        `link-button ${row.status}${row.key === state.selectedPageKey ? " active" : ""}`,
-        () => {
-          if (row.key) selectReaderPage(row.key);
-        }
-      );
-      button.disabled = !row.key;
-      item.appendChild(button);
-    };
-    setList("outgoingLinkList", context.outgoing, "No outgoing links", renderLinkRow);
-    setList("backlinkList", context.backlinks, "No backlinks", renderLinkRow);
+    return page;
   }
 
   function setGraphStats(graph, readablePageCount) {
@@ -1875,6 +2056,7 @@ const FiniteBrainProductClient = (() => {
 
   function setList(id, rows, emptyText, renderRow) {
     const list = $(id);
+    if (!list) return;
     list.replaceChildren();
     if (!rows.length) {
       const item = document.createElement("li");
@@ -1891,8 +2073,7 @@ const FiniteBrainProductClient = (() => {
   }
 
   function log(message, value) {
-    const suffix = value === undefined ? "" : `\n${JSON.stringify(value, null, 2)}`;
-    $("activityLog").textContent = `${new Date().toISOString()} ${message}${suffix}`;
+    console.debug(`[FiniteBrain] ${message}`, value ?? "");
   }
 
   function closeContextMenu() {
@@ -2047,6 +2228,7 @@ const FiniteBrainProductClient = (() => {
     }
     const accessRoute = accessActionRoute(item.action, target);
     if (accessRoute) {
+      state.accessResult = null;
       state.activeAccessFolderId = accessRoute.folderId;
       state.activeAccessIntent = accessRoute.intent;
       state.selectedFolderId = accessRoute.folderId;
@@ -2085,21 +2267,6 @@ const FiniteBrainProductClient = (() => {
     }
     menu.hidden = false;
     positionContextMenu(menu, x, y, items.length);
-  }
-
-  function readerButton(label, detail, className, onClick) {
-    const button = document.createElement("button");
-    button.type = "button";
-    button.className = className;
-    button.textContent = label;
-    if (detail) {
-      const detailElement = document.createElement("span");
-      detailElement.className = "reader-list-detail";
-      detailElement.textContent = detail;
-      button.appendChild(detailElement);
-    }
-    button.addEventListener("click", onClick);
-    return button;
   }
 
   function appendObsidianDetail(button, detail) {
@@ -2151,7 +2318,7 @@ const FiniteBrainProductClient = (() => {
     setList(
       "sidebarSearchResults",
       rows,
-      query.trim() ? "No matching readable Pages" : "No search query",
+      query.trim() ? "No matching pages" : "Search pages",
       (item, row) => {
         const button = obsidianTreeButton(
           row.label,
@@ -2173,6 +2340,69 @@ const FiniteBrainProductClient = (() => {
     );
   }
 
+  function renderAccessResultPanel() {
+    const panel = $("accessResultPanel");
+    const result = state.accessResult;
+    panel.hidden = !result;
+    panel.className = `access-result ${result?.tone || ""}`;
+    panel.replaceChildren();
+    if (!result) return;
+    const title = document.createElement("strong");
+    title.textContent = result.title;
+    panel.appendChild(title);
+    const detail = document.createElement("span");
+    detail.textContent = result.detail;
+    panel.appendChild(detail);
+    if (result.meta) {
+      for (const [key, value] of Object.entries(result.meta)) {
+        const line = document.createElement("span");
+        line.textContent = `${key}: ${value}`;
+        panel.appendChild(line);
+      }
+    }
+  }
+
+  function renderAccessFlowPanel(activeRow) {
+    const intent = state.activeAccessIntent;
+    const flowVisible = Boolean(activeRow && (intent === "manage" || intent === "share"));
+    const restricted = activeRow?.access === "restricted";
+    const keyOpen = hasOpenedAccessFolderKey(activeRow);
+    const busy = state.accessBusy;
+    $("accessFlowPanel").hidden = !flowVisible;
+    $("shareExpiryField").hidden = intent !== "share";
+    $("shareMountField").hidden = intent !== "share";
+    $("shareAcceptField").hidden = intent !== "share";
+    $("grantFolderAccessButton").hidden = intent !== "manage";
+    $("removeFolderAccessButton").hidden = intent !== "manage";
+    $("createShareLinkButton").hidden = intent !== "share";
+    $("acceptShareLinkButton").hidden = intent !== "share";
+    $("revokeShareLinkButton").hidden = intent !== "share";
+    if (!$("accessShareExpiresAtInput").value) {
+      $("accessShareExpiresAtInput").value = defaultShareExpiryDateTimeLocal();
+    }
+    if (state.lastShareLinkId && !$("accessShareLinkInput").value) {
+      $("accessShareLinkInput").value = state.lastShareLinkId;
+    }
+    const canUseFolderFlow = flowVisible && restricted && keyOpen && !busy && state.signerStatus === "connected";
+    $("grantFolderAccessButton").disabled = !canUseFolderFlow;
+    $("removeFolderAccessButton").disabled = !canUseFolderFlow;
+    $("createShareLinkButton").disabled = !canUseFolderFlow;
+    $("acceptShareLinkButton").disabled = !flowVisible || intent !== "share" || busy || state.signerStatus !== "connected";
+    $("revokeShareLinkButton").disabled = !flowVisible || intent !== "share" || busy || state.signerStatus !== "connected";
+    if (!flowVisible) {
+      setText("accessFlowHint", "Select a Folder to manage access.");
+    } else if (!restricted) {
+      setText("accessFlowHint", "Sharing is for restricted Folders. Use all-members folders for broad org access.");
+    } else if (!keyOpen) {
+      setText("accessFlowHint", "Open this Folder key before sharing.");
+    } else if (intent === "manage") {
+      setText("accessFlowHint", "Grant access to an existing vault member.");
+    } else {
+      setText("accessFlowHint", "Create a single-use npub-bound link, or accept one while signed in as the recipient.");
+    }
+    renderAccessResultPanel();
+  }
+
   function renderAccessPanel() {
     const rows = readerFolderRows(state.metadata);
     const openedFolders = openedGrantFolderIds();
@@ -2188,9 +2418,10 @@ const FiniteBrainProductClient = (() => {
     setText("accessFolderDetail", panel.detail);
     setText("accessManageButton", "Manage");
     setText("accessShareButton", "Share");
-    $("accessManageButton").disabled = !activeRow;
-    $("accessShareButton").disabled = !activeRow;
+    $("accessManageButton").disabled = !activeRow || state.accessBusy;
+    $("accessShareButton").disabled = !activeRow || state.accessBusy;
     renderAccessBadgeRow("accessBadgeRow", accessBadgesForFolder(activeRow, openedFolders));
+    renderAccessFlowPanel(activeRow);
     setList("accessFolderList", rows, "Load a Vault to inspect access", (item, row) => {
       const button = obsidianTreeButton(
         row.path,
@@ -2213,18 +2444,12 @@ const FiniteBrainProductClient = (() => {
   function renderReader() {
     selectDefaultReaderTargets();
     const folderRows = readerFolderRows(state.metadata);
-    const pageRows = readerPageRows(state.selectedFolderId);
-    const readableCount = readablePages().length;
-    const openedKeyCount = state.keyring?.openedGrants.length || 0;
-    setPill("readerFolderSummary", `${folderRows.length} folders`, folderRows.length ? "ready" : "muted");
-    setPill("readerPageSummary", `${readableCount} readable pages`, readableCount ? "ready" : "muted");
-    setPill("readerKeySummary", `${openedKeyCount} keys open`, openedKeyCount ? "ready" : "muted");
 
     setList("readerFolderList", folderRows, "Load a Vault to browse folders", (item, row) => {
       const expanded = state.expandedFolderIds.has(row.id);
       const button = obsidianTreeButton(
         row.path,
-        readerFolderDetail(row),
+        "",
         `obsidian-folder-button ${row.status}${expanded ? " expanded" : ""}${
           row.id === state.selectedFolderId ? " active" : ""
         }`,
@@ -2237,7 +2462,6 @@ const FiniteBrainProductClient = (() => {
           },
         }
       );
-      appendAccessBadges(button, sidebarAccessBadgesForFolder(row, openedGrantFolderIds()));
       item.appendChild(button);
       const childPages = readerPageRows(row.id);
       if (expanded && childPages.length) {
@@ -2267,22 +2491,12 @@ const FiniteBrainProductClient = (() => {
       }
     });
 
-    setList("readerPageList", pageRows, "No Pages in this Folder yet", (item, row) => {
-      const button = readerButton(
-        row.label,
-        row.detail,
-        `reader-list-button ${row.status}${row.key === state.selectedPageKey ? " active" : ""}`,
-        () => selectReaderPage(row.key)
-      );
-      item.appendChild(button);
-    });
-
     const page = selectedReaderPage();
     $("readerModeButton").textContent = state.readerMode === "source" ? "Source" : "Reading";
     setPressed("readerModeButton", state.readerMode === "source");
     $("readerModeButton").disabled = !isReadablePage(page);
     if (!page) {
-      setText("readerPageTitle", state.selectedFolderId ? "No readable page selected" : "No folder selected");
+      setText("readerPageTitle", state.selectedFolderId ? "No page selected" : "No folder selected");
       setText("readerPagePath", state.selectedFolderId || "No page path loaded");
       setPill("readerPageMeta", "empty", "muted");
       renderPageContent(null);
@@ -2306,54 +2520,22 @@ const FiniteBrainProductClient = (() => {
   }
 
   function render() {
-    const signerTone =
-      state.signerStatus === "connected"
-        ? "ready"
-        : state.signerStatus === "unavailable" || state.signerStatus === "unsupported"
-          ? "error"
-          : "muted";
-    setPill("signerState", state.signerStatus, signerTone);
-    setPill("configState", state.config ? "config ready" : "config", state.config ? "ready" : "muted");
-    setPill("vaultState", state.metadata ? "vault loaded" : "vault", state.metadata ? "ready" : "muted");
-
-    const rows = metadataFolderRows(state.metadata);
-    const lockedCount = rows.filter((row) => row.status !== "ready").length;
-    setPill("accessState", lockedCount ? `${lockedCount} locked` : "access ready", lockedCount ? "warn" : "ready");
-    setText("folderCount", String(rows.length));
-
-    $("connectSignerButton").disabled = !deriveSignerState(window.nostr).canConnect;
-    $("loadVaultButton").disabled = state.signerStatus !== "connected" || !state.config;
-    $("openFolderKeyButton").disabled = !state.metadata;
-    $("encryptDraftButton").disabled = !state.keyring;
-    $("savePageButton").disabled = !state.preparedWrite || state.signerStatus !== "connected";
-    $("syncBootstrapButton").disabled = state.signerStatus !== "connected" || !state.config;
-    $("openAccessibleVaultButton").disabled = state.readerBusy || !state.config;
-    $("refreshReaderButton").disabled = state.readerBusy || state.signerStatus !== "connected" || !state.metadata;
-    $("planOkfImportButton").disabled = !state.metadata;
-    $("executeOkfImportButton").disabled =
-      !state.okfPlan || !state.keyring || state.signerStatus !== "connected";
+    setOptionalDisabled("connectSignerButton", !deriveSignerState(window.nostr).canConnect);
+    setOptionalDisabled("loadVaultButton", state.signerStatus !== "connected" || !state.config);
+    setOptionalDisabled("openFolderKeyButton", !state.metadata);
+    setOptionalDisabled("encryptDraftButton", !state.keyring);
+    setOptionalDisabled("savePageButton", !state.preparedWrite || state.signerStatus !== "connected");
+    setOptionalDisabled("syncBootstrapButton", state.signerStatus !== "connected" || !state.config);
+    setOptionalDisabled("openAccessibleVaultButton", state.readerBusy || !state.config);
+    setOptionalDisabled("refreshReaderButton", state.readerBusy || state.signerStatus !== "connected" || !state.metadata);
+    setOptionalDisabled("planOkfImportButton", !state.metadata);
+    setOptionalDisabled(
+      "executeOkfImportButton",
+      !state.okfPlan || !state.keyring || state.signerStatus !== "connected"
+    );
     $("vaultIdInput").value = state.activeVaultId;
 
-    setText("workspaceTitle", state.metadata?.name || "Open a Vault");
-    setText("vaultKind", state.metadata?.kind || "-");
-    setText("memberCount", String((state.metadata?.members || []).length || "-"));
-    setText("adminCount", String((state.metadata?.admins || []).length || "-"));
-    setText("grantCount", String(state.metadata?.grantCount ?? "-"));
-
-    setList("folderList", rows, "No folders loaded", (item, row) => {
-      item.className = row.status;
-      item.textContent = row.detail ? `${row.label} - ${row.detail}` : row.label;
-    });
-
-    setList("mountList", metadataMountRows(state.metadata), "No mounted Folders", (item, row) => {
-      item.textContent = `${row.label} (${row.state})`;
-    });
-
-    $("spineSigner").className = state.signerStatus === "connected" ? "done" : "waiting";
-    $("spineAuth").className = state.signerStatus === "connected" && state.config ? "done" : "waiting";
-    $("spineVault").className = state.metadata ? "done" : "waiting";
-    $("spineKeys").className = state.keyring?.openedGrants.length ? "done" : "waiting";
-    $("spinePages").className = readablePages().length ? "done" : "waiting";
+    renderVaultControlChrome();
     renderSidebarMode();
     renderReader();
     renderSearchPanel();
@@ -2441,6 +2623,7 @@ const FiniteBrainProductClient = (() => {
 
   async function connectSigner() {
     const derived = deriveSignerState(window.nostr);
+    state.activeVaultId = $("vaultIdInput").value.trim() || state.activeVaultId;
     if (!derived.canConnect) {
       state.signerStatus = derived.status;
       setText("signerDetail", derived.detail);
@@ -2473,6 +2656,7 @@ const FiniteBrainProductClient = (() => {
   }
 
   async function openAccessibleVaultReader() {
+    state.activeVaultId = $("vaultIdInput").value.trim() || state.activeVaultId;
     state.readerBusy = true;
     render();
     try {
@@ -2522,6 +2706,500 @@ const FiniteBrainProductClient = (() => {
   function currentFolderKeyVersion(folderId) {
     const folder = (state.metadata?.folders || []).find((candidate) => candidate.id === folderId);
     return folder?.currentKeyVersion || 1;
+  }
+
+  function currentActorNpub() {
+    if (!state.pubkeyHex) throw new Error("Connect a signer first");
+    return npubFromHex(state.pubkeyHex);
+  }
+
+  function activeAccessRow() {
+    const rows = readerFolderRows(state.metadata);
+    const activeFolderId = state.activeAccessFolderId || state.selectedFolderId;
+    return rows.find((row) => row.id === activeFolderId) || rows[0] || null;
+  }
+
+  function requireRestrictedAccessRow() {
+    const row = activeAccessRow();
+    if (!row) throw new Error("Select a Folder first");
+    if (row.access !== "restricted") {
+      throw new Error("Folder sharing is available for restricted Folders");
+    }
+    return row;
+  }
+
+  function openedAccessFolderKey(row) {
+    const keyVersion = row.currentKeyVersion || currentFolderKeyVersion(row.id);
+    const key = state.keyring?.keys.get(folderKeyId(state.activeVaultId, row.id, keyVersion));
+    if (!key) throw new Error(`Open the Folder Key for ${row.path} before sharing`);
+    return key;
+  }
+
+  function hasOpenedAccessFolderKey(row) {
+    if (!row) return false;
+    const keyVersion = row.currentKeyVersion || currentFolderKeyVersion(row.id);
+    return Boolean(state.keyring?.keys.has(folderKeyId(state.activeVaultId, row.id, keyVersion)));
+  }
+
+  function normalizedTargetNpub() {
+    const value = $("accessTargetNpubInput").value.trim();
+    if (!value) throw new Error("Paste a target npub first");
+    npubToHex(value);
+    return value;
+  }
+
+  function defaultShareExpiryDateTimeLocal() {
+    const date = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+    date.setSeconds(0, 0);
+    return date.toISOString().slice(0, 16);
+  }
+
+  function shareExpiryIso() {
+    const value = $("accessShareExpiresAtInput").value.trim();
+    const date = value ? new Date(value) : new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+    if (Number.isNaN(date.getTime())) throw new Error("Share link expiry is invalid");
+    return date.toISOString();
+  }
+
+  function uniqueNpubs(values) {
+    return [...new Set((values || []).map((value) => String(value || "").trim()).filter(Boolean))];
+  }
+
+  function folderAccessRemovalRecipients(metadata, row, targetNpub) {
+    if (!row || row.access !== "restricted") {
+      throw new Error("Folder access removal is available for restricted Folders");
+    }
+    const accessUsers = uniqueNpubs(row.accessUserIds);
+    if (!accessUsers.includes(targetNpub)) {
+      throw new Error(`${shortKey(targetNpub)} does not have explicit access to ${row.path}`);
+    }
+    const admins = uniqueNpubs(metadata?.admins || []);
+    if (admins.includes(targetNpub)) {
+      throw new Error("Admins can still open restricted Folders; remove admin role first");
+    }
+    const remainingAccessUsers = accessUsers.filter((npub) => npub !== targetNpub);
+    const recipients = uniqueNpubs([...admins, ...remainingAccessUsers]);
+    if (!recipients.length) throw new Error("Folder Key rotation needs at least one remaining recipient");
+    return { remainingAccessUsers, recipients };
+  }
+
+  function liveReadableFolderObjects(objects, folderId) {
+    const rows = (objects || [])
+      .filter((object) => object.folderId === folderId && !object.deleted)
+      .sort((left, right) => String(left.objectId).localeCompare(String(right.objectId)));
+    const unreadable = rows.filter((object) => object.status !== "ready" || typeof object.text !== "string");
+    if (unreadable.length) {
+      throw new Error("Every live Page in this Folder must be readable before rotating access");
+    }
+    return rows;
+  }
+
+  function randomFolderKeyBytes() {
+    return crypto.getRandomValues(new Uint8Array(32));
+  }
+
+  function deterministicClientId(prefix, parts) {
+    return sha256Hex(parts.join("\n")).then((digest) => `${prefix}-${digest.slice(0, 16)}`);
+  }
+
+  function canonicalAdminAccessChangePayload(input) {
+    const fields = [
+      `"version":${JSON.stringify("finite-vault-admin-access-change-v1")}`,
+      `"vaultId":${JSON.stringify(input.vaultId)}`,
+      `"changeId":${JSON.stringify(input.changeId)}`,
+      `"action":${JSON.stringify(input.action)}`,
+      `"adminNpub":${JSON.stringify(input.adminNpub)}`,
+    ];
+    if (input.folderId) fields.push(`"folderId":${JSON.stringify(input.folderId)}`);
+    if (input.targetNpub) fields.push(`"targetNpub":${JSON.stringify(input.targetNpub)}`);
+    if (input.keyVersion !== undefined && input.keyVersion !== null) {
+      fields.push(`"keyVersion":${Number(input.keyVersion)}`);
+    }
+    if (input.note) fields.push(`"note":${JSON.stringify(input.note)}`);
+    fields.push(`"createdAt":${JSON.stringify(input.createdAt)}`);
+    return `{${fields.join(",")}}`;
+  }
+
+  function adminAccessChangeTags(input) {
+    const tags = [
+      ["d", `finite-vault-admin-access-change:${input.vaultId}:${input.changeId}`],
+      ["vault", input.vaultId],
+      ["action", input.action],
+    ];
+    if (input.folderId) tags.push(["folder", input.folderId]);
+    if (input.targetNpub) tags.push(["p", npubToHex(input.targetNpub)]);
+    if (input.keyVersion !== undefined && input.keyVersion !== null) {
+      tags.push(["keyVersion", String(input.keyVersion)]);
+    }
+    return tags;
+  }
+
+  async function buildAdminAccessChangeEvent(input) {
+    const signEvent = input.signEvent || window.nostr?.signEvent;
+    if (!signEvent) throw new Error("NIP-07 signer is unavailable");
+    const createdAtUnix = input.createdAtUnix || Math.floor(Date.now() / 1000);
+    const createdAt = accessChangeCreatedAt(createdAtUnix);
+    const adminNpub = input.adminNpub || currentActorNpub();
+    const vaultId = input.vaultId || state.activeVaultId;
+    const changeId =
+      input.changeId ||
+      (await deterministicClientId("access-change", [
+        vaultId,
+        input.action,
+        input.folderId || "-",
+        input.targetNpub || "-",
+        createdAt,
+      ]));
+    const payload = {
+      version: "finite-vault-admin-access-change-v1",
+      vaultId,
+      changeId,
+      action: input.action,
+      adminNpub,
+      folderId: input.folderId,
+      targetNpub: input.targetNpub,
+      keyVersion: input.keyVersion,
+      note: input.note,
+      createdAt,
+    };
+    return signEvent({
+      kind: APP_EVENT_KIND,
+      created_at: createdAtUnix,
+      tags: adminAccessChangeTags(payload),
+      content: canonicalAdminAccessChangePayload(payload),
+    });
+  }
+
+  async function buildFolderKeyGrantRequest(input) {
+    const signEvent = input.signEvent || window.nostr?.signEvent;
+    if (!signEvent) throw new Error("NIP-07 signer is unavailable");
+    const recipientHex = npubToHex(input.recipientNpub);
+    const issuerNpub = input.issuerNpub || currentActorNpub();
+    const createdAtUnix = input.createdAtUnix || Math.floor(Date.now() / 1000);
+    const createdAt = revisionCreatedAt(createdAtUnix);
+    const folderKey = input.folderKey || bytesToBase64(input.rawKey);
+    const grantId =
+      input.id ||
+      (await deterministicClientId("grant", [
+        input.vaultId,
+        input.folderId,
+        String(input.keyVersion),
+        input.recipientNpub,
+        createdAt,
+      ]));
+    const plaintextGrant = {
+      version: "finite-folder-key-grant-v1",
+      vaultId: input.vaultId,
+      folderId: input.folderId,
+      keyVersion: input.keyVersion,
+      folderKey,
+      issuerNpub,
+      recipientNpub: input.recipientNpub,
+      createdAt,
+    };
+    const wrappedEvent = await signEvent({
+      kind: 1059,
+      created_at: createdAtUnix,
+      tags: [["p", recipientHex]],
+      content: JSON.stringify(plaintextGrant),
+    });
+    return {
+      id: grantId,
+      keyVersion: input.keyVersion,
+      recipientNpub: input.recipientNpub,
+      wrappedEventJson: JSON.stringify(wrappedEvent),
+      createdAt,
+    };
+  }
+
+  function setAccessResult(tone, title, detail, meta = null) {
+    state.accessResult = { tone, title, detail, meta };
+    render();
+  }
+
+  async function buildAccessGrantForRow(row, recipientNpub) {
+    const key = openedAccessFolderKey(row);
+    return buildFolderKeyGrantRequest({
+      vaultId: state.activeVaultId,
+      folderId: row.id,
+      keyVersion: key.keyVersion,
+      rawKey: key.rawKey,
+      recipientNpub,
+    });
+  }
+
+  async function buildFolderAccessRemovalRequest(keyring, input) {
+    if (!keyring) throw new Error("Open this Folder key before removing access");
+    const row = input.row;
+    const vaultId = input.vaultId || state.activeVaultId;
+    const metadata = input.metadata || state.metadata;
+    const targetNpub = input.targetNpub;
+    npubToHex(targetNpub);
+    const currentKeyVersion = row.currentKeyVersion || 1;
+    const currentKey = keyring.keys.get(folderKeyId(vaultId, row.id, currentKeyVersion));
+    if (!currentKey) throw new Error(`Open the Folder Key for ${row.path} before removing access`);
+
+    const { recipients } = folderAccessRemovalRecipients(metadata, row, targetNpub);
+    const newKeyVersion = input.newKeyVersion || currentKeyVersion + 1;
+    if (newKeyVersion !== currentKeyVersion + 1) {
+      throw new Error("Folder access removal must rotate to the next key version");
+    }
+    const newRawKey = input.newRawKey || randomFolderKeyBytes();
+    if (newRawKey.length !== 32) throw new Error("New Folder Key must be 32 bytes");
+    const folderKey = bytesToBase64(newRawKey);
+    const createdAtUnix = input.createdAtUnix || Math.floor(Date.now() / 1000);
+    const actorNpub = input.actorNpub || currentActorNpub();
+    const signEvent = input.signEvent || window.nostr?.signEvent;
+    if (!signEvent) throw new Error("NIP-07 signer is unavailable");
+    await importFolderKey(keyring, {
+      vaultId,
+      folderId: row.id,
+      keyVersion: newKeyVersion,
+      folderKey,
+    });
+
+    const grants = [];
+    for (const recipientNpub of recipients) {
+      grants.push(
+        await buildFolderKeyGrantRequest({
+          vaultId,
+          folderId: row.id,
+          keyVersion: newKeyVersion,
+          rawKey: newRawKey,
+          issuerNpub: actorNpub,
+          recipientNpub,
+          createdAtUnix,
+          signEvent,
+        })
+      );
+    }
+
+    const reencryptedRecords = [];
+    for (const object of liveReadableFolderObjects(input.objects, row.id)) {
+      const write = await buildPageWriteRequest(keyring, {
+        authorNpub: actorNpub,
+        baseRevision: object.revision,
+        createdAtUnix,
+        folderId: row.id,
+        keyVersion: newKeyVersion,
+        objectId: object.objectId,
+        operation: "update",
+        plaintext: object.text,
+        signEvent,
+        vaultId,
+      });
+      reencryptedRecords.push({
+        objectId: object.objectId,
+        ...write,
+      });
+    }
+
+    const accessChangeEvent = await buildAdminAccessChangeEvent({
+      action: "remove-folder-access",
+      adminNpub: actorNpub,
+      createdAtUnix,
+      folderId: row.id,
+      keyVersion: newKeyVersion,
+      signEvent,
+      targetNpub,
+      vaultId,
+    });
+
+    return {
+      newKeyVersion,
+      grants,
+      reencryptedRecords,
+      accessChangeEvent,
+      folderKey,
+      recipientNpubs: recipients,
+    };
+  }
+
+  async function grantFolderAccessFromPanel() {
+    const row = requireRestrictedAccessRow();
+    const targetNpub = normalizedTargetNpub();
+    state.accessBusy = true;
+    state.accessResult = null;
+    render();
+    try {
+      const grant = await buildAccessGrantForRow(row, targetNpub);
+      const accessChangeEvent = await buildAdminAccessChangeEvent({
+        action: "grant-folder-access",
+        folderId: row.id,
+        keyVersion: row.currentKeyVersion,
+        targetNpub,
+      });
+      const body = JSON.stringify({
+        targetNpub,
+        grant,
+        accessChangeEvent,
+      });
+      const metadata = await protectedRequest(
+        `/_admin/vaults/${encodeURIComponent(state.activeVaultId)}/folders/${encodeURIComponent(row.id)}/access`,
+        { method: "POST", body }
+      );
+      state.metadata = metadata;
+      setAccessResult("ready", "Access granted", `${shortKey(targetNpub)} can open ${row.path}.`, {
+        grantId: grant.id,
+      });
+      log("Granted restricted Folder access.", { folderId: row.id, targetNpub: shortKey(targetNpub) });
+    } catch (error) {
+      setAccessResult("error", "Grant failed", error.message);
+      throw error;
+    } finally {
+      state.accessBusy = false;
+      render();
+    }
+  }
+
+  async function removeFolderAccessFromPanel() {
+    const row = requireRestrictedAccessRow();
+    const targetNpub = normalizedTargetNpub();
+    state.accessBusy = true;
+    state.accessResult = null;
+    render();
+    try {
+      const removal = await buildFolderAccessRemovalRequest(state.keyring, {
+        vaultId: state.activeVaultId,
+        metadata: state.metadata,
+        row,
+        targetNpub,
+        objects: [...state.projection.pages.values()],
+      });
+      const body = JSON.stringify({
+        newKeyVersion: removal.newKeyVersion,
+        grants: removal.grants,
+        reencryptedRecords: removal.reencryptedRecords,
+        accessChangeEvent: removal.accessChangeEvent,
+      });
+      const metadata = await protectedRequest(
+        `/_admin/vaults/${encodeURIComponent(state.activeVaultId)}/folders/${encodeURIComponent(
+          row.id
+        )}/access/${encodeURIComponent(targetNpub)}`,
+        { method: "DELETE", body }
+      );
+      state.metadata = metadata;
+      await openAvailableDevelopmentGrants();
+      await pullSyncBootstrap();
+      selectDefaultReaderTargets();
+      renderGraphView();
+      setAccessResult("warn", "Access removed", `${shortKey(targetNpub)} was removed from ${row.path}.`, {
+        keyVersion: `v${removal.newKeyVersion}`,
+        reencryptedPages: String(removal.reencryptedRecords.length),
+      });
+      log("Removed restricted Folder access with key rotation.", {
+        folderId: row.id,
+        keyVersion: removal.newKeyVersion,
+        reencryptedPages: removal.reencryptedRecords.length,
+        targetNpub: shortKey(targetNpub),
+      });
+    } catch (error) {
+      setAccessResult("error", "Remove failed", error.message);
+      throw error;
+    } finally {
+      state.accessBusy = false;
+      render();
+    }
+  }
+
+  async function createShareLinkFromPanel() {
+    const row = requireRestrictedAccessRow();
+    const recipientNpub = normalizedTargetNpub();
+    state.accessBusy = true;
+    state.accessResult = null;
+    render();
+    try {
+      const expiresAt = shareExpiryIso();
+      const grant = await buildAccessGrantForRow(row, recipientNpub);
+      const accessChangeEvent = await buildAdminAccessChangeEvent({
+        action: "grant-folder-access",
+        folderId: row.id,
+        keyVersion: row.currentKeyVersion,
+        targetNpub: recipientNpub,
+      });
+      const body = JSON.stringify({
+        recipientNpub,
+        grant,
+        accessChangeEvent,
+        expiresAt,
+        createPersonalMount: $("accessShareMountInput").checked,
+      });
+      const shareLink = await protectedRequest(
+        `/_admin/vaults/${encodeURIComponent(state.activeVaultId)}/folders/${encodeURIComponent(row.id)}/share-links`,
+        { method: "POST", body }
+      );
+      state.lastShareLinkId = shareLink.id;
+      $("accessShareLinkInput").value = shareLink.id;
+      setAccessResult("ready", "Share link created", `${shareLink.id} is pending for ${shortKey(recipientNpub)}.`, {
+        acceptPath: shareLink.acceptPath,
+        expiresAt: shareLink.expiresAt,
+      });
+      log("Created Folder share link.", { folderId: row.id, shareLinkId: shareLink.id });
+    } catch (error) {
+      setAccessResult("error", "Share failed", error.message);
+      throw error;
+    } finally {
+      state.accessBusy = false;
+      render();
+    }
+  }
+
+  async function acceptShareLinkFromPanel() {
+    const shareLinkId = $("accessShareLinkInput").value.trim() || state.lastShareLinkId;
+    if (!shareLinkId) throw new Error("Paste a share link id first");
+    state.accessBusy = true;
+    state.accessResult = null;
+    render();
+    try {
+      const shareLink = await protectedRequest(`/_admin/share-links/${encodeURIComponent(shareLinkId)}/accept`, {
+        method: "POST",
+      });
+      state.lastShareLinkId = shareLink.id;
+      await loadVaultMetadata();
+      const grants = await openAvailableDevelopmentGrants();
+      await pullSyncBootstrap();
+      selectDefaultReaderTargets();
+      setAccessResult(
+        "ready",
+        shareLink.duplicateAccept ? "Share link already accepted" : "Share link accepted",
+        `${shareLink.folderId} is now available to this signer.`,
+        {
+          mounted: shareLink.personalMountId || "none",
+          openedKeys: String(grants.opened.length),
+        }
+      );
+      log("Accepted Folder share link.", { shareLinkId: shareLink.id });
+    } catch (error) {
+      setAccessResult("error", "Accept failed", error.message);
+      throw error;
+    } finally {
+      state.accessBusy = false;
+      render();
+    }
+  }
+
+  async function revokeShareLinkFromPanel() {
+    const shareLinkId = $("accessShareLinkInput").value.trim() || state.lastShareLinkId;
+    if (!shareLinkId) throw new Error("Paste a share link id first");
+    state.accessBusy = true;
+    state.accessResult = null;
+    render();
+    try {
+      const shareLink = await protectedRequest(`/_admin/share-links/${encodeURIComponent(shareLinkId)}`, {
+        method: "DELETE",
+      });
+      state.lastShareLinkId = shareLink.id;
+      setAccessResult("warn", "Share link revoked", `${shareLink.id} is ${shareLink.status}.`, {
+        updatedAt: shareLink.updatedAt,
+      });
+      log("Revoked Folder share link.", { shareLinkId: shareLink.id });
+    } catch (error) {
+      setAccessResult("error", "Revoke failed", error.message);
+      throw error;
+    } finally {
+      state.accessBusy = false;
+      render();
+    }
   }
 
   async function openEnteredFolderKey() {
@@ -2690,15 +3368,7 @@ const FiniteBrainProductClient = (() => {
   }
 
   function renderOkfPlan() {
-    const plan = state.okfPlan;
-    if (!plan) {
-      setList("okfPlanList", [], "No OKF import planned", () => {});
-      return;
-    }
-    setList("okfPlanList", plan.entries, "No OKF import actions", (item, entry) => {
-      item.textContent = `${entry.action}: ${entry.sourcePath} -> ${entry.folderId}/${entry.targetPath}`;
-      item.className = entry.action === "skip" ? "warn-row" : "ready-row";
-    });
+    return state.okfPlan;
   }
 
   function folderKeyVersionMap() {
@@ -2789,12 +3459,6 @@ const FiniteBrainProductClient = (() => {
         render();
       });
     });
-    $("pageTabButton").addEventListener("click", () => {
-      setWorkspaceView("page");
-    });
-    $("graphTabButton").addEventListener("click", () => {
-      setWorkspaceView("graph");
-    });
     $("readerModeButton").addEventListener("click", () => {
       state.readerMode = state.readerMode === "source" ? "reading" : "source";
       render();
@@ -2803,6 +3467,7 @@ const FiniteBrainProductClient = (() => {
       setWorkspaceView("graph");
     });
     $("ribbonFilesButton").addEventListener("click", () => {
+      setWorkspaceView("page");
       setSidebarMode("files");
     });
     $("ribbonSearchButton").addEventListener("click", () => {
@@ -2823,6 +3488,7 @@ const FiniteBrainProductClient = (() => {
       if (!folderId) return;
       state.activeAccessIntent = "manage";
       state.activeAccessFolderId = folderId;
+      state.accessResult = null;
       log("Access management is visible in the prototype panel.", { folderId });
       render();
     });
@@ -2831,8 +3497,39 @@ const FiniteBrainProductClient = (() => {
       if (!folderId) return;
       state.activeAccessIntent = "share";
       state.activeAccessFolderId = folderId;
+      state.accessResult = null;
       log("Share flow is visible in the prototype panel.", { folderId });
       render();
+    });
+    onOptionalClick("grantFolderAccessButton", () => {
+      grantFolderAccessFromPanel().catch((error) => {
+        state.lastError = error.message;
+        log("Failed to grant Folder access.", { error: error.message });
+      });
+    });
+    onOptionalClick("removeFolderAccessButton", () => {
+      removeFolderAccessFromPanel().catch((error) => {
+        state.lastError = error.message;
+        log("Failed to remove Folder access.", { error: error.message });
+      });
+    });
+    onOptionalClick("createShareLinkButton", () => {
+      createShareLinkFromPanel().catch((error) => {
+        state.lastError = error.message;
+        log("Failed to create Folder share link.", { error: error.message });
+      });
+    });
+    onOptionalClick("acceptShareLinkButton", () => {
+      acceptShareLinkFromPanel().catch((error) => {
+        state.lastError = error.message;
+        log("Failed to accept Folder share link.", { error: error.message });
+      });
+    });
+    onOptionalClick("revokeShareLinkButton", () => {
+      revokeShareLinkFromPanel().catch((error) => {
+        state.lastError = error.message;
+        log("Failed to revoke Folder share link.", { error: error.message });
+      });
     });
     $("sidebarSearchInput").addEventListener("input", () => {
       renderSearchPanel();
@@ -2859,7 +3556,7 @@ const FiniteBrainProductClient = (() => {
         parentFolderId: state.selectedFolderId || null,
       });
     });
-    $("openFolderKeyButton").addEventListener("click", () => {
+    onOptionalClick("openFolderKeyButton", () => {
       openEnteredFolderKey().catch((error) => {
         state.lastError = error.message;
         log("Failed to open Folder Key.", { error: error.message });
@@ -2914,7 +3611,7 @@ const FiniteBrainProductClient = (() => {
         log("Failed to build replay.", { error: error.message });
       }
     });
-    $("planOkfImportButton").addEventListener("click", () => {
+    onOptionalClick("planOkfImportButton", () => {
       try {
         planEnteredOkfImport();
       } catch (error) {
@@ -2923,7 +3620,7 @@ const FiniteBrainProductClient = (() => {
         render();
       }
     });
-    $("executeOkfImportButton").addEventListener("click", () => {
+    onOptionalClick("executeOkfImportButton", () => {
       executePlannedOkfImport().catch((error) => {
         state.lastError = error.message;
         log("Failed to execute OKF import.", { error: error.message });
@@ -2957,10 +3654,15 @@ const FiniteBrainProductClient = (() => {
     accessActionRoute,
     accessBadgesForFolder,
     accessPanelState,
+    adminAccessChangeTags,
+    buildAdminAccessChangeEvent,
+    buildFolderKeyGrantRequest,
     buildPageWriteRequest,
     buildAuthEventTemplate,
+    buildFolderAccessRemovalRequest,
     buildGraphProjection,
     buildReplayFrames,
+    canonicalAdminAccessChangePayload,
     commandPaletteCommands,
     commandPaletteRows,
     contextMenuItemsForTarget,
@@ -2980,6 +3682,7 @@ const FiniteBrainProductClient = (() => {
     nextDraftObjectId,
     normalizeSidebarMode,
     npubFromHex,
+    npubToHex,
     openDevelopmentFolderKeyGrants,
     openFolderKeyGrantPlaintext,
     openFolderObject,

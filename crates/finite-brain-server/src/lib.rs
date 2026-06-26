@@ -1070,7 +1070,7 @@ mod tests {
             .await
             .expect("js response");
         assert_eq!(js_response.status(), StatusCode::OK);
-        let js_body = to_bytes(js_response.into_body(), 16 * 1024)
+        let js_body = to_bytes(js_response.into_body(), 256 * 1024)
             .await
             .expect("js body");
         let js_body = std::str::from_utf8(&js_body).expect("js utf8");
@@ -1134,26 +1134,31 @@ mod tests {
         assert!(client_body.contains("app-ribbon"));
         assert!(client_body.contains("file-sidebar"));
         assert!(client_body.contains("Connect signer"));
-        assert!(client_body.contains("Open a Vault"));
+        assert!(client_body.contains("Open accessible vault"));
+        assert!(client_body.contains("vaultControlDetails"));
+        assert!(client_body.contains("header-icon-button"));
         assert!(client_body.contains("readerFolderList"));
         assert!(client_body.contains("searchSidebarPanel"));
         assert!(client_body.contains("commandPalette"));
         assert!(client_body.contains("Quick switcher"));
-        assert!(client_body.contains("role=\"tablist\""));
-        assert!(client_body.contains("role=\"tabpanel\""));
-        assert!(client_body.contains("aria-label=\"Search readable Pages\""));
+        assert!(client_body.contains("graph-icon-button"));
+        assert!(client_body.contains("ribbonGraphButton"));
+        assert!(client_body.contains("aria-label=\"Page reader\""));
+        assert!(client_body.contains("aria-label=\"Graph View\""));
+        assert!(client_body.contains("aria-label=\"Search pages\""));
         assert!(client_body.contains("aria-label=\"Filter graph\""));
         assert!(client_body.contains("accessFolderInspector"));
         assert!(client_body.contains("accessManageButton"));
         assert!(client_body.contains("accessShareButton"));
-        assert!(client_body.contains("Page Loop"));
+        assert!(client_body.contains("removeFolderAccessButton"));
         assert!(client_body.contains("Save Page"));
-        assert!(client_body.contains("OKF Import"));
-        assert!(client_body.contains("Plan OKF import"));
         assert!(client_body.contains("Graph View"));
         assert!(client_body.contains("Render graph"));
         assert!(client_body.contains("contextMenu"));
         assert!(client_body.contains("/client/app.js"));
+        assert!(!client_body.contains("Page Loop"));
+        assert!(!client_body.contains("OKF Import"));
+        assert!(!client_body.contains("Plan OKF import"));
 
         let config_response = router
             .clone()
@@ -1212,7 +1217,7 @@ mod tests {
             .await
             .expect("client js response");
         assert_eq!(js_response.status(), StatusCode::OK);
-        let js_body = to_bytes(js_response.into_body(), 128 * 1024)
+        let js_body = to_bytes(js_response.into_body(), 512 * 1024)
             .await
             .expect("client js body");
         let js_body = std::str::from_utf8(&js_body).expect("client js utf8");

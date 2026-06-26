@@ -55,19 +55,40 @@
             <p class="eyebrow">FiniteBrain</p>
             <h1 id="sidebarModeTitle">Files</h1>
           </div>
-          <button id="connectSignerButton" class="icon-text-button" type="button">Connect signer</button>
+          <button id="connectSignerButton" class="header-icon-button" type="button" title="Connect signer" aria-label="Connect signer">
+            <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M7 11V8a5 5 0 0 1 9.6-2" />
+              <rect x="5" y="11" width="14" height="10" rx="2" />
+              <path d="M12 15v3" />
+            </svg>
+          </button>
         </header>
 
-        <section class="vault-control-strip" aria-label="Vault controls">
-          <label for="vaultIdInput">Vault</label>
-          <div class="inline-control">
-            <input id="vaultIdInput" value="smoke" autocomplete="off" spellcheck="false" />
-            <button id="loadVaultButton" type="button">Load</button>
+        <details id="vaultControlDetails" class="vault-control-strip" aria-label="Vault controls" open>
+          <summary>
+            <span>Vault</span>
+            <span id="vaultControlSummary">smoke</span>
+          </summary>
+          <div class="vault-control-body">
+            <label class="sr-only" for="vaultIdInput">Vault</label>
+            <div class="inline-control">
+              <input id="vaultIdInput" value="smoke" autocomplete="off" spellcheck="false" />
+              <button id="loadVaultButton" class="compact-icon-button" type="button" title="Load vault" aria-label="Load vault">
+                <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M21 12a9 9 0 1 1-2.64-6.36" />
+                  <path d="M21 3v6h-6" />
+                </svg>
+              </button>
+            </div>
+            <button id="openAccessibleVaultButton" class="compact-icon-button primary-action" type="button" title="Open accessible vault" aria-label="Open accessible vault">
+              <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M7 11V8a5 5 0 0 1 9.6-2" />
+                <rect x="5" y="11" width="14" height="10" rx="2" />
+                <path d="M12 15v3" />
+              </svg>
+            </button>
           </div>
-          <button id="openAccessibleVaultButton" class="primary-action" type="button">
-            Open accessible vault
-          </button>
-        </section>
+        </details>
 
         <div class="sidebar-toolbar" aria-label="File explorer actions">
           <button id="obsidianNewPageButton" class="sidebar-icon-button" type="button" title="New Page" aria-label="New Page">
@@ -92,13 +113,7 @@
         </div>
 
         <section id="filesSidebarPanel" class="file-explorer sidebar-mode-panel">
-          <div class="sidebar-section-title">
-            <span>Vault explorer</span>
-            <span id="folderCount" class="pill muted">0</span>
-          </div>
           <ol id="readerFolderList" class="obsidian-file-tree"></ol>
-          <ol id="folderList" class="tree-list hidden-list"></ol>
-          <ol id="readerPageList" class="reader-list hidden-list"></ol>
         </section>
 
         <section id="searchSidebarPanel" class="sidebar-mode-panel sidebar-tool-panel" hidden>
@@ -108,8 +123,8 @@
           </div>
           <input
             id="sidebarSearchInput"
-            aria-label="Search readable Pages"
-            placeholder="Search readable Pages"
+            aria-label="Search pages"
+            placeholder="Search pages"
             autocomplete="off"
             spellcheck="false"
           />
@@ -132,57 +147,65 @@
               <button id="accessManageButton" type="button">Manage</button>
               <button id="accessShareButton" type="button">Share</button>
             </div>
+            <div id="accessFlowPanel" class="access-flow-panel" hidden>
+              <label class="access-field">
+                <span>Target npub</span>
+                <input
+                  id="accessTargetNpubInput"
+                  placeholder="npub1..."
+                  autocomplete="off"
+                  spellcheck="false"
+                />
+              </label>
+              <label id="shareExpiryField" class="access-field">
+                <span>Expires</span>
+                <input
+                  id="accessShareExpiresAtInput"
+                  type="datetime-local"
+                  autocomplete="off"
+                />
+              </label>
+              <label id="shareMountField" class="access-checkbox">
+                <input id="accessShareMountInput" type="checkbox" />
+                <span>Create personal mount on accept</span>
+              </label>
+              <div class="access-action-row">
+                <button id="grantFolderAccessButton" type="button">Grant access</button>
+                <button id="removeFolderAccessButton" class="danger-action" type="button">Remove access</button>
+                <button id="createShareLinkButton" type="button">Create link</button>
+              </div>
+              <label id="shareAcceptField" class="access-field">
+                <span>Accept share link</span>
+                <input
+                  id="accessShareLinkInput"
+                  placeholder="share-link-..."
+                  autocomplete="off"
+                  spellcheck="false"
+                />
+              </label>
+              <div class="access-action-row">
+                <button id="acceptShareLinkButton" type="button">Accept link</button>
+                <button id="revokeShareLinkButton" type="button">Revoke link</button>
+              </div>
+              <p id="accessFlowHint" class="access-hint">Open this Folder key before sharing.</p>
+              <div id="accessResultPanel" class="access-result" hidden></div>
+            </div>
           </div>
           <ol id="accessFolderList" class="obsidian-file-tree access-list"></ol>
         </section>
 
-        <footer class="sidebar-footer">
-          <span id="readerFolderSummary" class="pill muted">0 folders</span>
-          <span id="readerPageSummary" class="pill muted">0 pages</span>
-          <span id="readerKeySummary" class="pill muted">0 keys</span>
-        </footer>
       </aside>
 
       <main class="obsidian-workspace">
-        <header class="tab-strip" role="tablist" aria-label="Workspace tabs">
-          <button
-            id="pageTabButton"
-            class="workspace-tab active"
-            type="button"
-            role="tab"
-            aria-controls="pageWorkspace"
-            aria-selected="true"
-          >
-            <span id="workspaceTitle">Open a Vault</span>
-          </button>
-          <button
-            id="graphTabButton"
-            class="workspace-tab"
-            type="button"
-            role="tab"
-            aria-controls="graphWorkspace"
-            aria-selected="false"
-          >
-            Graph View
-          </button>
-          <div class="tab-spacer"></div>
-          <div class="workspace-status-cluster" aria-label="Client status">
-            <span id="configState" class="pill muted">config</span>
-            <span id="vaultState" class="pill muted">vault</span>
-            <span id="accessState" class="pill muted">access</span>
-          </div>
-        </header>
-
         <section
           id="pageWorkspace"
           class="workspace-view page-workspace"
-          role="tabpanel"
-          aria-labelledby="pageTabButton"
+          role="region"
+          aria-label="Page reader"
         >
           <article class="page-surface">
             <header class="page-header">
               <div>
-                <p class="eyebrow">Page</p>
                 <h2 id="readerPageTitle">No page selected</h2>
                 <p id="readerPagePath" class="page-path">No page path loaded</p>
               </div>
@@ -194,10 +217,10 @@
               </div>
             </header>
             <div id="readerPageContent" class="note-content note-markdown">
-              Open an accessible vault to read decrypted Pages here.
+              Open a vault to read pages.
             </div>
             <details class="editor-drawer">
-              <summary>Edit current Page</summary>
+              <summary>Edit</summary>
               <label class="page-editor-label">
                 Page content
                 <textarea id="pageDraftInput" rows="8" spellcheck="true"># New Page
@@ -216,8 +239,8 @@ Start writing here.</textarea>
         <section
           id="graphWorkspace"
           class="workspace-view graph-workspace"
-          role="tabpanel"
-          aria-labelledby="graphTabButton"
+          role="region"
+          aria-label="Graph View"
           hidden
         >
           <header class="graph-topbar">
@@ -234,155 +257,64 @@ Start writing here.</textarea>
                 autocomplete="off"
                 spellcheck="false"
               />
-              <button id="renderGraphButton" class="primary-action" type="button">Render graph</button>
-              <button id="replayGraphButton" type="button">Replay</button>
+              <button id="renderGraphButton" class="graph-icon-button primary-action" type="button" title="Render graph" aria-label="Render graph">
+                <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M21 12a9 9 0 1 1-2.64-6.36" />
+                  <path d="M21 3v6h-6" />
+                </svg>
+              </button>
+              <button id="replayGraphButton" class="graph-icon-button" type="button" title="Replay graph" aria-label="Replay graph">
+                <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M8 5v14l11-7z" />
+                </svg>
+              </button>
             </div>
           </header>
           <div class="graph-stage">
             <svg id="graphCanvas" class="graph-canvas" viewBox="0 0 900 560" role="img" aria-label="FiniteBrain graph view"></svg>
             <div id="graphEmptyState" class="graph-empty-state">
               <p class="eyebrow">Graph View</p>
-              <h3 id="graphEmptyTitle">No readable graph yet</h3>
-              <p id="graphEmptyCopy">Open a vault with readable Pages to render the local link graph.</p>
+              <h3 id="graphEmptyTitle">No graph yet</h3>
+              <p id="graphEmptyCopy">Open a vault to build the local graph.</p>
             </div>
             <div class="graph-floating-controls" aria-label="Graph controls">
-              <button id="fitGraphButton" type="button" title="Fit graph">Fit</button>
-              <button id="resetGraphButton" type="button" title="Reset graph">Reset</button>
+              <button id="fitGraphButton" type="button" title="Fit graph" aria-label="Fit graph">
+                <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M8 3H5a2 2 0 0 0-2 2v3M16 3h3a2 2 0 0 1 2 2v3M8 21H5a2 2 0 0 1-2-2v-3M16 21h3a2 2 0 0 0 2-2v-3" />
+                </svg>
+              </button>
+              <button id="resetGraphButton" type="button" title="Reset graph" aria-label="Reset graph">
+                <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+                  <circle cx="12" cy="12" r="3" />
+                  <path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9 7 7M17 17l2.1 2.1M19.1 4.9 17 7M7 17l-2.1 2.1" />
+                </svg>
+              </button>
             </div>
             <ol id="replayList" class="plain-list replay-list graph-replay-overlay"></ol>
           </div>
         </section>
       </main>
 
-      <aside class="right-sidebar" aria-label="Properties and activity">
-        <section class="right-panel">
-          <h2>Properties</h2>
-          <dl class="facts">
-            <div>
-              <dt>Signer</dt>
-              <dd id="signerState" class="pill muted">checking</dd>
-            </div>
-            <div>
-              <dt>Vault kind</dt>
-              <dd id="vaultKind">-</dd>
-            </div>
-            <div>
-              <dt>Members</dt>
-              <dd id="memberCount">-</dd>
-            </div>
-            <div>
-              <dt>Admins</dt>
-              <dd id="adminCount">-</dd>
-            </div>
-            <div>
-              <dt>Visible grants</dt>
-              <dd id="grantCount">-</dd>
-            </div>
-          </dl>
-        </section>
-
-        <section class="right-panel">
-          <h2>Mounts</h2>
-          <ol id="mountList" class="plain-list"></ol>
-        </section>
-
-        <section class="right-panel link-context-panel">
-          <h2>Outgoing links</h2>
-          <ol id="outgoingLinkList" class="plain-list link-list"></ol>
-        </section>
-
-        <section class="right-panel link-context-panel">
-          <h2>Backlinks</h2>
-          <ol id="backlinkList" class="plain-list link-list"></ol>
-        </section>
-
-        <details class="right-panel dev-console">
-          <summary>Advanced client tools</summary>
-          <div class="dev-console-actions">
-            <a class="dev-link" href="/smoke/ui">Open development Smoke UI</a>
-          </div>
-          <ol class="spine-list hidden-list">
-            <li id="spineSigner">Connect NIP-07 signer</li>
-            <li id="spineAuth">Prepare signed auth requests</li>
-            <li id="spineVault">Load Vault metadata</li>
-            <li id="spineKeys">Open Folder Key Grants</li>
-            <li id="spinePages">Decrypt and edit Pages</li>
-          </ol>
-          <h3>Page Loop</h3>
-          <div class="form-grid">
-            <label>
-              Folder
-              <input id="pageFolderIdInput" value="general" autocomplete="off" spellcheck="false" />
-            </label>
-            <label>
-              Object
-              <input id="pageObjectIdInput" value="obj_000000000001" autocomplete="off" spellcheck="false" />
-            </label>
-            <label>
-              Base revision
-              <input id="pageBaseRevisionInput" value="" autocomplete="off" spellcheck="false" />
-            </label>
-            <label>
-              Folder key
-              <input
-                id="folderKeyInput"
-                aria-label="Folder Key as base64 raw AES-256 key"
-                placeholder="base64 raw AES-256 key"
-                autocomplete="off"
-                spellcheck="false"
-              />
-            </label>
-          </div>
-          <div class="action-row">
-            <button id="openFolderKeyButton" type="button">Open key</button>
-          </div>
-          <label class="page-editor-label">
-            <span>OKF Import</span>
-            OKF bundle JSON
-            <textarea id="okfBundleInput" rows="6" spellcheck="false">{
+      <div class="client-hidden-state" hidden aria-hidden="true">
+        <input id="pageFolderIdInput" value="general" autocomplete="off" spellcheck="false" />
+        <input id="pageObjectIdInput" value="obj_000000000001" autocomplete="off" spellcheck="false" />
+        <input id="pageBaseRevisionInput" value="" autocomplete="off" spellcheck="false" />
+        <input id="folderKeyInput" value="" autocomplete="off" spellcheck="false" />
+        <input id="okfDestinationFolderInput" value="general" autocomplete="off" spellcheck="false" />
+        <select id="okfConflictModeInput">
+          <option value="skip">skip</option>
+          <option value="copy">copy</option>
+          <option value="overwrite">overwrite</option>
+        </select>
+        <textarea id="okfBundleInput" spellcheck="false">{
   "pages": [
     {
       "path": "content/General/imported-page.md",
-      "content": "# Imported Page\n\nImported through the Product Client."
+      "content": "# Imported Page\n\nImported through this client."
     }
   ]
 }</textarea>
-          </label>
-          <div class="form-grid okf-controls">
-            <label>
-              Destination Folder
-              <input id="okfDestinationFolderInput" value="general" autocomplete="off" spellcheck="false" />
-            </label>
-            <label>
-              Conflict mode
-              <select id="okfConflictModeInput">
-                <option value="skip">Skip existing Pages</option>
-                <option value="copy">Create imported copies</option>
-                <option value="overwrite">Overwrite existing Pages</option>
-              </select>
-            </label>
-          </div>
-          <div class="action-row">
-            <button id="planOkfImportButton" type="button">Plan OKF import</button>
-            <button id="executeOkfImportButton" class="primary-action" type="button">
-              Import encrypted Pages
-            </button>
-          </div>
-          <ol id="okfPlanList" class="plain-list replay-list"></ol>
-        </details>
-
-        <section class="right-panel activity-panel">
-          <h2>Activity</h2>
-          <pre id="activityLog">Ready.</pre>
-        </section>
-      </aside>
-
-      <footer class="status-bar">
-        <span id="signerDetail">Looking for a NIP-07 extension.</span>
-        <span id="authDetail">Connect a signer to load protected Vault state.</span>
-        <span id="pageStatusDetail">No page selected.</span>
-        <span id="vaultStatusDetail">Vault idle.</span>
-      </footer>
+      </div>
 
       <div id="contextMenu" class="context-menu" role="menu" hidden></div>
       <div

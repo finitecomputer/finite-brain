@@ -105,7 +105,7 @@ assert.deepEqual(
 );
 assert.deepEqual(
   badgeLabels(client.sidebarAccessBadgesForFolder(folderRows[1])),
-  ["restricted", "shared", "locked"]
+  []
 );
 assert.equal(
   JSON.stringify(client.accessActionRoute("share-folder", { folderId: "restricted" })),
@@ -117,7 +117,7 @@ assert.equal(
 );
 assert.equal(client.accessActionRoute("delete-folder", { folderId: "restricted" }), null);
 assert.equal(client.accessPanelState("share", folderRows[1]).status, "share");
-assert.match(client.accessPanelState("share", folderRows[1]).detail, /safe placeholder/);
+assert.match(client.accessPanelState("share", folderRows[1]).detail, /Choose who can see/);
 assert.equal(client.accessPanelState("manage", folderRows[1]).title, "Manage Restricted");
 
 (async () => {
@@ -194,6 +194,68 @@ assert.equal(client.accessPanelState("manage", folderRows[1]).title, "Manage Res
 
   const authorNpub = client.npubFromHex("00".repeat(32));
   assert.match(authorNpub, /^npub1/);
+  assert.equal(client.npubToHex(authorNpub), "00".repeat(32));
+
+  const accessPayload = {
+    vaultId: "smoke",
+    changeId: "access-change-test",
+    action: "grant-folder-access",
+    adminNpub: authorNpub,
+    folderId: "restricted",
+    targetNpub: authorNpub,
+    keyVersion: 2,
+    createdAt: "2026-06-23T00:02:00Z",
+  };
+  assert.equal(
+    client.canonicalAdminAccessChangePayload(accessPayload),
+    `{"version":"finite-vault-admin-access-change-v1","vaultId":"smoke","changeId":"access-change-test","action":"grant-folder-access","adminNpub":"${authorNpub}","folderId":"restricted","targetNpub":"${authorNpub}","keyVersion":2,"createdAt":"2026-06-23T00:02:00Z"}`
+  );
+  assert.equal(
+    JSON.stringify(client.adminAccessChangeTags(accessPayload)),
+    JSON.stringify([
+      ["d", "finite-vault-admin-access-change:smoke:access-change-test"],
+      ["vault", "smoke"],
+      ["action", "grant-folder-access"],
+      ["folder", "restricted"],
+      ["p", "00".repeat(32)],
+      ["keyVersion", "2"],
+    ])
+  );
+
+  context.window.nostr = {
+    signEvent: async (template) => ({
+      ...template,
+      id: "signed-event-id",
+      pubkey: "00".repeat(32),
+      sig: "signed-event-signature",
+    }),
+  };
+  const accessEvent = await client.buildAdminAccessChangeEvent({
+    ...accessPayload,
+    createdAtUnix: Date.parse(accessPayload.createdAt) / 1000,
+  });
+  assert.equal(accessEvent.kind, 30078);
+  assert.equal(JSON.stringify(accessEvent.tags), JSON.stringify(client.adminAccessChangeTags(accessPayload)));
+  assert.equal(accessEvent.content, client.canonicalAdminAccessChangePayload(accessPayload));
+
+  const accessGrant = await client.buildFolderKeyGrantRequest({
+    id: "grant-test",
+    vaultId: "smoke",
+    folderId: "restricted",
+    keyVersion: 2,
+    folderKey,
+    issuerNpub: authorNpub,
+    recipientNpub: authorNpub,
+    createdAtUnix: 1780000000,
+  });
+  assert.equal(accessGrant.id, "grant-test");
+  assert.equal(accessGrant.recipientNpub, authorNpub);
+  const wrappedGrant = JSON.parse(accessGrant.wrappedEventJson);
+  assert.equal(wrappedGrant.kind, 1059);
+  assert.deepEqual(wrappedGrant.tags, [["p", "00".repeat(32)]]);
+  const grantPlaintext = JSON.parse(wrappedGrant.content);
+  assert.equal(grantPlaintext.folderId, "restricted");
+  assert.equal(grantPlaintext.folderKey, folderKey);
 
   const write = await client.buildPageWriteRequest(keyring, {
     authorNpub,
@@ -216,6 +278,17 @@ assert.equal(client.accessPanelState("manage", folderRows[1]).title, "Manage Res
   assert.equal(write.keyVersion, 1);
   assert.equal(write.cipher, "AES-256-GCM");
   assert.equal(write.revisionEvent.kind, 30078);
+  assert.equal(
+    JSON.stringify(write.revisionEvent.tags),
+    JSON.stringify([
+      ["d", "finite-folder-object-revision:smoke:general:obj_000000000001:1"],
+      ["vault", "smoke"],
+      ["folder", "general"],
+      ["object", "obj_000000000001"],
+      ["operation", "create"],
+      ["keyVersion", "1"],
+    ])
+  );
   assert.match(write.revisionEvent.content, /finite-folder-object-revision-v1/);
   assert.match(write.revisionEvent.content, /ciphertextHash/);
 
@@ -242,6 +315,97 @@ assert.equal(client.accessPanelState("manage", folderRows[1]).title, "Manage Res
   });
   assert.equal(openedSync.objects[0].status, "ready");
   assert.equal(openedSync.objects[0].title, "Hello");
+
+  const restrictedOldKey = Buffer.alloc(32, 8).toString("base64");
+  await client.openFolderKeyGrantPlaintext(keyring, {
+    version: "finite-folder-key-grant-v1",
+    vaultId: "smoke",
+    folderId: "restricted",
+    keyVersion: 1,
+    issuerNpub: authorNpub,
+    recipientNpub: authorNpub,
+    folderKey: restrictedOldKey,
+    issuedAt: "2026-06-24T00:00:00.000Z",
+  });
+  let signedIndex = 0;
+  const signDeterministically = async (template) => ({
+    ...template,
+    id: `signed-${++signedIndex}`,
+    pubkey: "00".repeat(32),
+    sig: "revision-signature",
+  });
+  const restrictedWrite = await client.buildPageWriteRequest(keyring, {
+    authorNpub,
+    baseRevision: null,
+    createdAtUnix: 1780000001,
+    folderId: "restricted",
+    keyVersion: 1,
+    nonceBytes: new Uint8Array(12).fill(1),
+    objectId: "obj_restricted0001",
+    plaintext: "# Restricted\n\nRotate this page.",
+    signEvent: signDeterministically,
+    vaultId: "smoke",
+  });
+  const targetNpub = client.npubFromHex("11".repeat(32));
+  const remainingNpub = client.npubFromHex("22".repeat(32));
+  const removal = await client.buildFolderAccessRemovalRequest(keyring, {
+    vaultId: "smoke",
+    metadata: { admins: [authorNpub] },
+    row: {
+      id: "restricted",
+      path: "Restricted",
+      access: "restricted",
+      accessUserIds: [targetNpub, remainingNpub],
+      currentKeyVersion: 1,
+    },
+    targetNpub,
+    objects: [
+      {
+        vaultId: "smoke",
+        folderId: "restricted",
+        objectId: "obj_restricted0001",
+        revision: 1,
+        status: "ready",
+        text: "# Restricted\n\nRotate this page.",
+        ciphertext: restrictedWrite.ciphertext,
+      },
+    ],
+    newRawKey: new Uint8Array(32).fill(9),
+    createdAtUnix: 1780000100,
+    actorNpub: authorNpub,
+    signEvent: signDeterministically,
+  });
+  assert.equal(removal.newKeyVersion, 2);
+  assert.equal(
+    JSON.stringify(removal.grants.map((grant) => grant.recipientNpub).sort()),
+    JSON.stringify([authorNpub, remainingNpub].sort())
+  );
+  assert.equal(removal.grants.some((grant) => grant.recipientNpub === targetNpub), false);
+  assert.equal(removal.reencryptedRecords.length, 1);
+  assert.equal(removal.reencryptedRecords[0].objectId, "obj_restricted0001");
+  assert.equal(removal.reencryptedRecords[0].baseRevision, 1);
+  assert.equal(removal.reencryptedRecords[0].keyVersion, 2);
+  assert.equal(
+    JSON.stringify(removal.reencryptedRecords[0].revisionEvent.tags),
+    JSON.stringify([
+      ["d", "finite-folder-object-revision:smoke:restricted:obj_restricted0001:2"],
+      ["vault", "smoke"],
+      ["folder", "restricted"],
+      ["object", "obj_restricted0001"],
+      ["operation", "update"],
+      ["keyVersion", "2"],
+    ])
+  );
+  assert.match(removal.accessChangeEvent.content, /remove-folder-access/);
+  const rotatedPage = await client.openFolderObject(keyring, {
+    vaultId: "smoke",
+    folderId: "restricted",
+    objectId: "obj_restricted0001",
+    revision: 2,
+    ciphertext: removal.reencryptedRecords[0].ciphertext,
+  });
+  assert.equal(rotatedPage.status, "ready");
+  assert.equal(rotatedPage.text, "# Restricted\n\nRotate this page.");
 
   const readerFolders = client.readerFolderRows(
     {
@@ -303,7 +467,7 @@ assert.equal(client.accessPanelState("manage", folderRows[1]).title, "Manage Res
   assert.equal(compatibilityRows[1].accessLabel, "admin only");
   assert.equal(
     client.readerFolderDetail(readerFolders[0]),
-    "1 page readable - all members"
+    "1 page"
   );
   assert.equal(
     client.readerFolderDetail({
@@ -311,7 +475,7 @@ assert.equal(client.accessPanelState("manage", folderRows[1]).title, "Manage Res
       pageCount: 0,
       readableCount: 0,
     }),
-    "No pages yet - all members"
+    "Empty"
   );
   assert.equal(
     client.readerFolderDetail({
@@ -319,7 +483,7 @@ assert.equal(client.accessPanelState("manage", folderRows[1]).title, "Manage Res
       pageCount: 2,
       readableCount: 0,
     }),
-    "2 pages present, Folder Key not open - restricted"
+    "Locked"
   );
   assert.equal(client.workspaceTabTitle(null, null), "Open a Vault");
   assert.equal(client.workspaceTabTitle({ name: "Smoke" }, null), "Smoke");
@@ -333,11 +497,11 @@ assert.equal(client.accessPanelState("manage", folderRows[1]).title, "Manage Res
   assert.equal(client.workspaceChromeState("graph").shellView, "graph");
   assert.equal(client.workspaceChromeState("graph").pageHidden, true);
   assert.equal(client.workspaceChromeState("graph").graphHidden, false);
-  assert.match(client.workspaceChromeState("graph").graphTabClass, /active/);
-  assert.equal(client.graphEmptyStateCopy().title, "No readable graph yet");
+  assert.match(client.workspaceChromeState("graph").ribbonGraphClass, /active/);
+  assert.equal(client.graphEmptyStateCopy().title, "No graph yet");
   assert.equal(
     client.graphEmptyStateCopy({ readablePageCount: 3 }).copy,
-    "Readable Pages are open, but no Page links are available for this graph projection."
+    "Readable pages are open, but none link to another page yet."
   );
   assert.equal(
     client.graphEmptyStateCopy({ filterText: "folder key", readablePageCount: 3 }).title,
@@ -345,7 +509,7 @@ assert.equal(client.accessPanelState("manage", folderRows[1]).title, "Manage Res
   );
   assert.equal(
     client.graphEmptyStateCopy({ filterText: "folder key", readablePageCount: 0 }).title,
-    "No readable graph yet"
+    "No graph yet"
   );
   assert.equal(client.normalizeSidebarMode("search"), "search");
   assert.equal(client.normalizeSidebarMode("access"), "access");
@@ -403,9 +567,9 @@ assert.equal(client.accessPanelState("manage", folderRows[1]).title, "Manage Res
   assert.equal(pageMenu.find((item) => item.action === "delete-page").disabled, true);
   const readerPages = client.readerPageRows("general", openedSync.objects);
   assert.equal(readerPages[0].label, "Hello");
-  assert.equal(readerPages[0].detail, "obj_000000000001.md - revision 1");
+  assert.equal(readerPages[0].detail, "obj_000000000001.md");
   assert.equal(client.pagePathLabel(readerPages[0]), "general/obj_000000000001.md");
-  assert.equal(client.readerPageDetail(readerPages[0]), "obj_000000000001.md - revision 1");
+  assert.equal(client.readerPageDetail(readerPages[0]), "obj_000000000001.md");
   const emptyReadablePage = {
     folderId: "general",
     objectId: "obj_empty_page01",

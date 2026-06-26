@@ -20,6 +20,10 @@ function assertIncludes(source, marker, label) {
   assert.ok(source.includes(marker), `${label} is missing ${marker}`);
 }
 
+function assertNotIncludes(source, marker, label) {
+  assert.ok(!source.includes(marker), `${label} still includes ${marker}`);
+}
+
 function element() {
   return {
     children: [],
@@ -170,6 +174,10 @@ function checkStaticShell() {
 
   for (const marker of [
     "obsidian-shell",
+    "compact-icon-button",
+    "vaultControlDetails",
+    "vaultControlSummary",
+    "header-icon-button",
     "app-ribbon",
     "file-sidebar",
     "ribbonFilesButton",
@@ -183,17 +191,23 @@ function checkStaticShell() {
     "contextMenu",
     "pageWorkspace",
     "graphWorkspace",
-    "workspace-status-cluster",
     "graphEmptyState",
+    "graph-icon-button",
     "accessFolderInspector",
     "accessManageButton",
     "accessShareButton",
+    "accessFlowPanel",
+    "accessTargetNpubInput",
+    "accessShareExpiresAtInput",
+    "grantFolderAccessButton",
+    "removeFolderAccessButton",
+    "createShareLinkButton",
+    "accessShareLinkInput",
+    "acceptShareLinkButton",
+    "revokeShareLinkButton",
+    "accessResultPanel",
     "readerModeButton",
     "readerPagePath",
-    "outgoingLinkList",
-    "backlinkList",
-    "pageStatusDetail",
-    "vaultStatusDetail",
     "commandPalette",
     "commandPaletteInput",
     "commandPaletteList",
@@ -203,6 +217,10 @@ function checkStaticShell() {
 
   for (const marker of [
     ".obsidian-shell",
+    ".obsidian-shell[data-workspace-view=\"graph\"]",
+    ".compact-icon-button",
+    ".vault-control-body",
+    ".header-icon-button",
     ".app-ribbon",
     ".obsidian-folder-button",
     ".obsidian-file-title",
@@ -210,16 +228,18 @@ function checkStaticShell() {
     ".command-palette-backdrop",
     ".command-palette-row",
     ".graph-stage",
+    ".graph-icon-button",
     ".graph-empty-state",
     ".graph-replay-overlay",
     ".access-inspector",
+    ".access-flow-panel",
+    ".access-field",
+    ".access-result",
     ".access-badge",
     ".note-content-empty",
     ".note-markdown",
     ".note-source",
     ".internal-link",
-    ".link-context-panel",
-    ".status-bar",
   ]) {
     assertIncludes(css, marker, "Product Client CSS");
   }
@@ -227,7 +247,12 @@ function checkStaticShell() {
   for (const marker of [
     "buildGraphProjection",
     "buildReplayFrames",
+    "buildAdminAccessChangeEvent",
+    "buildFolderKeyGrantRequest",
+    "canonicalAdminAccessChangePayload",
     "commandPaletteRows",
+    "renderVaultControlChrome",
+    "vaultControlsCollapsedAfterLoad",
     "workspaceChromeState",
     "accessBadgesForFolder",
     "accessActionRoute",
@@ -239,6 +264,53 @@ function checkStaticShell() {
     "readerPageDetail",
   ]) {
     assertIncludes(js, marker, "Product Client JS");
+  }
+
+  for (const marker of [
+    "obsidian-titlebar",
+    "traffic-lights",
+    "titlebarTabLabel",
+    "titlebarVaultLabel",
+    "pageTabButton",
+    "graphTabButton",
+    "role=\"tablist\"",
+    "workspace-status-cluster",
+    "folderCount",
+    "folderList",
+    "readerPageList",
+    "right-sidebar",
+    "sidebar-footer",
+    "status-bar",
+    "outgoingLinkList",
+    "backlinkList",
+    "pageStatusDetail",
+    "vaultStatusDetail",
+    "activityLog",
+    "Advanced client tools",
+    "Smoke UI",
+  ]) {
+    assertNotIncludes(html, marker, "Product Client HTML");
+  }
+
+  for (const marker of [
+    ".obsidian-titlebar",
+    ".traffic-light",
+    ".titlebar-tab",
+    ".workspace-tab",
+    ".tab-strip",
+    ".workspace-status-cluster",
+    "#folderCount",
+    ".reader-layout",
+    ".reader-list-button",
+    ".right-sidebar",
+    ".sidebar-footer",
+    ".status-bar",
+    ".right-panel",
+    ".link-context-panel",
+    ".activity-panel",
+    ".dev-console",
+  ]) {
+    assertNotIncludes(css, marker, "Product Client CSS");
   }
 }
 
