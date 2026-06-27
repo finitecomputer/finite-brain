@@ -91,7 +91,7 @@ where
 fn help<W: Write>(output: &mut W) -> Result<(), CliError> {
     writeln!(
         output,
-        "fbrain doctor\nauth status|login|logout\nsigner status|public-key|sign|encrypt|decrypt\ndaemon status|start|stop|logs|tick\nsync status|now\nopen <vault-id> [path]\nstatus [--json]\nunlock [folder|--all]\nconflicts\nresolve <id>\nactivity\naccess explain <folder>\nvault create|metadata|export\nfolder create\npermissions add-member|remove-member|add-admin|remove-admin|grant-folder\ninvites create|show|accept|revoke\nshare link|accept|revoke|source|folder-invite|folder-accept"
+        "fbrain doctor\nauth status|login|logout\nsigner status|public-key|sign|encrypt|decrypt\ndaemon status|start|stop|logs|tick|watch\nsync status|now\nopen <vault-id> [path]\nstatus [--json]\nunlock [folder|--all]\nconflicts\nresolve <id>\nactivity\naccess explain <folder>\nvault create|metadata|export\nfolder create\npermissions add-member|remove-member|add-admin|remove-admin|grant-folder\ninvites create|show|accept|revoke\nshare link|accept|revoke|source|folder-invite|folder-accept"
     )?;
     Ok(())
 }
@@ -350,8 +350,140 @@ fn daemon<W: Write>(
                 Ok(())
             }
         }
+        "watch" => daemon_watch(args, env, json, output),
         other => Err(CliError::InvalidCommand(format!("daemon {other}"))),
     }
+}
+
+fn daemon_watch<W: Write>(
+    args: &[String],
+    env: &CliEnvironment,
+    json: bool,
+    output: &mut W,
+) -> Result<(), CliError> {
+    let max_ticks = daemon_watch_max_ticks(args)?;
+    let poll = daemon_watch_poll(args)?;
+    mutate_agent_state(env, |state, now| {
+        state.daemon.state = DaemonRunState::Running;
+        state.daemon.last_started_at = Some(now.clone());
+        state.sync.status = "watching".to_owned();
+        state.add_activity(
+            now,
+            "daemon.watch.started",
+            "Agent Sync Daemon watch loop started",
+        );
+        Ok(())
+    })?;
+
+    let mut ticks = 0_usize;
+    let mut failures = 0_usize;
+    let mut last_status = None::<String>;
+    let mut last_error: Option<String>;
+    loop {
+        ticks += 1;
+        match sync_once(env, args, "daemon.watch.tick") {
+            Ok(report) => {
+                last_status = Some(report.status);
+                last_error = None;
+            }
+            Err(error) => {
+                failures += 1;
+                let error = error.to_string();
+                last_error = Some(error.clone());
+                mutate_agent_state(env, |state, now| {
+                    state.sync.status = format!("blocked: {error}");
+                    state.add_activity(
+                        now,
+                        "daemon.watch.blocked",
+                        format!("Sync blocked during daemon watch: {error}"),
+                    );
+                    Ok(())
+                })?;
+            }
+        }
+
+        if max_ticks.is_some_and(|limit| ticks >= limit) {
+            break;
+        }
+        std::thread::sleep(poll);
+    }
+
+    let final_status = last_status
+        .clone()
+        .or_else(|| last_error.as_ref().map(|error| format!("blocked: {error}")))
+        .unwrap_or_else(|| "idle".to_owned());
+    mutate_agent_state(env, |state, now| {
+        state.daemon.state = DaemonRunState::Stopped;
+        state.sync.status = final_status.clone();
+        state.add_activity(
+            now,
+            "daemon.watch.stopped",
+            format!("Agent Sync Daemon watch loop stopped after {ticks} tick(s)"),
+        );
+        Ok(())
+    })?;
+
+    let report = serde_json::json!({
+        "state": "stopped",
+        "ticks": ticks,
+        "failures": failures,
+        "lastStatus": last_status,
+        "lastError": last_error,
+    });
+    if json {
+        write_json(output, &report)
+    } else {
+        writeln!(
+            output,
+            "daemon watch stopped ticks={ticks} failures={failures} status={final_status}"
+        )?;
+        Ok(())
+    }
+}
+
+fn daemon_watch_max_ticks(args: &[String]) -> Result<Option<usize>, CliError> {
+    if args.iter().any(|arg| arg == "--once") {
+        return Ok(Some(1));
+    }
+    option_value(args, "--max-ticks")
+        .map(|value| {
+            value.parse::<usize>().map_err(|_| {
+                CliError::InvalidInput(format!(
+                    "--max-ticks must be a positive integer, got {value}"
+                ))
+            })
+        })
+        .transpose()?
+        .map(|ticks| {
+            if ticks == 0 {
+                Err(CliError::InvalidInput(
+                    "--max-ticks must be greater than zero".to_owned(),
+                ))
+            } else {
+                Ok(Some(ticks))
+            }
+        })
+        .transpose()
+        .map(Option::flatten)
+}
+
+fn daemon_watch_poll(args: &[String]) -> Result<std::time::Duration, CliError> {
+    let seconds = option_value(args, "--poll-secs")
+        .map(|value| {
+            value.parse::<u64>().map_err(|_| {
+                CliError::InvalidInput(format!(
+                    "--poll-secs must be a positive integer, got {value}"
+                ))
+            })
+        })
+        .transpose()?
+        .unwrap_or(5);
+    if !(1..=300).contains(&seconds) {
+        return Err(CliError::InvalidInput(
+            "--poll-secs must be between 1 and 300".to_owned(),
+        ));
+    }
+    Ok(std::time::Duration::from_secs(seconds))
 }
 
 fn sync<W: Write>(
@@ -1261,6 +1393,61 @@ mod tests {
         (url, handle)
     }
 
+    fn start_empty_sync_server() -> (String, thread::JoinHandle<Vec<String>>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let handle = thread::spawn(move || {
+            let started = Instant::now();
+            let mut requests = Vec::new();
+            while requests.len() < 2 && started.elapsed() < Duration::from_secs(5) {
+                let Ok((mut stream, _)) = listener.accept() else {
+                    thread::sleep(Duration::from_millis(10));
+                    continue;
+                };
+                let (request_line, _) = read_http_request(&mut stream);
+                requests.push(request_line.clone());
+                let body = if request_line.contains("/export") {
+                    serde_json::json!({
+                        "vault": {
+                            "id": "vault",
+                            "kind": "personal",
+                            "name": "Vault",
+                            "ownerUserId": null
+                        },
+                        "folders": [{
+                            "id": "general",
+                            "path": "General",
+                            "access": "owner",
+                            "currentKeyVersion": 1,
+                            "sharedFolderSource": false,
+                            "accessible": true
+                        }],
+                        "keyGrants": [],
+                        "accessState": {
+                            "members": [],
+                            "admins": []
+                        }
+                    })
+                    .to_string()
+                } else {
+                    serde_json::json!({
+                        "latestSequence": 0,
+                        "objects": []
+                    })
+                    .to_string()
+                };
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                stream.write_all(response.as_bytes()).unwrap();
+            }
+            requests
+        });
+        (url, handle)
+    }
+
     fn read_http_request(stream: &mut TcpStream) -> (String, String) {
         stream
             .set_read_timeout(Some(Duration::from_secs(1)))
@@ -1557,6 +1744,111 @@ mod tests {
         run_with_env(["activity"], env, &mut output).unwrap();
         let text = String::from_utf8(output).unwrap();
         assert!(text.contains("working_tree.opened"));
+    }
+
+    #[test]
+    fn daemon_watch_once_runs_sync_and_stops_cleanly() {
+        let tmp = TempDir::new().unwrap();
+        run(
+            &tmp,
+            &[
+                "auth",
+                "login",
+                "--nsec",
+                "0000000000000000000000000000000000000000000000000000000000000001",
+            ],
+        );
+        let tree = tmp.path().join("vault");
+        run(&tmp, &["open", "vault", tree.to_str().unwrap()]);
+        let (server_url, server) = start_empty_sync_server();
+
+        let mut env = env_for(&tmp);
+        env.cwd = tree.clone();
+        let mut output = Vec::new();
+        run_with_env(
+            [
+                "daemon",
+                "watch",
+                "--once",
+                "--server",
+                &server_url,
+                "--json",
+            ],
+            env.clone(),
+            &mut output,
+        )
+        .unwrap();
+        let json: Value = serde_json::from_slice(&output).unwrap();
+        assert_eq!(json["state"], "stopped");
+        assert_eq!(json["ticks"], 1);
+        assert_eq!(json["failures"], 0);
+        assert_eq!(json["lastStatus"], "caught-up");
+
+        let requests = server.join().unwrap();
+        assert!(requests[0].contains("/_admin/vaults/vault/export"));
+        assert!(
+            requests
+                .iter()
+                .any(|request| request.contains("/_admin/vaults/vault/sync/bootstrap"))
+        );
+
+        let state = read_agent_state(&tree).unwrap();
+        assert_eq!(state.daemon.state, DaemonRunState::Stopped);
+        assert_eq!(state.sync.status, "caught-up");
+        assert!(
+            state
+                .activity
+                .iter()
+                .any(|entry| entry.kind == "daemon.watch.started")
+        );
+        assert!(
+            state
+                .activity
+                .iter()
+                .any(|entry| entry.kind == "daemon.watch.tick")
+        );
+        assert!(
+            state
+                .activity
+                .iter()
+                .any(|entry| entry.kind == "daemon.watch.stopped")
+        );
+    }
+
+    #[test]
+    fn daemon_watch_once_records_blocked_sync_without_crashing() {
+        let tmp = TempDir::new().unwrap();
+        run(
+            &tmp,
+            &[
+                "auth",
+                "login",
+                "--nsec",
+                "0000000000000000000000000000000000000000000000000000000000000001",
+            ],
+        );
+        let tree = tmp.path().join("vault");
+        run(&tmp, &["open", "vault", tree.to_str().unwrap()]);
+
+        let mut env = env_for(&tmp);
+        env.cwd = tree.clone();
+        let mut output = Vec::new();
+        run_with_env(["daemon", "watch", "--once", "--json"], env, &mut output).unwrap();
+        let json: Value = serde_json::from_slice(&output).unwrap();
+        assert_eq!(json["state"], "stopped");
+        assert_eq!(json["ticks"], 1);
+        assert_eq!(json["failures"], 1);
+        assert!(!json["lastError"].as_str().unwrap().is_empty());
+
+        let state = read_agent_state(&tree).unwrap();
+        assert_eq!(state.daemon.state, DaemonRunState::Stopped);
+        assert!(state.sync.status.contains("blocked:"));
+        assert!(
+            state
+                .activity
+                .iter()
+                .any(|entry| entry.kind == "daemon.watch.blocked")
+        );
     }
 
     #[test]

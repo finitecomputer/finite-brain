@@ -21,6 +21,8 @@ const FiniteBrainProductClient = (() => {
     accessBusy: false,
     accessResult: null,
     lastShareLinkId: null,
+    lastVaultInvitationCode: null,
+    lastVaultInvitationId: null,
     readerMode: "reading",
     vaultControlsCollapsedAfterLoad: false,
     expandedFolderIds: new Set(),
@@ -426,7 +428,107 @@ const FiniteBrainProductClient = (() => {
     return opened;
   }
 
-  function plaintextGrantFromExportGrant(grant, expectedRecipientNpub = null) {
+  function isHex64(value) {
+    return typeof value === "string" && /^[0-9a-f]{64}$/i.test(value);
+  }
+
+  function requireHex64(value, field) {
+    if (!isHex64(value)) throw new Error(`${field} must be a 64-character hex public key`);
+    return value.toLowerCase();
+  }
+
+  function parseJsonObject(value, field) {
+    let parsed;
+    try {
+      parsed = JSON.parse(value);
+    } catch (_) {
+      throw new Error(`${field} is not valid JSON`);
+    }
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      throw new Error(`${field} must be a JSON object`);
+    }
+    return parsed;
+  }
+
+  function publicKeyTags(event) {
+    return (Array.isArray(event?.tags) ? event.tags : []).filter(
+      (tag) => Array.isArray(tag) && tag[0] === "p" && typeof tag[1] === "string"
+    );
+  }
+
+  function validateGiftWrapShell(event, expectedRecipientHex) {
+    if (!event || typeof event !== "object") throw new Error("Folder Key Grant wrapper is missing");
+    if (event.kind !== 1059) throw new Error("Folder Key Grant wrapper must be kind 1059");
+    requireHex64(event.pubkey, "gift wrap pubkey");
+    if (typeof event.content !== "string" || !event.content) {
+      throw new Error("Folder Key Grant wrapper content is missing");
+    }
+    const recipients = publicKeyTags(event).map((tag) => requireHex64(tag[1], "gift wrap recipient tag"));
+    if (!recipients.length) throw new Error("Folder Key Grant wrapper is missing a recipient tag");
+    if (expectedRecipientHex && !recipients.includes(expectedRecipientHex)) {
+      throw new Error("Folder Key Grant wrapper is not addressed to the connected signer");
+    }
+  }
+
+  function validateSealEvent(event) {
+    if (!event || typeof event !== "object") throw new Error("Folder Key Grant seal is missing");
+    if (event.kind !== 13) throw new Error("Folder Key Grant seal must be kind 13");
+    requireHex64(event.pubkey, "seal pubkey");
+    if (typeof event.content !== "string" || !event.content) {
+      throw new Error("Folder Key Grant seal content is missing");
+    }
+  }
+
+  function canonicalNostrEventIdInput(event) {
+    return JSON.stringify([
+      0,
+      event.pubkey,
+      Number(event.created_at),
+      Number(event.kind),
+      Array.isArray(event.tags) ? event.tags : [],
+      typeof event.content === "string" ? event.content : "",
+    ]);
+  }
+
+  async function validateRumorEvent(event, expectedIssuerHex) {
+    if (!event || typeof event !== "object") throw new Error("Folder Key Grant rumor is missing");
+    if (event.kind !== APP_EVENT_KIND) throw new Error(`Folder Key Grant rumor must be kind ${APP_EVENT_KIND}`);
+    const rumorPubkey = requireHex64(event.pubkey, "rumor pubkey");
+    if (expectedIssuerHex && rumorPubkey !== expectedIssuerHex) {
+      throw new Error("Folder Key Grant rumor issuer does not match the seal");
+    }
+    if (typeof event.content !== "string" || !event.content) {
+      throw new Error("Folder Key Grant rumor content is missing");
+    }
+    if (event.id !== undefined && event.id !== null) {
+      requireHex64(event.id, "rumor id");
+      const expectedId = await sha256Hex(canonicalNostrEventIdInput(event));
+      if (event.id.toLowerCase() !== expectedId) {
+        throw new Error("Folder Key Grant rumor id does not match its content");
+      }
+    }
+  }
+
+  function validateFolderKeyGrantPlaintext(plaintext, expectedRecipientNpub = null, grant = null) {
+    if (!plaintext || typeof plaintext !== "object") throw new Error("Folder Key Grant plaintext is missing");
+    if (plaintext.version !== "finite-folder-key-grant-v1") throw new Error("unsupported Folder Key Grant version");
+    if (!plaintext.folderKey) throw new Error("Folder Key Grant is missing a Folder Key");
+    if (expectedRecipientNpub && plaintext.recipientNpub !== expectedRecipientNpub) {
+      throw new Error("Folder Key Grant recipient does not match the connected signer");
+    }
+    if (grant?.folderId && plaintext.folderId !== grant.folderId) {
+      throw new Error("Folder Key Grant folder does not match export metadata");
+    }
+    if (grant?.keyVersion && Number(plaintext.keyVersion) !== Number(grant.keyVersion)) {
+      throw new Error("Folder Key Grant key version does not match export metadata");
+    }
+    if (grant?.recipientNpub && plaintext.recipientNpub !== grant.recipientNpub) {
+      throw new Error("Folder Key Grant recipient does not match export metadata");
+    }
+    return plaintext;
+  }
+
+  function plaintextDevelopmentGrantFromExportGrant(grant, expectedRecipientNpub = null) {
     if (!grant?.wrappedEventJson) return null;
     let wrapped;
     try {
@@ -446,11 +548,68 @@ const FiniteBrainProductClient = (() => {
     return plaintext;
   }
 
+  function nip44DecryptAdapter(options = {}) {
+    if (options.decrypt) return options.decrypt;
+    const provider = options.provider || window.nostr;
+    if (provider?.nip44 && typeof provider.nip44.decrypt === "function") {
+      return (pubkeyHex, ciphertext) => provider.nip44.decrypt(pubkeyHex, ciphertext);
+    }
+    return null;
+  }
+
+  function nip44EncryptAdapter(options = {}) {
+    if (options.encrypt) return options.encrypt;
+    const provider = options.provider || window.nostr;
+    if (provider?.nip44 && typeof provider.nip44.encrypt === "function") {
+      return (pubkeyHex, plaintext) => provider.nip44.encrypt(pubkeyHex, plaintext);
+    }
+    return null;
+  }
+
+  async function plaintextGrantFromGiftWrappedExportGrant(grant, expectedRecipientNpub = null, options = {}) {
+    if (!grant?.wrappedEventJson) throw new Error("Folder Key Grant wrapper is missing");
+    const decrypt = nip44DecryptAdapter(options);
+    if (!decrypt) throw new Error("NIP-44 decryption is unavailable");
+    const expectedRecipientHex = expectedRecipientNpub ? npubToHex(expectedRecipientNpub) : null;
+    const giftWrap = parseJsonObject(grant.wrappedEventJson, "Folder Key Grant wrapper");
+    validateGiftWrapShell(giftWrap, expectedRecipientHex);
+    const sealPlaintext = await decrypt(requireHex64(giftWrap.pubkey, "gift wrap pubkey"), giftWrap.content);
+    const seal = parseJsonObject(sealPlaintext, "Folder Key Grant seal");
+    validateSealEvent(seal);
+    const sealIssuerHex = requireHex64(seal.pubkey, "seal pubkey");
+    const rumorPlaintext = await decrypt(sealIssuerHex, seal.content);
+    const rumor = parseJsonObject(rumorPlaintext, "Folder Key Grant rumor");
+    await validateRumorEvent(rumor, sealIssuerHex);
+    const plaintext = parseJsonObject(rumor.content, "Folder Key Grant plaintext");
+    return validateFolderKeyGrantPlaintext(plaintext, expectedRecipientNpub, grant);
+  }
+
+  async function openFolderKeyGrants(keyring, exportedVault, expectedRecipientNpub = null, options = {}) {
+    const opened = [];
+    const skipped = [];
+    for (const grant of exportedVault?.keyGrants || []) {
+      try {
+        const plaintext = await plaintextGrantFromGiftWrappedExportGrant(grant, expectedRecipientNpub, options);
+        await openFolderKeyGrantPlaintext(keyring, plaintext);
+        opened.push({
+          folderId: plaintext.folderId,
+          keyVersion: plaintext.keyVersion,
+        });
+      } catch (error) {
+        skipped.push({
+          id: grant.id || grant.folderId || "unknown-grant",
+          error: error.message,
+        });
+      }
+    }
+    return { opened, skipped };
+  }
+
   async function openDevelopmentFolderKeyGrants(keyring, exportedVault, expectedRecipientNpub = null) {
     const opened = [];
     const skipped = [];
     for (const grant of exportedVault?.keyGrants || []) {
-      const plaintext = plaintextGrantFromExportGrant(grant, expectedRecipientNpub);
+      const plaintext = plaintextDevelopmentGrantFromExportGrant(grant, expectedRecipientNpub);
       if (!plaintext) {
         skipped.push(grant.id || grant.folderId || "unknown-grant");
         continue;
@@ -2413,6 +2572,30 @@ const FiniteBrainProductClient = (() => {
     renderAccessResultPanel();
   }
 
+  function renderVaultInvitationPanel() {
+    if (!$("vaultInviteExpiresAtInput").value) {
+      $("vaultInviteExpiresAtInput").value = defaultShareExpiryDateTimeLocal();
+    }
+    if (state.lastVaultInvitationCode && !$("vaultInviteCodeInput").value) {
+      $("vaultInviteCodeInput").value = state.lastVaultInvitationCode;
+    }
+    const connected = state.signerStatus === "connected";
+    const busy = state.accessBusy;
+    const organizationVault = state.metadata?.kind === "organization";
+    const codeAvailable = Boolean($("vaultInviteCodeInput").value.trim() || state.lastVaultInvitationCode);
+    $("createVaultInvitationButton").disabled = !connected || busy || !state.activeVaultId || !organizationVault;
+    $("getVaultInvitationButton").disabled = !connected || busy || !codeAvailable;
+    $("acceptVaultInvitationButton").disabled = !connected || busy || !codeAvailable;
+    $("revokeVaultInvitationButton").disabled = !connected || busy || !codeAvailable || !organizationVault;
+    if (!connected) {
+      setText("vaultInvitationHint", "Connect signer");
+    } else if (state.metadata?.kind === "organization") {
+      setText("vaultInvitationHint", "Organization Vault");
+    } else {
+      setText("vaultInvitationHint", "Accept works from any Vault");
+    }
+  }
+
   function renderAccessPanel() {
     const rows = readerFolderRows(state.metadata);
     const openedFolders = openedGrantFolderKeys();
@@ -2432,6 +2615,7 @@ const FiniteBrainProductClient = (() => {
     $("accessShareButton").disabled = !activeRow || state.accessBusy;
     renderAccessBadgeRow("accessBadgeRow", accessBadgesForFolder(activeRow, openedFolders));
     renderAccessFlowPanel(activeRow);
+    renderVaultInvitationPanel();
     setList("accessFolderList", rows, "Load a Vault to inspect access", (item, row) => {
       const button = obsidianTreeButton(
         row.path,
@@ -2658,11 +2842,11 @@ const FiniteBrainProductClient = (() => {
     render();
   }
 
-  async function openAvailableDevelopmentGrants() {
+  async function openAvailableFolderKeyGrants() {
     if (!state.keyring) state.keyring = createSessionKeyring();
     const exported = await protectedRequest(`/_admin/vaults/${encodeURIComponent(state.activeVaultId)}/export`);
     const expectedRecipient = state.pubkeyHex ? npubFromHex(state.pubkeyHex) : null;
-    return openDevelopmentFolderKeyGrants(state.keyring, exported, expectedRecipient);
+    return openFolderKeyGrants(state.keyring, exported, expectedRecipient);
   }
 
   async function openAccessibleVaultReader() {
@@ -2673,13 +2857,13 @@ const FiniteBrainProductClient = (() => {
       if (state.signerStatus !== "connected") await connectSigner();
       if (state.signerStatus !== "connected") throw new Error("Connect a NIP-07 signer first");
       await loadVaultMetadata();
-      const grants = await openAvailableDevelopmentGrants();
+      const grants = await openAvailableFolderKeyGrants();
       await pullSyncBootstrap();
       selectDefaultReaderTargets();
       renderGraphView();
       log("Opened accessible Vault reader.", {
-        openedDevelopmentKeys: grants.opened.length,
-        skippedOpaqueGrants: grants.skipped.length,
+        openedFolderKeys: grants.opened.length,
+        skippedFolderKeyGrants: grants.skipped.length,
         readablePages: readablePages().length,
       });
     } finally {
@@ -2752,8 +2936,12 @@ const FiniteBrainProductClient = (() => {
   }
 
   function normalizedTargetNpub() {
-    const value = $("accessTargetNpubInput").value.trim();
-    if (!value) throw new Error("Paste a target npub first");
+    return normalizedNpubInput("accessTargetNpubInput", "Paste a target npub first");
+  }
+
+  function normalizedNpubInput(inputId, message) {
+    const value = $(inputId).value.trim();
+    if (!value) throw new Error(message);
     npubToHex(value);
     return value;
   }
@@ -2771,8 +2959,60 @@ const FiniteBrainProductClient = (() => {
     return date.toISOString();
   }
 
-  function uniqueNpubs(values) {
+  function vaultInvitationExpiryIso() {
+    const value = $("vaultInviteExpiresAtInput").value.trim();
+    const date = value ? new Date(value) : new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+    if (Number.isNaN(date.getTime())) throw new Error("Vault invitation expiry is invalid");
+    return date.toISOString();
+  }
+
+  function initialVaultInvitationFolders(value = $("vaultInviteFoldersInput").value) {
+    return uniqueValues(
+      String(value || "")
+        .split(/[,\s]+/)
+        .map((part) => part.trim())
+        .filter(Boolean)
+    );
+  }
+
+  function buildVaultInvitationRequest(input) {
+    const targetNpub = input.targetNpub;
+    npubToHex(targetNpub);
+    return {
+      targetNpub,
+      initialFolderAccess: initialVaultInvitationFolders(input.initialFolderAccess || ""),
+      expiresAt: input.expiresAt,
+    };
+  }
+
+  function currentVaultInvitationCode() {
+    const value = $("vaultInviteCodeInput").value.trim() || state.lastVaultInvitationCode;
+    if (!value) throw new Error("Paste an invitation code or id first");
+    return value;
+  }
+
+  function vaultInvitationCreatePath(vaultId) {
+    return `/_admin/vaults/${encodeURIComponent(vaultId)}/invitations`;
+  }
+
+  function vaultInvitationLinkPath(code) {
+    return `/_admin/vault-invitation-links/${encodeURIComponent(code)}`;
+  }
+
+  function vaultInvitationAcceptPath(code) {
+    return `${vaultInvitationLinkPath(code)}/accept`;
+  }
+
+  function vaultInvitationRevokePath(vaultId, invitationId) {
+    return `/_admin/vaults/${encodeURIComponent(vaultId)}/invitations/${encodeURIComponent(invitationId)}`;
+  }
+
+  function uniqueValues(values) {
     return [...new Set((values || []).map((value) => String(value || "").trim()).filter(Boolean))];
+  }
+
+  function uniqueNpubs(values) {
+    return uniqueValues(values);
   }
 
   function folderAccessRemovalRecipients(metadata, row, targetNpub) {
@@ -2883,8 +3123,13 @@ const FiniteBrainProductClient = (() => {
   async function buildFolderKeyGrantRequest(input) {
     const signEvent = input.signEvent || window.nostr?.signEvent;
     if (!signEvent) throw new Error("NIP-07 signer is unavailable");
+    const encrypt = nip44EncryptAdapter(input);
+    if (!encrypt && !input.allowPlaintextDevelopmentGrant) {
+      throw new Error("NIP-44 encryption is unavailable");
+    }
     const recipientHex = npubToHex(input.recipientNpub);
     const issuerNpub = input.issuerNpub || currentActorNpub();
+    const issuerHex = npubToHex(issuerNpub);
     const createdAtUnix = input.createdAtUnix || Math.floor(Date.now() / 1000);
     const createdAt = revisionCreatedAt(createdAtUnix);
     const folderKey = input.folderKey || bytesToBase64(input.rawKey);
@@ -2907,12 +3152,45 @@ const FiniteBrainProductClient = (() => {
       recipientNpub: input.recipientNpub,
       createdAt,
     };
-    const wrappedEvent = await signEvent({
-      kind: 1059,
-      created_at: createdAtUnix,
-      tags: [["p", recipientHex]],
-      content: JSON.stringify(plaintextGrant),
-    });
+    const rumorTags = [
+      ["d", `finite-folder-key-grant:${input.vaultId}:${input.folderId}:${input.keyVersion}`],
+      ["vault", input.vaultId],
+      ["folder", input.folderId],
+      ["keyVersion", String(input.keyVersion)],
+    ];
+    let wrappedEvent;
+    if (encrypt) {
+      const rumorContent = JSON.stringify(plaintextGrant);
+      const rumor = {
+        pubkey: issuerHex,
+        created_at: createdAtUnix,
+        kind: APP_EVENT_KIND,
+        tags: rumorTags,
+        content: rumorContent,
+      };
+      rumor.id = await sha256Hex(canonicalNostrEventIdInput(rumor));
+      const sealContent = await encrypt(recipientHex, JSON.stringify(rumor));
+      const seal = await signEvent({
+        kind: 13,
+        created_at: createdAtUnix,
+        tags: [],
+        content: sealContent,
+      });
+      const wrappedContent = await encrypt(recipientHex, JSON.stringify(seal));
+      wrappedEvent = await signEvent({
+        kind: 1059,
+        created_at: createdAtUnix,
+        tags: [["p", recipientHex]],
+        content: wrappedContent,
+      });
+    } else {
+      wrappedEvent = await signEvent({
+        kind: 1059,
+        created_at: createdAtUnix,
+        tags: [["p", recipientHex]],
+        content: JSON.stringify(plaintextGrant),
+      });
+    }
     return {
       id: grantId,
       keyVersion: input.keyVersion,
@@ -3089,7 +3367,7 @@ const FiniteBrainProductClient = (() => {
         { method: "DELETE", body }
       );
       state.metadata = metadata;
-      await openAvailableDevelopmentGrants();
+      await openAvailableFolderKeyGrants();
       await pullSyncBootstrap();
       selectDefaultReaderTargets();
       renderGraphView();
@@ -3166,7 +3444,7 @@ const FiniteBrainProductClient = (() => {
       });
       state.lastShareLinkId = shareLink.id;
       await loadVaultMetadata();
-      const grants = await openAvailableDevelopmentGrants();
+      const grants = await openAvailableFolderKeyGrants();
       await pullSyncBootstrap();
       selectDefaultReaderTargets();
       setAccessResult(
@@ -3203,6 +3481,139 @@ const FiniteBrainProductClient = (() => {
         updatedAt: shareLink.updatedAt,
       });
       log("Revoked Folder share link.", { shareLinkId: shareLink.id });
+    } catch (error) {
+      setAccessResult("error", "Revoke failed", error.message);
+      throw error;
+    } finally {
+      state.accessBusy = false;
+      render();
+    }
+  }
+
+  async function createVaultInvitationFromPanel() {
+    const targetNpub = normalizedNpubInput("vaultInviteTargetNpubInput", "Paste an invite npub first");
+    state.accessBusy = true;
+    state.accessResult = null;
+    render();
+    try {
+      const body = JSON.stringify(
+        buildVaultInvitationRequest({
+          targetNpub,
+          initialFolderAccess: $("vaultInviteFoldersInput").value,
+          expiresAt: vaultInvitationExpiryIso(),
+        })
+      );
+      const invitation = await protectedRequest(
+        vaultInvitationCreatePath(state.activeVaultId),
+        { method: "POST", body }
+      );
+      state.lastVaultInvitationId = invitation.id;
+      state.lastVaultInvitationCode = invitation.inviteCode;
+      $("vaultInviteCodeInput").value = invitation.inviteCode;
+      setAccessResult("ready", "Invitation created", `${shortKey(invitation.userId)} can join ${invitation.vaultId}.`, {
+        code: invitation.inviteCode,
+        acceptPath: invitation.acceptPath,
+        expiresAt: invitation.expiresAt,
+      });
+      log("Created Vault invitation.", { invitationId: invitation.id, vaultId: invitation.vaultId });
+    } catch (error) {
+      setAccessResult("error", "Invite failed", error.message);
+      throw error;
+    } finally {
+      state.accessBusy = false;
+      render();
+    }
+  }
+
+  async function inspectVaultInvitationFromPanel() {
+    const code = currentVaultInvitationCode();
+    state.accessBusy = true;
+    state.accessResult = null;
+    render();
+    try {
+      const invitation = await protectedRequest(vaultInvitationLinkPath(code));
+      state.lastVaultInvitationId = invitation.id;
+      state.lastVaultInvitationCode = invitation.inviteCode;
+      $("vaultInviteCodeInput").value = invitation.inviteCode;
+      setAccessResult("ready", "Invitation loaded", `${shortKey(invitation.userId)} is ${invitation.status}.`, {
+        vaultId: invitation.vaultId,
+        invitationId: invitation.id,
+        acceptPath: invitation.acceptPath,
+      });
+      log("Loaded Vault invitation.", { invitationId: invitation.id, vaultId: invitation.vaultId });
+      return invitation;
+    } catch (error) {
+      setAccessResult("error", "Inspect failed", error.message);
+      throw error;
+    } finally {
+      state.accessBusy = false;
+      render();
+    }
+  }
+
+  async function acceptVaultInvitationFromPanel() {
+    const code = currentVaultInvitationCode();
+    state.accessBusy = true;
+    state.accessResult = null;
+    render();
+    try {
+      const invitation = await protectedRequest(vaultInvitationAcceptPath(code), {
+        method: "POST",
+      });
+      state.lastVaultInvitationId = invitation.id;
+      state.lastVaultInvitationCode = invitation.inviteCode;
+      state.activeVaultId = invitation.vaultId;
+      $("vaultIdInput").value = invitation.vaultId;
+      $("vaultInviteCodeInput").value = invitation.inviteCode;
+      await loadVaultMetadata();
+      setAccessResult(
+        "ready",
+        invitation.duplicateAccept ? "Invitation already accepted" : "Invitation accepted",
+        `${invitation.vaultId} is now available to this signer.`,
+        {
+          status: invitation.status,
+          initialFolders: (invitation.initialFolderAccess || []).join(", ") || "none",
+        }
+      );
+      log("Accepted Vault invitation.", { invitationId: invitation.id, vaultId: invitation.vaultId });
+    } catch (error) {
+      setAccessResult("error", "Accept failed", error.message);
+      throw error;
+    } finally {
+      state.accessBusy = false;
+      render();
+    }
+  }
+
+  async function revokeVaultInvitationFromPanel() {
+    const value = currentVaultInvitationCode();
+    state.accessBusy = true;
+    state.accessResult = null;
+    render();
+    try {
+      let invitationId = state.lastVaultInvitationId;
+      let vaultId = state.activeVaultId;
+      if (!invitationId || value !== invitationId) {
+        if (value.startsWith("invitation-")) {
+          invitationId = value;
+        } else {
+          const invitation = await protectedRequest(vaultInvitationLinkPath(value));
+          invitationId = invitation.id;
+          vaultId = invitation.vaultId;
+          state.lastVaultInvitationId = invitation.id;
+          state.lastVaultInvitationCode = invitation.inviteCode;
+        }
+      }
+      const invitation = await protectedRequest(
+        vaultInvitationRevokePath(vaultId, invitationId),
+        { method: "DELETE" }
+      );
+      state.lastVaultInvitationId = invitation.id;
+      state.lastVaultInvitationCode = invitation.inviteCode;
+      setAccessResult("warn", "Invitation revoked", `${invitation.id} is ${invitation.status}.`, {
+        updatedAt: invitation.updatedAt,
+      });
+      log("Revoked Vault invitation.", { invitationId: invitation.id, vaultId: invitation.vaultId });
     } catch (error) {
       setAccessResult("error", "Revoke failed", error.message);
       throw error;
@@ -3541,6 +3952,30 @@ const FiniteBrainProductClient = (() => {
         log("Failed to revoke Folder share link.", { error: error.message });
       });
     });
+    onOptionalClick("createVaultInvitationButton", () => {
+      createVaultInvitationFromPanel().catch((error) => {
+        state.lastError = error.message;
+        log("Failed to create Vault invitation.", { error: error.message });
+      });
+    });
+    onOptionalClick("getVaultInvitationButton", () => {
+      inspectVaultInvitationFromPanel().catch((error) => {
+        state.lastError = error.message;
+        log("Failed to inspect Vault invitation.", { error: error.message });
+      });
+    });
+    onOptionalClick("acceptVaultInvitationButton", () => {
+      acceptVaultInvitationFromPanel().catch((error) => {
+        state.lastError = error.message;
+        log("Failed to accept Vault invitation.", { error: error.message });
+      });
+    });
+    onOptionalClick("revokeVaultInvitationButton", () => {
+      revokeVaultInvitationFromPanel().catch((error) => {
+        state.lastError = error.message;
+        log("Failed to revoke Vault invitation.", { error: error.message });
+      });
+    });
     $("sidebarSearchInput").addEventListener("input", () => {
       renderSearchPanel();
     });
@@ -3670,6 +4105,7 @@ const FiniteBrainProductClient = (() => {
     buildPageWriteRequest,
     buildAuthEventTemplate,
     buildFolderAccessRemovalRequest,
+    buildVaultInvitationRequest,
     buildGraphProjection,
     buildReplayFrames,
     canonicalAdminAccessChangePayload,
@@ -3685,6 +4121,7 @@ const FiniteBrainProductClient = (() => {
     graphLayout,
     graphStats,
     inlineLinkSegments,
+    initialVaultInvitationFolders,
     markdownPreviewBlocks,
     mergeSyncProjection,
     metadataFolderRows,
@@ -3693,6 +4130,7 @@ const FiniteBrainProductClient = (() => {
     normalizeSidebarMode,
     npubFromHex,
     npubToHex,
+    openFolderKeyGrants,
     openDevelopmentFolderKeyGrants,
     openFolderKeyGrantPlaintext,
     openFolderObject,
@@ -3701,7 +4139,8 @@ const FiniteBrainProductClient = (() => {
     pageLinkContext,
     pagePathLabel,
     pageStatsForText,
-    plaintextGrantFromExportGrant,
+    plaintextDevelopmentGrantFromExportGrant,
+    plaintextGrantFromGiftWrappedExportGrant,
     planOkfImport,
     prepareOkfImportWrites,
     readerFolderDetail,
@@ -3715,6 +4154,10 @@ const FiniteBrainProductClient = (() => {
     start,
     workspaceChromeState,
     workspaceTabTitle,
+    vaultInvitationAcceptPath,
+    vaultInvitationCreatePath,
+    vaultInvitationLinkPath,
+    vaultInvitationRevokePath,
   };
 })();
 

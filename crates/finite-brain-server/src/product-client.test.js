@@ -164,9 +164,16 @@ assert.equal(client.accessPanelState("manage", folderRows[1]).title, "Manage Res
   });
   assert.equal(keyring.openedGrants.length, 1);
 
+  const authorNpub = client.npubFromHex("00".repeat(32));
+  const otherNpub = client.npubFromHex("11".repeat(32));
+  assert.match(authorNpub, /^npub1/);
+  assert.equal(client.npubToHex(authorNpub), "00".repeat(32));
+
   const devGrant = {
     id: "dev-grant",
     folderId: "general",
+    keyVersion: 1,
+    recipientNpub: authorNpub,
     wrappedEventJson: JSON.stringify({
       kind: 1059,
       content: JSON.stringify({
@@ -175,30 +182,34 @@ assert.equal(client.accessPanelState("manage", folderRows[1]).title, "Manage Res
         folderId: "general",
         keyVersion: 1,
         issuerNpub: "npub-issuer",
-        recipientNpub: "npub-recipient",
+        recipientNpub: authorNpub,
         folderKey,
         issuedAt: "2026-06-24T00:00:00.000Z",
       }),
     }),
   };
   assert.equal(
-    client.plaintextGrantFromExportGrant(devGrant, "npub-recipient").folderId,
+    client.plaintextDevelopmentGrantFromExportGrant(devGrant, authorNpub).folderId,
     "general"
   );
-  assert.equal(client.plaintextGrantFromExportGrant(devGrant, "npub-other"), null);
+  assert.equal(client.plaintextDevelopmentGrantFromExportGrant(devGrant, otherNpub), null);
+  const hardenedDevOpen = await client.openFolderKeyGrants(
+    client.createSessionKeyring(),
+    { keyGrants: [devGrant] },
+    authorNpub,
+    { decrypt: async () => "{}" }
+  );
+  assert.equal(hardenedDevOpen.opened.length, 0);
+  assert.equal(hardenedDevOpen.skipped.length, 1);
   const devKeyring = client.createSessionKeyring();
   const devOpen = await client.openDevelopmentFolderKeyGrants(
     devKeyring,
     { keyGrants: [devGrant, { id: "opaque", wrappedEventJson: "{\"kind\":1059}" }] },
-    "npub-recipient"
+    authorNpub
   );
   assert.equal(devOpen.opened.length, 1);
   assert.equal(devOpen.skipped.length, 1);
   assert.equal(devKeyring.openedGrants.length, 1);
-
-  const authorNpub = client.npubFromHex("00".repeat(32));
-  assert.match(authorNpub, /^npub1/);
-  assert.equal(client.npubToHex(authorNpub), "00".repeat(32));
 
   const accessPayload = {
     vaultId: "smoke",
@@ -226,13 +237,24 @@ assert.equal(client.accessPanelState("manage", folderRows[1]).title, "Manage Res
     ])
   );
 
+  const fakeEncrypt = async (_pubkey, plaintext) =>
+    `nip44:${Buffer.from(plaintext, "utf8").toString("base64url")}`;
+  const fakeDecrypt = async (_pubkey, ciphertext) => {
+    if (!String(ciphertext).startsWith("nip44:")) throw new Error("bad fake ciphertext");
+    return Buffer.from(String(ciphertext).slice("nip44:".length), "base64url").toString("utf8");
+  };
+  let grantSignedIndex = 0;
   context.window.nostr = {
     signEvent: async (template) => ({
       ...template,
-      id: "signed-event-id",
+      id: `signed-event-${++grantSignedIndex}`,
       pubkey: "00".repeat(32),
       sig: "signed-event-signature",
     }),
+    nip44: {
+      decrypt: fakeDecrypt,
+      encrypt: fakeEncrypt,
+    },
   };
   const accessEvent = await client.buildAdminAccessChangeEvent({
     ...accessPayload,
@@ -241,6 +263,32 @@ assert.equal(client.accessPanelState("manage", folderRows[1]).title, "Manage Res
   assert.equal(accessEvent.kind, 30078);
   assert.equal(JSON.stringify(accessEvent.tags), JSON.stringify(client.adminAccessChangeTags(accessPayload)));
   assert.equal(accessEvent.content, client.canonicalAdminAccessChangePayload(accessPayload));
+
+  assert.equal(
+    JSON.stringify(client.initialVaultInvitationFolders("general vault-ops general")),
+    JSON.stringify(["general", "vault-ops"])
+  );
+  assert.equal(
+    JSON.stringify(
+      client.buildVaultInvitationRequest({
+      targetNpub: otherNpub,
+      initialFolderAccess: "general,vault-ops general",
+      expiresAt: "2026-07-04T00:00:00.000Z",
+      })
+    ),
+    JSON.stringify({
+      targetNpub: otherNpub,
+      initialFolderAccess: ["general", "vault-ops"],
+      expiresAt: "2026-07-04T00:00:00.000Z",
+    })
+  );
+  assert.equal(client.vaultInvitationCreatePath("smoke org"), "/_admin/vaults/smoke%20org/invitations");
+  assert.equal(client.vaultInvitationLinkPath("invite/code"), "/_admin/vault-invitation-links/invite%2Fcode");
+  assert.equal(client.vaultInvitationAcceptPath("invite/code"), "/_admin/vault-invitation-links/invite%2Fcode/accept");
+  assert.equal(
+    client.vaultInvitationRevokePath("smoke org", "invitation/one"),
+    "/_admin/vaults/smoke%20org/invitations/invitation%2Fone"
+  );
 
   const accessGrant = await client.buildFolderKeyGrantRequest({
     id: "grant-test",
@@ -257,9 +305,135 @@ assert.equal(client.accessPanelState("manage", folderRows[1]).title, "Manage Res
   const wrappedGrant = JSON.parse(accessGrant.wrappedEventJson);
   assert.equal(wrappedGrant.kind, 1059);
   assert.deepEqual(wrappedGrant.tags, [["p", "00".repeat(32)]]);
-  const grantPlaintext = JSON.parse(wrappedGrant.content);
+  assert.notEqual(wrappedGrant.content[0], "{");
+  const sealEvent = JSON.parse(await fakeDecrypt(wrappedGrant.pubkey, wrappedGrant.content));
+  assert.equal(sealEvent.kind, 13);
+  const rumorEvent = JSON.parse(await fakeDecrypt(sealEvent.pubkey, sealEvent.content));
+  assert.equal(rumorEvent.kind, 30078);
+  assert.match(rumorEvent.id, /^[0-9a-f]{64}$/);
+  const grantPlaintext = JSON.parse(rumorEvent.content);
   assert.equal(grantPlaintext.folderId, "restricted");
   assert.equal(grantPlaintext.folderKey, folderKey);
+  const hardenedKeyring = client.createSessionKeyring();
+  const hardenedOpen = await client.openFolderKeyGrants(
+    hardenedKeyring,
+    {
+      keyGrants: [
+        {
+          id: "grant-test",
+          folderId: "restricted",
+          keyVersion: 2,
+          recipientNpub: authorNpub,
+          wrappedEventJson: accessGrant.wrappedEventJson,
+        },
+      ],
+    },
+    authorNpub,
+    { decrypt: fakeDecrypt }
+  );
+  assert.equal(hardenedOpen.opened.length, 1);
+  assert.equal(hardenedOpen.skipped.length, 0);
+  assert.equal(hardenedKeyring.openedGrants[0].folderId, "restricted");
+  const wrongRecipientOpen = await client.openFolderKeyGrants(
+    client.createSessionKeyring(),
+    {
+      keyGrants: [
+        {
+          id: "grant-test",
+          folderId: "restricted",
+          keyVersion: 2,
+          recipientNpub: authorNpub,
+          wrappedEventJson: accessGrant.wrappedEventJson,
+        },
+      ],
+    },
+    otherNpub,
+    { decrypt: fakeDecrypt }
+  );
+  assert.equal(wrongRecipientOpen.opened.length, 0);
+  assert.match(wrongRecipientOpen.skipped[0].error, /not addressed/);
+  const malformedShellOpen = await client.openFolderKeyGrants(
+    client.createSessionKeyring(),
+    {
+      keyGrants: [
+        {
+          id: "malformed-shell",
+          folderId: "restricted",
+          keyVersion: 2,
+          recipientNpub: authorNpub,
+          wrappedEventJson: JSON.stringify({
+            kind: 1059,
+            pubkey: "00".repeat(32),
+            tags: [["p", "00".repeat(32)]],
+            content: "",
+          }),
+        },
+      ],
+    },
+    authorNpub,
+    { decrypt: fakeDecrypt }
+  );
+  assert.equal(malformedShellOpen.opened.length, 0);
+  assert.match(malformedShellOpen.skipped[0].error, /wrapper content is missing/);
+  const malformedSealOpen = await client.openFolderKeyGrants(
+    client.createSessionKeyring(),
+    {
+      keyGrants: [
+        {
+          id: "malformed-seal",
+          folderId: "restricted",
+          keyVersion: 2,
+          recipientNpub: authorNpub,
+          wrappedEventJson: JSON.stringify({
+            kind: 1059,
+            pubkey: "00".repeat(32),
+            tags: [["p", "00".repeat(32)]],
+            content: await fakeEncrypt(
+              "00".repeat(32),
+              JSON.stringify({ kind: 14, pubkey: "00".repeat(32), content: "sealed" })
+            ),
+          }),
+        },
+      ],
+    },
+    authorNpub,
+    { decrypt: fakeDecrypt }
+  );
+  assert.equal(malformedSealOpen.opened.length, 0);
+  assert.match(malformedSealOpen.skipped[0].error, /seal must be kind 13/);
+  const malformedRumorOpen = await client.openFolderKeyGrants(
+    client.createSessionKeyring(),
+    {
+      keyGrants: [
+        {
+          id: "malformed-rumor",
+          folderId: "restricted",
+          keyVersion: 2,
+          recipientNpub: authorNpub,
+          wrappedEventJson: JSON.stringify({
+            kind: 1059,
+            pubkey: "00".repeat(32),
+            tags: [["p", "00".repeat(32)]],
+            content: await fakeEncrypt(
+              "00".repeat(32),
+              JSON.stringify({
+                kind: 13,
+                pubkey: "00".repeat(32),
+                content: await fakeEncrypt(
+                  "00".repeat(32),
+                  JSON.stringify({ kind: 1, pubkey: "00".repeat(32), content: "{}" })
+                ),
+              })
+            ),
+          }),
+        },
+      ],
+    },
+    authorNpub,
+    { decrypt: fakeDecrypt }
+  );
+  assert.equal(malformedRumorOpen.opened.length, 0);
+  assert.match(malformedRumorOpen.skipped[0].error, /rumor must be kind 30078/);
 
   const write = await client.buildPageWriteRequest(keyring, {
     authorNpub,

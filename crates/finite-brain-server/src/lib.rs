@@ -1204,6 +1204,9 @@ mod tests {
         assert!(client_body.contains("accessManageButton"));
         assert!(client_body.contains("accessShareButton"));
         assert!(client_body.contains("removeFolderAccessButton"));
+        assert!(client_body.contains("createVaultInvitationButton"));
+        assert!(client_body.contains("acceptVaultInvitationButton"));
+        assert!(client_body.contains("revokeVaultInvitationButton"));
         assert!(client_body.contains("Save Page"));
         assert!(client_body.contains("Graph View"));
         assert!(client_body.contains("Render graph"));

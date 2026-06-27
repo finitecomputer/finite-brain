@@ -188,8 +188,54 @@
                 <button id="revokeShareLinkButton" type="button">Revoke link</button>
               </div>
               <p id="accessFlowHint" class="access-hint">Open this Folder key before sharing.</p>
-              <div id="accessResultPanel" class="access-result" hidden></div>
             </div>
+            <div id="vaultInvitationPanel" class="access-flow-panel invitation-flow-panel">
+              <label class="access-field">
+                <span>Invite npub</span>
+                <input
+                  id="vaultInviteTargetNpubInput"
+                  placeholder="npub1..."
+                  autocomplete="off"
+                  spellcheck="false"
+                />
+              </label>
+              <label class="access-field">
+                <span>Initial Folders</span>
+                <input
+                  id="vaultInviteFoldersInput"
+                  value="general"
+                  autocomplete="off"
+                  spellcheck="false"
+                />
+              </label>
+              <label class="access-field">
+                <span>Expires</span>
+                <input
+                  id="vaultInviteExpiresAtInput"
+                  type="datetime-local"
+                  autocomplete="off"
+                />
+              </label>
+              <div class="access-action-row">
+                <button id="createVaultInvitationButton" type="button">Create invite</button>
+                <button id="revokeVaultInvitationButton" class="danger-action" type="button">Revoke invite</button>
+              </div>
+              <label class="access-field">
+                <span>Invite code or id</span>
+                <input
+                  id="vaultInviteCodeInput"
+                  placeholder="invite-..."
+                  autocomplete="off"
+                  spellcheck="false"
+                />
+              </label>
+              <div class="access-action-row">
+                <button id="getVaultInvitationButton" type="button">Inspect invite</button>
+                <button id="acceptVaultInvitationButton" type="button">Accept invite</button>
+              </div>
+              <p id="vaultInvitationHint" class="access-hint">Use the active Vault for admin invites.</p>
+            </div>
+            <div id="accessResultPanel" class="access-result" hidden></div>
           </div>
           <ol id="accessFolderList" class="obsidian-file-tree access-list"></ol>
         </section>

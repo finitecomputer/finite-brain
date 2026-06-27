@@ -64,6 +64,7 @@ fbrain open <vault-id> ./my-vault
 cd ./my-vault
 fbrain status --json
 fbrain daemon status
+fbrain daemon watch --once --json
 fbrain sync now --json
 fbrain unlock --all
 fbrain conflicts
@@ -86,15 +87,19 @@ shared Folder invitations. Agents still use ordinary filesystem reads and
 writes for wiki work; `fbrain` owns the secure/control operations around that
 flow.
 
+`fbrain daemon watch` is a foreground resident sync loop for Agent Runtimes. Run
+it under tmux, systemd, or an agent supervisor for continuous smoke use; use
+`--once`, `--max-ticks`, and `--poll-secs` for bounded checks and tests.
+
 The CLI resolves server URLs in this order: explicit `--server`, the saved
 Vault Working Tree server URL, `FINITE_BRAIN_SERVER_URL`, then the legacy
 `FINITE_BRAIN_PUBLIC_BASE_URL` fallback. The CLI HTTP client supports local
 loopback `http://` endpoints and production-shaped `https://` endpoints.
 Plain `http://` is accepted only for `localhost`, loopback IPs, and bracketed
 IPv6 loopback addresses; LAN hosts and container hostnames must use `https://`.
-A resident background daemon process and automatic file-watch sync remain
-hardening work; command driven `open`, `daemon start`, `daemon tick`, and
-`sync now` run the real sync path.
+Background supervisor packaging and lower-latency native file-system event
+watching remain hardening work; command driven `open`, `daemon watch`,
+`daemon start`, `daemon tick`, and `sync now` run the real sync path.
 
 Useful local environment variables:
 
@@ -111,3 +116,5 @@ Useful local environment variables:
 
 For the full local/staging parity checklist, see
 [`docs/runbooks/product-client-parity-local-staging.md`](docs/runbooks/product-client-parity-local-staging.md).
+For the internal smoke alpha backup, restore, and old-route cutover handoff, see
+[`docs/runbooks/smoke-alpha-backup-restore-cutover.md`](docs/runbooks/smoke-alpha-backup-restore-cutover.md).
