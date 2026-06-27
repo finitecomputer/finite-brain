@@ -571,6 +571,26 @@ fn grant_requests_to_metadata(
         .collect()
 }
 
+fn bootstrap_grant_requests_to_metadata(
+    requests: &[CreateVaultFolderKeyGrantRequest],
+    issuer_npub: &str,
+    default_created_at: &str,
+) -> Result<Vec<FolderKeyGrantMetadata>, ApiError> {
+    requests
+        .iter()
+        .map(|request| {
+            let folder_id = FolderId::new(request.folder_id.clone())?;
+            grant_request_to_metadata(
+                &request.grant,
+                &folder_id,
+                issuer_npub,
+                None,
+                default_created_at,
+            )
+        })
+        .collect()
+}
+
 fn grant_request_to_metadata(
     request: &FolderKeyGrantRequest,
     folder_id: &FolderId,

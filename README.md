@@ -86,15 +86,23 @@ shared Folder invitations. Agents still use ordinary filesystem reads and
 writes for wiki work; `fbrain` owns the secure/control operations around that
 flow.
 
-The prototype HTTP client currently supports local `http://` FiniteBrain server
-URLs. Production HTTPS transport, a resident background daemon process, and
-automatic file-watch encrypted object writeback remain hardening work.
+The CLI resolves server URLs in this order: explicit `--server`, the saved
+Vault Working Tree server URL, `FINITE_BRAIN_SERVER_URL`, then the legacy
+`FINITE_BRAIN_PUBLIC_BASE_URL` fallback. The CLI HTTP client supports local
+`http://` and production-shaped `https://` endpoints. A resident background
+daemon process and automatic file-watch sync remain hardening work; command
+driven `open`, `daemon start`, `daemon tick`, and `sync now` run the real sync
+path.
 
 Useful local environment variables:
 
 - `FINITE_BRAIN_ADDR`: bind address, default `127.0.0.1:3015`.
-- `FINITE_BRAIN_PUBLIC_BASE_URL`: externally visible base URL used by client
-  config, Nostr auth URL checks, and default CORS origin derivation.
+- `FINITE_BRAIN_SERVER_URL`: agent/CLI transport base URL for `fbrain`
+  commands. This can be a local `http://` endpoint or the smoke/staging
+  `https://` endpoint.
+- `FINITE_BRAIN_PUBLIC_BASE_URL`: browser-visible Product Client origin used
+  by client config, Nostr auth URL checks, default CORS origin derivation, and
+  as a legacy `fbrain` fallback when `FINITE_BRAIN_SERVER_URL` is unset.
 - `FINITE_BRAIN_DB`: SQLite database path, default `finite-brain.sqlite3`.
 - `FBRAIN_CONFIG_DIR`: local `fbrain` config directory for prototype signer
   state. Defaults to `~/.finitebrain/fbrain`.

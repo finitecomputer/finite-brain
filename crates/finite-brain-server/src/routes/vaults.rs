@@ -20,7 +20,15 @@ pub(crate) async fn create_vault_handler(
         }
     };
     let vault_id = output.vault.id.clone();
-    let grants = grants_for_required(&output.required_key_grants, &vault_id, &actor_npub);
+    let grants = if request.bootstrap_grants.is_empty() {
+        grants_for_required(&output.required_key_grants, &vault_id, &actor_npub)
+    } else {
+        bootstrap_grant_requests_to_metadata(
+            &request.bootstrap_grants,
+            &actor_npub,
+            &server_timestamp(&state),
+        )?
+    };
 
     let stored = {
         let mut store = state.store.lock().map_err(lock_error)?;

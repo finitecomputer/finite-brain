@@ -8,6 +8,8 @@ pub struct CreateVaultRequest {
     pub vault_id: String,
     pub kind: CreateVaultKind,
     pub name: String,
+    #[serde(default)]
+    pub bootstrap_grants: Vec<CreateVaultFolderKeyGrantRequest>,
 }
 
 /// Supported Vault creation kinds.
@@ -16,6 +18,14 @@ pub struct CreateVaultRequest {
 pub enum CreateVaultKind {
     Personal,
     Organization,
+}
+
+/// Client-generated current Folder Key Grant for initial Vault bootstrap.
+#[derive(Debug, Clone, Eq, PartialEq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateVaultFolderKeyGrantRequest {
+    pub folder_id: String,
+    pub grant: FolderKeyGrantRequest,
 }
 
 /// Vault metadata response without plaintext Page content.
