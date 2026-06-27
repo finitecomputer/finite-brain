@@ -6,8 +6,10 @@ const vm = require("node:vm");
 
 function element() {
   return {
+    attributes: {},
     className: "",
     disabled: false,
+    hidden: false,
     textContent: "",
     value: "",
     children: [],
@@ -17,6 +19,9 @@ function element() {
     addEventListener() {},
     replaceChildren() {
       this.children = [];
+    },
+    setAttribute(name, value) {
+      this.attributes[name] = String(value);
     },
   };
 }
@@ -117,8 +122,13 @@ assert.equal(
 );
 assert.equal(client.accessActionRoute("delete-folder", { folderId: "restricted" }), null);
 assert.equal(client.accessPanelState("share", folderRows[1]).status, "share");
-assert.match(client.accessPanelState("share", folderRows[1]).detail, /safe placeholder/);
+assert.match(client.accessPanelState("share", folderRows[1]).detail, /Invite by npub/);
 assert.equal(client.accessPanelState("manage", folderRows[1]).title, "Manage Restricted");
+assert.match(client.accessPanelState("manage", folderRows[1]).detail, /Review access state/);
+assert.equal(client.accessAudienceLabel(folderRows[0]), "All members");
+assert.equal(client.accessAudienceLabel(folderRows[1]), "Restricted");
+assert.equal(client.accessKeyStateLabel(folderRows[1], new Set(["restricted"])), "Open v3");
+assert.equal(client.accessPageStateLabel(folderRows[1]), "No pages");
 
 (async () => {
   const event = await client.buildAuthEventTemplate(
@@ -350,6 +360,56 @@ assert.equal(client.accessPanelState("manage", folderRows[1]).title, "Manage Res
   assert.equal(client.normalizeSidebarMode("search"), "search");
   assert.equal(client.normalizeSidebarMode("access"), "access");
   assert.equal(client.normalizeSidebarMode("bogus"), "files");
+  assert.equal(
+    client.vaultOnboardingComplete({
+      signerStatus: "connected",
+      metadata: { name: "Smoke" },
+      keyring: { openedGrants: [] },
+    }),
+    true
+  );
+  assert.equal(
+    client.vaultOnboardingComplete({
+      signerStatus: "connected",
+      metadata: { name: "Smoke" },
+      projection: { pages: new Map([["index", {}]]) },
+    }),
+    true
+  );
+  assert.equal(
+    client.vaultOnboardingComplete({
+      signerStatus: "connected",
+      metadata: null,
+      keyring: { openedGrants: [] },
+    }),
+    false
+  );
+  assert.equal(client.vaultDockDetail({ readerBusy: true }, 0, 0), "Opening vault...");
+  assert.equal(client.vaultDockDetail({ signerStatus: "checking" }, 0, 0), "Connect signer");
+  assert.equal(
+    client.vaultDockDetail({ signerStatus: "connected", metadata: null }, 0, 0),
+    "Load vault"
+  );
+  assert.equal(
+    client.vaultDockDetail({
+      signerStatus: "connected",
+      metadata: { name: "Smoke" },
+      projection: { pages: new Map() },
+    }),
+    "Open vault"
+  );
+  assert.equal(
+    client.vaultDockDetail(
+      {
+        signerStatus: "connected",
+        metadata: { name: "Smoke" },
+        keyring: { openedGrants: [{ folderId: "general" }, { folderId: "docs" }] },
+      },
+      53,
+      2
+    ),
+    "53 readable, 2 keys"
+  );
   const searchRows = client.searchPageRows("folder key", [
     {
       folderId: "crypto",

@@ -12,6 +12,7 @@ const FiniteBrainProductClient = (() => {
     okfPlan: null,
     projection: createClientProjection(),
     readerBusy: false,
+    vaultControlsExpanded: false,
     selectedFolderId: null,
     selectedPageKey: null,
     activeWorkspaceView: "page",
@@ -36,6 +37,22 @@ const FiniteBrainProductClient = (() => {
     if (!value) return "-";
     if (value.length <= 18) return value;
     return `${value.slice(0, 10)}...${value.slice(-8)}`;
+  }
+
+  function vaultOnboardingComplete(snapshot) {
+    return Boolean(
+      snapshot?.signerStatus === "connected" &&
+        snapshot?.metadata &&
+        (snapshot?.keyring || snapshot?.projection?.pages?.size)
+    );
+  }
+
+  function vaultDockDetail(snapshot, readableCount = 0, openedKeyCount = 0) {
+    if (snapshot?.readerBusy) return "Opening vault...";
+    if (snapshot?.signerStatus !== "connected") return "Connect signer";
+    if (!snapshot?.metadata) return "Load vault";
+    if (!snapshot?.keyring && !snapshot?.projection?.pages?.size) return "Open vault";
+    return `${readableCount} readable, ${openedKeyCount} keys`;
   }
 
   function deriveSignerState(provider) {
@@ -184,7 +201,7 @@ const FiniteBrainProductClient = (() => {
     const pageDetail = readerFolderDetail(row);
     if (intent === "share") {
       return {
-        detail: `${pageDetail}. Share flow is surfaced here; backend invite creation is still a safe placeholder in this prototype.`,
+        detail: `${pageDetail}. Invite by npub.`,
         primaryLabel: "Share",
         secondaryLabel: "Manage",
         status: "share",
@@ -194,7 +211,7 @@ const FiniteBrainProductClient = (() => {
     }
     if (intent === "manage") {
       return {
-        detail: `${pageDetail}. Access management is visible here; grant changes are not executed from this prototype panel yet.`,
+        detail: `${pageDetail}. Review access state.`,
         primaryLabel: "Manage",
         secondaryLabel: "Share",
         status: "manage",
@@ -210,6 +227,29 @@ const FiniteBrainProductClient = (() => {
       title: row.path,
       tone: row.status === "ready" ? "ready" : "warn",
     };
+  }
+
+  function accessAudienceLabel(row) {
+    if (!row) return "-";
+    if (row.access === "all_members") return "All members";
+    if (row.access === "admin_only") return "Admins";
+    const count = row.accessUserIds?.length || 0;
+    return count ? `${count} restricted ${count === 1 ? "user" : "users"}` : "Restricted";
+  }
+
+  function accessKeyStateLabel(row, openedFolders = new Set()) {
+    if (!row) return "-";
+    if (row.setupIncomplete) return "Setup needed";
+    if (openedFolders.has(row.id)) return `Open v${row.currentKeyVersion || 1}`;
+    if (row.status === "locked") return `Locked v${row.currentKeyVersion || 1}`;
+    return `Ready v${row.currentKeyVersion || 1}`;
+  }
+
+  function accessPageStateLabel(row) {
+    if (!row) return "-";
+    if (!row.pageCount) return "No pages";
+    if (row.readableCount === row.pageCount) return pageCountLabel(row.pageCount);
+    return `${row.readableCount}/${row.pageCount} readable`;
   }
 
   function metadataMountRows(metadata) {
@@ -2044,6 +2084,19 @@ const FiniteBrainProductClient = (() => {
     setText("accessShareButton", "Share");
     $("accessManageButton").disabled = !activeRow;
     $("accessShareButton").disabled = !activeRow;
+    $("accessManageButton").className = `access-mode-button${
+      state.activeAccessIntent === "manage" ? " active" : ""
+    }`;
+    $("accessShareButton").className = `access-mode-button${state.activeAccessIntent === "share" ? " active" : ""}`;
+    setPressed("accessManageButton", state.activeAccessIntent === "manage");
+    setPressed("accessShareButton", state.activeAccessIntent === "share");
+    const showModePanel = Boolean(activeRow && ["manage", "share"].includes(state.activeAccessIntent));
+    $("accessModePanel").hidden = !showModePanel;
+    $("accessManageSheet").hidden = !activeRow || state.activeAccessIntent !== "manage";
+    $("accessShareSheet").hidden = !activeRow || state.activeAccessIntent !== "share";
+    setText("accessManageAudience", accessAudienceLabel(activeRow));
+    setText("accessManageKeyState", accessKeyStateLabel(activeRow, openedFolders));
+    setText("accessManagePageState", accessPageStateLabel(activeRow));
     renderAccessBadgeRow("accessBadgeRow", accessBadgesForFolder(activeRow, openedFolders));
     setList("accessFolderList", rows, "Load a Vault to inspect access", (item, row) => {
       const button = obsidianTreeButton(
@@ -2172,9 +2225,14 @@ const FiniteBrainProductClient = (() => {
     const lockedCount = rows.filter((row) => row.status !== "ready").length;
     setPill("accessState", lockedCount ? `${lockedCount} locked` : "access ready", lockedCount ? "warn" : "ready");
     setText("folderCount", String(rows.length));
+    const readableCount = readablePages().length;
+    const openedKeyCount = state.keyring?.openedGrants.length || 0;
+    const onboardingComplete = vaultOnboardingComplete(state);
+    const showVaultControls = !onboardingComplete || state.vaultControlsExpanded;
 
     $("connectSignerButton").disabled = !deriveSignerState(window.nostr).canConnect;
     $("loadVaultButton").disabled = state.signerStatus !== "connected" || !state.config;
+    $("collapseVaultControlsButton").hidden = !onboardingComplete;
     $("openFolderKeyButton").disabled = !state.metadata;
     $("encryptDraftButton").disabled = !state.keyring;
     $("savePageButton").disabled = !state.preparedWrite || state.signerStatus !== "connected";
@@ -2185,6 +2243,12 @@ const FiniteBrainProductClient = (() => {
     $("executeOkfImportButton").disabled =
       !state.okfPlan || !state.keyring || state.signerStatus !== "connected";
     $("vaultIdInput").value = state.activeVaultId;
+    $("vaultOnboardingPanel").hidden = !showVaultControls;
+    $("vaultDockButton").setAttribute("aria-expanded", String(showVaultControls));
+    $("vaultDockButton").className = `vault-dock-button${showVaultControls ? " active" : ""}`;
+    setText("vaultDockName", state.metadata?.name || state.activeVaultId || "No vault");
+    setText("vaultDockDetail", vaultDockDetail(state, readableCount, openedKeyCount));
+    $("vaultDockDot").className = `vault-dock-dot ${onboardingComplete ? "ready" : signerTone}`;
 
     setText("workspaceTitle", state.metadata?.name || "Open a Vault");
     setText("vaultKind", state.metadata?.kind || "-");
@@ -2334,6 +2398,7 @@ const FiniteBrainProductClient = (() => {
       await pullSyncBootstrap();
       selectDefaultReaderTargets();
       renderGraphView();
+      state.vaultControlsExpanded = false;
       log("Opened accessible Vault reader.", {
         openedDevelopmentKeys: grants.opened.length,
         skippedOpaqueGrants: grants.skipped.length,
@@ -2632,6 +2697,14 @@ const FiniteBrainProductClient = (() => {
         render();
       });
     });
+    $("vaultDockButton").addEventListener("click", () => {
+      state.vaultControlsExpanded = !state.vaultControlsExpanded;
+      render();
+    });
+    $("collapseVaultControlsButton").addEventListener("click", () => {
+      state.vaultControlsExpanded = false;
+      render();
+    });
     $("refreshReaderButton").addEventListener("click", () => {
       refreshReader().catch((error) => {
         state.lastError = error.message;
@@ -2777,8 +2850,11 @@ const FiniteBrainProductClient = (() => {
 
   return {
     accessActionRoute,
+    accessAudienceLabel,
     accessBadgesForFolder,
+    accessKeyStateLabel,
     accessPanelState,
+    accessPageStateLabel,
     buildPageWriteRequest,
     buildAuthEventTemplate,
     buildGraphProjection,
@@ -2817,6 +2893,8 @@ const FiniteBrainProductClient = (() => {
     sidebarAccessBadgesForFolder,
     shortKey,
     start,
+    vaultDockDetail,
+    vaultOnboardingComplete,
     workspaceChromeState,
     workspaceTabTitle,
   };

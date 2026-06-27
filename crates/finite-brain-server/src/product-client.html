@@ -48,12 +48,16 @@
             <p class="eyebrow">FiniteBrain</p>
             <h1>Files</h1>
           </div>
-          <button id="connectSignerButton" class="icon-text-button" type="button">Connect signer</button>
         </header>
 
-        <section class="vault-control-strip" aria-label="Vault controls">
-          <label for="vaultIdInput">Vault</label>
+        <section id="vaultOnboardingPanel" class="vault-control-strip" aria-label="Vault setup">
+          <div class="vault-control-heading">
+            <span>Vault</span>
+            <button id="collapseVaultControlsButton" type="button" aria-label="Hide Vault setup" hidden>Hide</button>
+          </div>
+          <button id="connectSignerButton" class="icon-text-button" type="button">Connect signer</button>
           <div class="inline-control">
+            <label class="sr-only" for="vaultIdInput">Vault ID</label>
             <input id="vaultIdInput" value="smoke" autocomplete="off" spellcheck="false" />
             <button id="loadVaultButton" type="button">Load</button>
           </div>
@@ -125,14 +129,52 @@
               <button id="accessManageButton" type="button">Manage</button>
               <button id="accessShareButton" type="button">Share</button>
             </div>
+            <div id="accessModePanel" class="access-mode-panel" hidden>
+              <div id="accessManageSheet" class="access-mode-sheet" hidden>
+                <div class="access-mini-row">
+                  <span>Audience</span>
+                  <strong id="accessManageAudience">-</strong>
+                </div>
+                <div class="access-mini-row">
+                  <span>Folder key</span>
+                  <strong id="accessManageKeyState">-</strong>
+                </div>
+                <div class="access-mini-row">
+                  <span>Pages</span>
+                  <strong id="accessManagePageState">-</strong>
+                </div>
+              </div>
+              <div id="accessShareSheet" class="access-mode-sheet" hidden>
+                <label class="access-compact-field">
+                  <span>Invite npub</span>
+                  <input id="accessShareNpubInput" placeholder="npub1..." autocomplete="off" spellcheck="false" />
+                </label>
+              </div>
+            </div>
           </div>
           <ol id="accessFolderList" class="obsidian-file-tree access-list"></ol>
         </section>
 
         <footer class="sidebar-footer">
-          <span id="readerFolderSummary" class="pill muted">0 folders</span>
-          <span id="readerPageSummary" class="pill muted">0 pages</span>
-          <span id="readerKeySummary" class="pill muted">0 keys</span>
+          <button
+            id="vaultDockButton"
+            class="vault-dock-button"
+            type="button"
+            aria-controls="vaultOnboardingPanel"
+            aria-expanded="false"
+          >
+            <span class="vault-dock-chevron">⌄</span>
+            <span class="vault-dock-copy">
+              <strong id="vaultDockName">smoke</strong>
+              <small id="vaultDockDetail">Vault setup</small>
+            </span>
+            <span id="vaultDockDot" class="vault-dock-dot muted" aria-hidden="true"></span>
+          </button>
+          <div class="sidebar-footer-pills">
+            <span id="readerFolderSummary" class="pill muted">0 folders</span>
+            <span id="readerPageSummary" class="pill muted">0 pages</span>
+            <span id="readerKeySummary" class="pill muted">0 keys</span>
+          </div>
         </footer>
       </aside>
 

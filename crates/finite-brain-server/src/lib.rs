@@ -1187,6 +1187,9 @@ mod tests {
         assert!(client_body.contains("app-ribbon"));
         assert!(client_body.contains("file-sidebar"));
         assert!(client_body.contains("Connect signer"));
+        assert!(client_body.contains("vaultOnboardingPanel"));
+        assert!(client_body.contains("vaultDockButton"));
+        assert!(client_body.contains("vaultDockDetail"));
         assert!(client_body.contains("Open a Vault"));
         assert!(client_body.contains("readerFolderList"));
         assert!(client_body.contains("searchSidebarPanel"));

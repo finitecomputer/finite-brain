@@ -774,7 +774,7 @@ pre {
 }
 
 .vault-header {
-  justify-content: space-between;
+  justify-content: flex-start;
   gap: 12px;
   min-height: 50px;
   border-bottom: 1px solid #303030;
@@ -790,6 +790,34 @@ pre {
   gap: 8px;
   border-bottom: 1px solid #303030;
   padding: 10px 12px;
+}
+
+.vault-control-strip[hidden] {
+  display: none;
+}
+
+.vault-control-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  color: #a7a7a7;
+  font-size: 12px;
+  font-weight: 750;
+  text-transform: uppercase;
+}
+
+.vault-control-heading button {
+  min-height: 28px;
+  border: 0;
+  background: transparent;
+  color: #a7a7a7;
+  padding: 4px 6px;
+}
+
+.vault-control-heading button:hover {
+  background: #333333;
+  color: #f1f1f1;
 }
 
 .vault-control-strip .inline-control {
@@ -911,9 +939,88 @@ pre {
 }
 
 .access-action-row button {
-  min-height: 28px;
-  border-radius: 5px;
-  padding: 4px 9px;
+  min-height: 36px;
+  border-radius: 6px;
+  padding: 6px 12px;
+  transition-property: background-color, box-shadow, color, transform;
+  transition-duration: 140ms;
+  transition-timing-function: ease-out;
+}
+
+.access-action-row button:active {
+  transform: scale(0.96);
+}
+
+.access-mode-button.active {
+  background: #303030;
+  box-shadow: inset 0 0 0 1px rgba(124, 108, 255, 0.42);
+  color: #ffffff;
+}
+
+.access-mode-panel {
+  display: grid;
+  gap: 8px;
+  border-top: 1px solid #333333;
+  padding-top: 8px;
+}
+
+.access-mode-panel[hidden] {
+  display: none;
+}
+
+.access-mode-sheet {
+  display: grid;
+  gap: 8px;
+}
+
+.access-mode-sheet[hidden] {
+  display: none;
+}
+
+.access-mini-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  min-height: 34px;
+  border-radius: 6px;
+  background: #252525;
+  padding: 6px 9px;
+  color: #a7a7a7;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.access-mini-row strong {
+  min-width: 0;
+  overflow: hidden;
+  color: #e0e0e0;
+  font-variant-numeric: tabular-nums;
+  font-weight: 800;
+  text-align: right;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.access-compact-field {
+  display: grid;
+  gap: 6px;
+}
+
+.access-compact-field span {
+  color: #a7a7a7;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.access-compact-field input {
+  width: 100%;
+  min-height: 38px;
+  margin: 0;
+  border-radius: 7px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 }
 
 .access-badge-row {
@@ -1118,10 +1225,94 @@ pre {
 }
 
 .sidebar-footer {
+  display: grid;
+  gap: 7px;
+  border-top: 1px solid #303030;
+  padding: 8px;
+}
+
+.vault-dock-button {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 40px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: #d6d6d6;
+  padding: 6px 8px;
+  text-align: left;
+  transition-duration: 140ms;
+  transition-property: background-color, box-shadow, color, transform;
+  transition-timing-function: cubic-bezier(0.2, 0, 0, 1);
+}
+
+.vault-dock-button:hover,
+.vault-dock-button.active {
+  background: #303030;
+  box-shadow: var(--shadow-obsi-ring);
+  color: #f1f1f1;
+}
+
+.vault-dock-button:active {
+  transform: scale(0.96);
+}
+
+.vault-dock-chevron {
+  color: #9a9a9a;
+  font-size: 13px;
+}
+
+.vault-dock-copy {
+  display: grid;
+  min-width: 0;
+  gap: 1px;
+}
+
+.vault-dock-copy strong,
+.vault-dock-copy small {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.vault-dock-copy strong {
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.vault-dock-copy small {
+  color: #9f9f9f;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.vault-dock-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 999px;
+  background: #787878;
+}
+
+.vault-dock-dot.ready {
+  background: var(--green);
+}
+
+.vault-dock-dot.error {
+  background: var(--red);
+}
+
+.vault-dock-dot.warn {
+  background: var(--amber);
+}
+
+.sidebar-footer-pills {
+  display: flex;
   flex-wrap: wrap;
   gap: 6px;
-  border-top: 1px solid #303030;
-  padding: 8px 10px;
 }
 
 .obsidian-workspace {
