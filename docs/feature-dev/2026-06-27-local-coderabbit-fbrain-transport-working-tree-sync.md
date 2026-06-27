@@ -36,3 +36,39 @@ None.
   - Added focused regression tests for partial-success conflict preservation, historical key readability, stale moved-file cleanup, local-only HTTP, and bootstrap grant validation.
   - Full verification after fixes passed: `cargo fmt --check && cargo check --workspace && cargo test --workspace && cargo clippy --workspace --all-targets -- -D warnings && cargo build && git diff --check`.
   - Live smoke after fixes passed against `http://127.0.0.1:4016` with temp DB `/tmp/fbrain-sync-smoke.WWDQFD/finite-brain.sqlite3`.
+
+## Round 2
+
+- Scope: local
+- Round number: 2
+- Command or trigger: `coderabbit review --agent --type all --base staging`
+- Started: `2026-06-27`
+- Completed: `2026-06-27`
+- Availability: completed
+- Fallback review thread: none
+- Fix commits:
+  - `a7ebbb8` Address fbrain CodeRabbit round 2 findings
+  - `b73fb40` Fix fbrain HTTP port validation clippy
+
+## Findings To Address
+
+| Finding | Severity | Decision | Notes |
+| --- | --- | --- | --- |
+| Local `http://` host parsing accepted malformed bracketed hosts. | minor | fixed | Tightened bracket and port parsing and added loopback URL regression tests. |
+| `ureq` followed redirects after validating only the original URL. | major | fixed | HTTP agent now disables redirects so validated command URLs cannot be redirected to an unvalidated host or scheme. |
+| Conflict fake sync server read request bodies with a single socket read. | minor | fixed | Reused the full `read_http_request` helper so conflict tests wait for declared bodies before responding. |
+| fbrain-encrypted sync writes did not preserve page paths for other machines. | major | fixed | fbrain-created Folder Object plaintext now uses an encrypted `finite-folder-object-page-v1` envelope containing `path` and `markdown`, while legacy raw markdown objects still decode with the prior fallback path behavior. |
+
+## Findings Not Addressed
+
+None.
+
+## Result
+
+- Continue: yes
+- Escalate: no
+- Notes:
+  - Added cross-device materialization coverage for encrypted page paths with no prior local path override.
+  - Clean full verification passed from `/tmp/fbrain-verify-worktree.KosIBG`: `cargo fmt --check && cargo check --workspace && cargo test --workspace && cargo clippy --workspace --all-targets -- -D warnings && cargo build && git diff --check`.
+  - Live smoke after round-two fixes passed against `http://127.0.0.1:4018` with temp DB `/tmp/fbrain-sync-smoke-round2.BzarH1/finite-brain.sqlite3`; create/update/delete of `home/round2.md` ended at `latestSequence=3` with `conflicts=[]`.
+  - Branch hygiene: commit `331ccd0` restored Product Client asset parity because commit `f17e40b` had already added server asset assertions for Product Client controls. Verification passed with `cargo test -p finite-brain-server product_client_serves_spine_assets_and_config`, `node crates/finite-brain-server/src/product-client.test.js`, and `node scripts/verify-obsidian-product-client.mjs`.

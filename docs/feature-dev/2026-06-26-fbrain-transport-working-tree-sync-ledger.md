@@ -9,7 +9,7 @@
 - Feature branch: `feature/fbrain-transport-working-tree-sync`
 - Human owner: Austin
 - Started: `2026-06-26T23:28:22Z`
-- Current status: local implementation, review, and local CodeRabbit fixes complete
+- Current status: local implementation, review, local CodeRabbit fixes, clean verification, and live smoke complete; ready for final local CodeRabbit pass and staging PR
 - Skill setup status: present (`AGENTS.md`, `docs/agents/issue-tracker.md`, `docs/agents/triage-labels.md`, `docs/agents/domain.md`)
 
 ## Goal
@@ -52,6 +52,7 @@ Do missing rollout items 3 and 6 end to end: harden `fbrain` server transport co
   - Server: `http://127.0.0.1:4016`
   - Commands proved: `auth login`, `vault create personal-beta`, `open`, readable `home`, create/update/delete `home/smoke.md` through `sync now`, empty conflicts, final latest sequence `3`
   - Rerun after local CodeRabbit fixes used temp DB `/tmp/fbrain-sync-smoke.WWDQFD/finite-brain.sqlite3`, vault `personal-gamma`, and final latest sequence `3`
+  - Rerun after local CodeRabbit round-two fixes used temp DB `/tmp/fbrain-sync-smoke-round2.BzarH1/finite-brain.sqlite3`, server `http://127.0.0.1:4018`, vault `personal-round2`, and final latest sequence `3` with `conflicts=[]`
 
 ## Slice Ledger
 
@@ -96,6 +97,21 @@ None.
   - `fbrain open` validates the server URL before persistence.
   - Bootstrap grant generation reuses one Folder Key per folder/key version across recipients.
   - Product Client asset test body cap was raised after full-suite verification found the checked-in HTML exceeded the stale 16 KiB test cap.
+- Round 2 command: `coderabbit review --agent --type all --base staging`
+- Round 2 findings: 4 addressed, 0 ignored
+- Round 2 fix commits:
+  - `a7ebbb8` Address fbrain CodeRabbit round 2 findings
+  - `b73fb40` Fix fbrain HTTP port validation clippy
+- Round 2 fix evidence:
+  - HTTP redirects are disabled after URL validation.
+  - Loopback `http://` host parsing rejects malformed bracketed hosts and ports.
+  - Conflict sync fake server reads complete request bodies.
+  - fbrain-created Folder Object plaintext now carries encrypted page path metadata while preserving legacy raw markdown fallback.
+- Branch hygiene:
+  - `331ccd0` restored Product Client asset parity because `f17e40b` had already added asset assertions for Product Client controls without the matching asset updates.
+  - Verification passed: `cargo test -p finite-brain-server product_client_serves_spine_assets_and_config`; `node crates/finite-brain-server/src/product-client.test.js`; `node scripts/verify-obsidian-product-client.mjs`.
+- Clean verification after round 2:
+  - Passed from `/tmp/fbrain-verify-worktree.KosIBG`: `cargo fmt --check && cargo check --workspace && cargo test --workspace && cargo clippy --workspace --all-targets -- -D warnings && cargo build && git diff --check`.
 
 ## Open Questions
 
