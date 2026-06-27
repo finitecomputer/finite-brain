@@ -67,8 +67,8 @@ None.
 
 | Issue | Fixed point | Worker session | Commit | Review result | Checks |
 | --- | --- | --- | --- | --- | --- |
-| `#45` | `df69b01521d9e126f430d926a7730f4f4c641d05` | current thread | pending | pass | `fmt`, `check`, `test`, `clippy`, `build`, live smoke |
-| `#44` | `df69b01521d9e126f430d926a7730f4f4c641d05` | current thread | pending | pass | `fmt`, `check`, `test`, `clippy`, `build`, live smoke |
+| `#45` | `df69b01521d9e126f430d926a7730f4f4c641d05` | current thread | `8bf422f969aa689c7c0214d70f98df85f1eca7b7` | pass | `fmt`, `check`, `test`, `clippy`, `build`, live smoke |
+| `#44` | `df69b01521d9e126f430d926a7730f4f4c641d05` | current thread | `8bf422f969aa689c7c0214d70f98df85f1eca7b7` | pass | `fmt`, `check`, `test`, `clippy`, `build`, live smoke |
 
 ## Review Notes
 
