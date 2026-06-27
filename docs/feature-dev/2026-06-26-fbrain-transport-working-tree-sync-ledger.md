@@ -85,6 +85,7 @@ None.
 - Command: `coderabbit review --agent --type all --base staging`
 - Availability: completed through the free CLI allowance
 - Findings: 8 addressed, 0 ignored
+- Fix commit: `f17e40b03b90897e1a929088457b8d0e696c0639`
 - Fix evidence:
   - Partial-success sync now rematerializes accepted writes and restores conflicted markdown edits.
   - `timestamp_from_unix` guards oversized values.

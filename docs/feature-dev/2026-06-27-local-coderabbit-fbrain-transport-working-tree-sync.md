@@ -9,6 +9,7 @@
 - Completed: `2026-06-27`
 - Availability: completed
 - Fallback review thread: none
+- Fix commit: `f17e40b03b90897e1a929088457b8d0e696c0639`
 
 ## Findings To Address
 
