@@ -10,6 +10,7 @@ mod models;
 mod output;
 mod signer;
 mod state;
+mod sync_engine;
 
 pub use environment::CliEnvironment;
 pub use error::CliError;
@@ -23,8 +24,9 @@ pub(crate) use models::*;
 pub(crate) use output::*;
 pub(crate) use signer::*;
 pub(crate) use state::*;
+pub(crate) use sync_engine::*;
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io::Write;
 use std::path::PathBuf;
@@ -34,7 +36,9 @@ use finite_brain_core::portability::{
     VaultDirectoryVaultSummary, VaultWorkingTreeStateManifest, WorkingTreeFolderRoot,
     WorkingTreeObjectManifestEntry, WorkingTreeSyncState,
 };
-use finite_brain_core::{AdminAccessAction, FolderKey};
+use finite_brain_core::{
+    AdminAccessAction, FolderKey, bootstrap_organization_vault, bootstrap_personal_vault,
+};
 use finite_nostr::{NostrPublicKey, decrypt_nip44, encrypt_nip44};
 use nostr::Kind;
 
@@ -98,15 +102,7 @@ fn doctor<W: Write>(
     json: bool,
     output: &mut W,
 ) -> Result<(), CliError> {
-    let server_url = option_value(args, "--server")
-        .or_else(|| {
-            find_agent_state(&env.cwd)
-                .ok()
-                .flatten()
-                .and_then(|root| read_agent_state(&root).ok())
-                .and_then(|state| state.server_url)
-        })
-        .or_else(|| std::env::var("FINITE_BRAIN_PUBLIC_BASE_URL").ok());
+    let server_url = server_url_for_optional_command(env, args);
     let working_tree = find_agent_state(&env.cwd).ok().flatten();
     let auth = read_auth_optional(env)?;
     let daemon_state = working_tree
@@ -306,7 +302,7 @@ fn daemon<W: Write>(
             }
         }
         "start" => {
-            let sync_result = sync_once(env, "daemon.start");
+            let sync_result = sync_once(env, args, "daemon.start");
             mutate_agent_state(env, |state, now| {
                 state.daemon.state = DaemonRunState::Running;
                 state.daemon.last_started_at = Some(now.clone());
@@ -342,7 +338,7 @@ fn daemon<W: Write>(
             }
         }
         "tick" => {
-            let report = sync_once(env, "daemon.tick")?;
+            let report = sync_once(env, args, "daemon.tick")?;
             if json {
                 write_json(output, &report)
             } else {
@@ -379,7 +375,7 @@ fn sync<W: Write>(
             }
         }
         "now" => {
-            let report = sync_once(env, "sync.now")?;
+            let report = sync_once(env, args, "sync.now")?;
             if json {
                 write_json(output, &report)
             } else {
@@ -406,7 +402,10 @@ fn open_vault<W: Write>(
         .get(1)
         .map(PathBuf::from)
         .unwrap_or_else(|| env.cwd.join(vault_id));
-    let server_url = option_value(args, "--server");
+    let server_url = configured_server_url_for_open(args);
+    if let Some(server_url) = server_url.as_deref() {
+        validate_http_url(server_url)?;
+    }
     fs::create_dir_all(path.join(".finitebrain/encrypted-sync"))?;
     let now = timestamp(env);
     let auth = read_auth_optional(env)?;
@@ -456,7 +455,7 @@ fn open_vault<W: Write>(
     write_agent_state(&path, &state)?;
     let mut opened_env = env.clone();
     opened_env.cwd = path.clone();
-    let sync_status = match sync_once(&opened_env, "working_tree.opened.sync") {
+    let sync_status = match sync_once(&opened_env, args, "working_tree.opened.sync") {
         Ok(report) => report.status,
         Err(error) => {
             let mut state = read_agent_state(&path)?;
@@ -645,6 +644,51 @@ fn activity<W: Write>(env: &CliEnvironment, json: bool, output: &mut W) -> Resul
     }
 }
 
+fn bootstrap_grants_for_vault_create(
+    env: &CliEnvironment,
+    vault_id: &str,
+    kind: &str,
+    name: &str,
+) -> Result<Vec<serde_json::Value>, CliError> {
+    let auth = read_auth_required(env)?;
+    let output = match kind {
+        "personal" => bootstrap_personal_vault(vault_id, name, auth.npub.clone()),
+        "organization" => bootstrap_organization_vault(vault_id, name, auth.npub.clone()),
+        other => {
+            return Err(CliError::InvalidInput(format!(
+                "unknown vault kind {other}"
+            )));
+        }
+    }
+    .map_err(|error| CliError::InvalidInput(error.to_string()))?;
+
+    let mut folder_keys = BTreeMap::<(String, u32), FolderKey>::new();
+    output
+        .required_key_grants
+        .into_iter()
+        .map(|required| {
+            let folder_id = required.folder_id.to_string();
+            let folder_key = folder_keys
+                .entry((folder_id.clone(), required.key_version))
+                .or_insert_with(FolderKey::generate);
+            let recipient = required.recipient_user_id.to_string();
+            let grant = folder_key_grant_request(
+                &auth,
+                vault_id,
+                &folder_id,
+                required.key_version,
+                &recipient,
+                folder_key,
+                env,
+            )?;
+            Ok(serde_json::json!({
+                "folderId": folder_id,
+                "grant": grant
+            }))
+        })
+        .collect()
+}
+
 fn access<W: Write>(
     args: &[String],
     env: &CliEnvironment,
@@ -680,11 +724,15 @@ fn vault<W: Write>(
             let values = positional_values(args);
             let vault_id = values.get(1).ok_or(CliError::MissingArgument("vault-id"))?;
             let kind = option_value(args, "--kind").unwrap_or_else(|| "personal".to_owned());
+            let normalized_kind = normalize_vault_kind(&kind)?;
             let name = option_value(args, "--name").unwrap_or_else(|| vault_id.clone());
+            let bootstrap_grants =
+                bootstrap_grants_for_vault_create(env, vault_id, normalized_kind, &name)?;
             let body = serde_json::json!({
                 "vaultId": vault_id,
-                "kind": normalize_vault_kind(&kind)?,
-                "name": name
+                "kind": normalized_kind,
+                "name": name,
+                "bootstrapGrants": bootstrap_grants
             });
             let response = signed_json_request(env, args, "POST", "/_admin/vaults", Some(body))?;
             write_command_response(output, json, &response)
@@ -1124,6 +1172,10 @@ mod tests {
     use finite_nostr::NostrPublicKey;
     use nostr::Keys;
     use serde_json::Value;
+    use std::io::{ErrorKind, Read};
+    use std::net::{TcpListener, TcpStream};
+    use std::thread;
+    use std::time::{Duration, Instant};
     use tempfile::TempDir;
 
     fn env_for(tmp: &TempDir) -> CliEnvironment {
@@ -1138,6 +1190,221 @@ mod tests {
         let mut output = Vec::new();
         run_with_env(args.iter().copied(), env_for(tmp), &mut output).unwrap();
         String::from_utf8(output).unwrap()
+    }
+
+    fn start_conflict_sync_server() -> (String, thread::JoinHandle<Vec<String>>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let handle = thread::spawn(move || {
+            let started = Instant::now();
+            let mut requests = Vec::new();
+            while requests.len() < 3 && started.elapsed() < Duration::from_secs(5) {
+                let Ok((mut stream, _)) = listener.accept() else {
+                    thread::sleep(Duration::from_millis(10));
+                    continue;
+                };
+                let (request_line, _) = read_http_request(&mut stream);
+                requests.push(request_line.clone());
+                let (status, body) = if request_line.contains("/export") {
+                    (
+                        "200 OK",
+                        serde_json::json!({
+                            "vault": {
+                                "id": "vault",
+                                "kind": "personal",
+                                "name": "Vault",
+                                "ownerUserId": null
+                            },
+                            "folders": [{
+                                "id": "general",
+                                "path": "General",
+                                "access": "owner",
+                                "currentKeyVersion": 1,
+                                "sharedFolderSource": false,
+                                "accessible": true
+                            }],
+                            "keyGrants": [],
+                            "accessState": {
+                                "members": [],
+                                "admins": []
+                            }
+                        })
+                        .to_string(),
+                    )
+                } else if request_line.contains("/sync/bootstrap") {
+                    (
+                        "200 OK",
+                        serde_json::json!({
+                            "latestSequence": 0,
+                            "objects": []
+                        })
+                        .to_string(),
+                    )
+                } else {
+                    (
+                        "409 Conflict",
+                        serde_json::json!({
+                            "error": "baseRevision does not match current folder object revision"
+                        })
+                        .to_string(),
+                    )
+                };
+                let response = format!(
+                    "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                stream.write_all(response.as_bytes()).unwrap();
+            }
+            requests
+        });
+        (url, handle)
+    }
+
+    fn read_http_request(stream: &mut TcpStream) -> (String, String) {
+        stream
+            .set_read_timeout(Some(Duration::from_secs(1)))
+            .unwrap();
+        let mut bytes = Vec::new();
+        let mut buffer = [0_u8; 4096];
+        loop {
+            let size = match stream.read(&mut buffer) {
+                Ok(size) => size,
+                Err(error)
+                    if matches!(error.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) =>
+                {
+                    break;
+                }
+                Err(_) => 0,
+            };
+            if size == 0 {
+                break;
+            }
+            bytes.extend_from_slice(&buffer[..size]);
+            let Some(header_end) = bytes.windows(4).position(|window| window == b"\r\n\r\n") else {
+                continue;
+            };
+            let headers = String::from_utf8_lossy(&bytes[..header_end]).to_string();
+            let content_length = headers
+                .lines()
+                .find_map(|line| {
+                    let lower = line.to_ascii_lowercase();
+                    lower
+                        .strip_prefix("content-length:")
+                        .and_then(|value| value.trim().parse::<usize>().ok())
+                })
+                .unwrap_or(0);
+            let body_start = header_end + 4;
+            if bytes.len() >= body_start + content_length {
+                let body = String::from_utf8_lossy(&bytes[body_start..body_start + content_length])
+                    .to_string();
+                let request_line = headers.lines().next().unwrap_or_default().to_owned();
+                return (request_line, body);
+            }
+        }
+        let request = String::from_utf8_lossy(&bytes).to_string();
+        (
+            request.lines().next().unwrap_or_default().to_owned(),
+            String::new(),
+        )
+    }
+
+    fn start_partial_success_sync_server() -> (String, thread::JoinHandle<Vec<String>>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let handle = thread::spawn(move || {
+            let started = Instant::now();
+            let mut requests = Vec::new();
+            let mut write_count = 0_usize;
+            let mut accepted_object = None::<(String, String)>;
+            while requests.len() < 4 && started.elapsed() < Duration::from_secs(5) {
+                let Ok((mut stream, _)) = listener.accept() else {
+                    thread::sleep(Duration::from_millis(10));
+                    continue;
+                };
+                let (request_line, body) = read_http_request(&mut stream);
+                requests.push(request_line.clone());
+                let (status, response_body) = if request_line.contains("/export") {
+                    (
+                        "200 OK",
+                        serde_json::json!({
+                            "vault": {
+                                "id": "vault",
+                                "kind": "personal",
+                                "name": "Vault",
+                                "ownerUserId": null
+                            },
+                            "folders": [{
+                                "id": "general",
+                                "path": "General",
+                                "access": "owner",
+                                "currentKeyVersion": 1,
+                                "sharedFolderSource": false,
+                                "accessible": true
+                            }],
+                            "keyGrants": [],
+                            "accessState": {
+                                "members": [],
+                                "admins": []
+                            }
+                        })
+                        .to_string(),
+                    )
+                } else if request_line.contains("/sync/bootstrap") {
+                    let objects = accepted_object
+                        .as_ref()
+                        .map(|(object_id, ciphertext)| {
+                            vec![serde_json::json!({
+                                "folderId": "general",
+                                "objectId": object_id,
+                                "revision": 1,
+                                "ciphertext": ciphertext,
+                                "deleted": false
+                            })]
+                        })
+                        .unwrap_or_default();
+                    (
+                        "200 OK",
+                        serde_json::json!({
+                            "latestSequence": objects.len() as u64,
+                            "objects": objects
+                        })
+                        .to_string(),
+                    )
+                } else if request_line.starts_with("PUT ") {
+                    write_count += 1;
+                    if write_count == 1 {
+                        let path = request_line.split_whitespace().nth(1).unwrap_or_default();
+                        let object_id = path.rsplit('/').next().unwrap_or_default().to_owned();
+                        let body: Value = serde_json::from_str(&body).unwrap();
+                        let ciphertext = body["ciphertext"].as_str().unwrap().to_owned();
+                        accepted_object = Some((object_id, ciphertext));
+                        ("200 OK", serde_json::json!({ "status": "ok" }).to_string())
+                    } else {
+                        (
+                            "409 Conflict",
+                            serde_json::json!({
+                                "error": "baseRevision does not match current folder object revision"
+                            })
+                            .to_string(),
+                        )
+                    }
+                } else {
+                    (
+                        "404 Not Found",
+                        serde_json::json!({ "error": "not found" }).to_string(),
+                    )
+                };
+                let response = format!(
+                    "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{response_body}",
+                    response_body.len()
+                );
+                stream.write_all(response.as_bytes()).unwrap();
+            }
+            requests
+        });
+        (url, handle)
     }
 
     #[test]
@@ -1293,6 +1560,169 @@ mod tests {
     }
 
     #[test]
+    fn sync_now_records_server_write_conflicts_through_public_command() {
+        let tmp = TempDir::new().unwrap();
+        run(
+            &tmp,
+            &[
+                "auth",
+                "login",
+                "--nsec",
+                "0000000000000000000000000000000000000000000000000000000000000001",
+            ],
+        );
+        let tree = tmp.path().join("vault");
+        fs::create_dir_all(tree.join(".finitebrain")).unwrap();
+        fs::create_dir_all(tree.join("General")).unwrap();
+        fs::write(tree.join("General/new.md"), "# New\n").unwrap();
+
+        let now = "2026-06-24T20:46:36Z";
+        let mut state = AgentState::new("vault", now);
+        state.server_url = Some("http://127.0.0.1:9".to_owned());
+        state.daemon.state = DaemonRunState::Running;
+        state.local_folder_keys.push(LocalFolderKey {
+            folder_id: "general".to_owned(),
+            key_version: 1,
+            key_base64: FolderKey::from_bytes([9; 32]).to_base64(),
+            source: "test".to_owned(),
+            opened_at: now.to_owned(),
+        });
+        write_agent_state(&tree, &state).unwrap();
+        write_json_file(
+            &tree.join(".finitebrain/working-tree-state.json"),
+            &VaultWorkingTreeStateManifest {
+                version: WORKING_TREE_STATE_VERSION.to_owned(),
+                folder_roots: vec![WorkingTreeFolderRoot {
+                    folder_id: "general".to_owned(),
+                    path: "General".to_owned(),
+                    can_read: true,
+                    metadata_only: false,
+                }],
+                objects: Vec::new(),
+                sync: WorkingTreeSyncState { latest_sequence: 0 },
+            },
+        )
+        .unwrap();
+
+        let (server_url, server) = start_conflict_sync_server();
+        let mut env = env_for(&tmp);
+        env.cwd = tree.clone();
+        let mut output = Vec::new();
+        run_with_env(
+            ["sync", "now", "--server", &server_url, "--json"],
+            env,
+            &mut output,
+        )
+        .unwrap();
+
+        let json: Value = serde_json::from_slice(&output).unwrap();
+        assert_eq!(json["status"], "blocked-local-conflicts");
+        assert_eq!(json["serverUrl"], server_url);
+
+        let requests = server.join().unwrap();
+        assert!(requests[0].contains("/_admin/vaults/vault/export"));
+        assert!(requests.iter().any(|request| {
+            request.starts_with("PUT /_admin/vaults/vault/folders/general/objects/obj_")
+        }));
+        assert!(
+            requests
+                .iter()
+                .any(|request| request.contains("/_admin/vaults/vault/sync/bootstrap"))
+        );
+
+        let state = read_agent_state(&tree).unwrap();
+        assert_eq!(state.conflicts.len(), 1);
+        assert_eq!(state.conflicts[0].folder_id.as_deref(), Some("general"));
+        assert_eq!(state.conflicts[0].path.as_deref(), Some("General/new.md"));
+        assert_eq!(state.conflicts[0].state, ConflictState::Open);
+        assert!(state.conflicts[0].reason.contains("409"));
+    }
+
+    #[test]
+    fn sync_now_rematerializes_accepted_writes_while_preserving_conflicted_edits() {
+        let tmp = TempDir::new().unwrap();
+        run(
+            &tmp,
+            &[
+                "auth",
+                "login",
+                "--nsec",
+                "0000000000000000000000000000000000000000000000000000000000000001",
+            ],
+        );
+        let tree = tmp.path().join("vault");
+        fs::create_dir_all(tree.join(".finitebrain")).unwrap();
+        fs::create_dir_all(tree.join("General")).unwrap();
+        fs::write(tree.join("General/a.md"), "# Accepted\n").unwrap();
+        fs::write(tree.join("General/b.md"), "# Conflict\n").unwrap();
+
+        let now = "2026-06-24T20:46:36Z";
+        let mut state = AgentState::new("vault", now);
+        state.server_url = Some("http://127.0.0.1:9".to_owned());
+        state.daemon.state = DaemonRunState::Running;
+        state.local_folder_keys.push(LocalFolderKey {
+            folder_id: "general".to_owned(),
+            key_version: 1,
+            key_base64: FolderKey::from_bytes([9; 32]).to_base64(),
+            source: "test".to_owned(),
+            opened_at: now.to_owned(),
+        });
+        write_agent_state(&tree, &state).unwrap();
+        write_json_file(
+            &tree.join(".finitebrain/working-tree-state.json"),
+            &VaultWorkingTreeStateManifest {
+                version: WORKING_TREE_STATE_VERSION.to_owned(),
+                folder_roots: vec![WorkingTreeFolderRoot {
+                    folder_id: "general".to_owned(),
+                    path: "General".to_owned(),
+                    can_read: true,
+                    metadata_only: false,
+                }],
+                objects: Vec::new(),
+                sync: WorkingTreeSyncState { latest_sequence: 0 },
+            },
+        )
+        .unwrap();
+
+        let (server_url, server) = start_partial_success_sync_server();
+        let mut env = env_for(&tmp);
+        env.cwd = tree.clone();
+        let mut output = Vec::new();
+        run_with_env(
+            ["sync", "now", "--server", &server_url, "--json"],
+            env,
+            &mut output,
+        )
+        .unwrap();
+
+        let json: Value = serde_json::from_slice(&output).unwrap();
+        assert_eq!(json["status"], "blocked-local-conflicts");
+        let requests = server.join().unwrap();
+        assert_eq!(
+            requests
+                .iter()
+                .filter(|request| request.starts_with("PUT "))
+                .count(),
+            2
+        );
+
+        let tree_state = read_working_tree_state(&tree).unwrap();
+        assert_eq!(tree_state.objects.len(), 1);
+        assert_eq!(tree_state.objects[0].path, "a.md");
+        assert_eq!(
+            fs::read_to_string(tree.join("General/a.md")).unwrap(),
+            "# Accepted\n"
+        );
+        assert_eq!(
+            fs::read_to_string(tree.join("General/b.md")).unwrap(),
+            "# Conflict\n"
+        );
+        let state = read_agent_state(&tree).unwrap();
+        assert_eq!(state.conflicts.len(), 1);
+        assert_eq!(state.conflicts[0].path.as_deref(), Some("General/b.md"));
+    }
+
+    #[test]
     fn doctor_reports_missing_working_tree_without_failing() {
         let tmp = TempDir::new().unwrap();
         let output = run(&tmp, &["doctor", "--json"]);
@@ -1379,6 +1809,60 @@ mod tests {
         let signer = finite_nostr::validate_http_auth_event(&event, &expected).unwrap();
 
         assert_eq!(signer, NostrPublicKey::from_protocol(keys.public_key()));
+    }
+
+    #[test]
+    fn server_url_selection_prefers_agent_transport_before_public_origin() {
+        assert_eq!(
+            select_server_url(
+                Some("https://explicit.finite.test".to_owned()),
+                Some("https://saved.finite.test".to_owned()),
+                Some("https://server-env.finite.test".to_owned()),
+                Some("https://public.finite.test".to_owned()),
+            )
+            .unwrap(),
+            "https://explicit.finite.test"
+        );
+        assert_eq!(
+            select_server_url(
+                None,
+                Some("https://saved.finite.test".to_owned()),
+                Some("https://server-env.finite.test".to_owned()),
+                Some("https://public.finite.test".to_owned()),
+            )
+            .unwrap(),
+            "https://saved.finite.test"
+        );
+        assert_eq!(
+            select_server_url(
+                None,
+                None,
+                Some("https://server-env.finite.test".to_owned()),
+                Some("https://public.finite.test".to_owned()),
+            )
+            .unwrap(),
+            "https://server-env.finite.test"
+        );
+        assert_eq!(
+            select_server_url(
+                None,
+                None,
+                None,
+                Some("https://public.finite.test".to_owned()),
+            )
+            .unwrap(),
+            "https://public.finite.test"
+        );
+    }
+
+    #[test]
+    fn transport_url_validation_accepts_https_and_local_http() {
+        assert!(validate_http_url("https://brain.smoke.finite.test").is_ok());
+        assert!(validate_http_url("http://127.0.0.1:3015").is_ok());
+        assert!(validate_http_url("http://[::1]:3015").is_ok());
+        assert!(validate_http_url("http://localhost:3015").is_ok());
+        assert!(validate_http_url("http://brain.smoke.finite.test").is_err());
+        assert!(validate_http_url("ftp://brain.smoke.finite.test").is_err());
     }
 
     #[test]

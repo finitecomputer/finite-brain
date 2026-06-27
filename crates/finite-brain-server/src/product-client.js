@@ -139,7 +139,11 @@ const FiniteBrainProductClient = (() => {
     });
   }
 
-  function accessBadgesForFolder(row, openedFolderIds = new Set()) {
+  function folderKeyVersionKey(folderId, keyVersion) {
+    return `${folderId}@${keyVersion || 1}`;
+  }
+
+  function accessBadgesForFolder(row, openedFolderKeys = new Set()) {
     if (!row) return [];
     const badges = [];
     if (row.access === "admin_only") {
@@ -156,12 +160,14 @@ const FiniteBrainProductClient = (() => {
     if (row.status === "locked" || (row.pageCount > 0 && row.readableCount === 0)) {
       badges.push({ kind: "locked", label: "locked", tone: "warn" });
     }
-    if (openedFolderIds.has(row.id)) badges.push({ kind: "key", label: "key open", tone: "ready" });
+    if (openedFolderKeys.has(folderKeyVersionKey(row.id, row.currentKeyVersion))) {
+      badges.push({ kind: "key", label: "key open", tone: "ready" });
+    }
     badges.push({ kind: "version", label: `v${row.currentKeyVersion || 1}`, tone: "muted" });
     return badges;
   }
 
-  function sidebarAccessBadgesForFolder(row, openedFolderIds = new Set()) {
+  function sidebarAccessBadgesForFolder(row, openedFolderKeys = new Set()) {
     return [];
   }
 
@@ -1911,8 +1917,12 @@ const FiniteBrainProductClient = (() => {
     element.className = `pill ${tone || "muted"}`;
   }
 
-  function openedGrantFolderIds() {
-    return new Set((state.keyring?.openedGrants || []).map((grant) => grant.folderId));
+  function openedGrantFolderKeys() {
+    return new Set(
+      (state.keyring?.openedGrants || []).map((grant) =>
+        folderKeyVersionKey(grant.folderId, grant.keyVersion)
+      )
+    );
   }
 
   function appendAccessBadges(parent, badges) {
@@ -2405,7 +2415,7 @@ const FiniteBrainProductClient = (() => {
 
   function renderAccessPanel() {
     const rows = readerFolderRows(state.metadata);
-    const openedFolders = openedGrantFolderIds();
+    const openedFolders = openedGrantFolderKeys();
     const activeFolderId = state.activeAccessFolderId || state.selectedFolderId;
     const activeRow = rows.find((row) => row.id === activeFolderId) || rows[0] || null;
     if (activeRow && !state.activeAccessFolderId && !state.selectedFolderId) {

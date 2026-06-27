@@ -96,8 +96,12 @@ assert.match(folderRows[1].detail, /source/);
 assert.match(folderRows[1].detail, /locked/);
 const badgeLabels = (badges) => Array.from(badges, (badge) => badge.label);
 assert.deepEqual(
-  badgeLabels(client.accessBadgesForFolder(folderRows[1], new Set(["restricted"]))),
+  badgeLabels(client.accessBadgesForFolder(folderRows[1], new Set(["restricted@3"]))),
   ["restricted", "shared", "locked", "key open", "v3"]
+);
+assert.deepEqual(
+  badgeLabels(client.accessBadgesForFolder(folderRows[1], new Set(["restricted@2"]))),
+  ["restricted", "shared", "locked", "v3"]
 );
 assert.deepEqual(
   badgeLabels(client.sidebarAccessBadgesForFolder(folderRows[0])),
