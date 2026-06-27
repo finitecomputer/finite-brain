@@ -196,10 +196,10 @@ fn http_host_without_port(host_port: &str) -> Option<&str> {
     let (host, port) = host_port
         .split_once(':')
         .map_or((host_port, None), |(host, port)| (host, Some(port)));
-    if let Some(port) = port {
-        if port.parse::<u16>().is_err() {
-            return None;
-        }
+    if let Some(port) = port
+        && port.parse::<u16>().is_err()
+    {
+        return None;
     }
     (!host.is_empty()).then_some(host)
 }
