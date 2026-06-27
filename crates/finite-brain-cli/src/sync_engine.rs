@@ -27,6 +27,7 @@ use crate::{
 };
 
 const CIPHER_AES_256_GCM: &str = "AES-256-GCM";
+const FOLDER_OBJECT_PAGE_VERSION: &str = "finite-folder-object-page-v1";
 
 pub(crate) fn run_working_tree_sync(
     env: &CliEnvironment,
@@ -340,6 +341,9 @@ fn submit_change_intent(
             let markdown = intent.markdown.as_deref().ok_or_else(|| {
                 CliError::InvalidInput("write intent is missing markdown".to_owned())
             })?;
+            let target_path = intent.target_path.as_ref().ok_or_else(|| {
+                CliError::InvalidInput("write intent is missing target path".to_owned())
+            })?;
             let local_key = intent
                 .base_revision
                 .and_then(|_| {
@@ -363,7 +367,8 @@ fn submit_change_intent(
                 object_id: object_id.clone(),
                 key_version: local_key.key_version,
             };
-            let envelope = encrypt_folder_object(&key, &aad, markdown)
+            let plaintext = encode_folder_object_page_plaintext(target_path, markdown)?;
+            let envelope = encrypt_folder_object(&key, &aad, &plaintext)
                 .map_err(|error| CliError::InvalidInput(error.to_string()))?;
             let envelope_json = envelope.canonical_json();
             let operation = match intent.action {
@@ -621,17 +626,17 @@ fn materialize_remote_projection(
         };
         let plaintext = open_folder_object(&key, &aad, &envelope)
             .map_err(|error| CliError::InvalidInput(error.to_string()))?;
-        let markdown = String::from_utf8(plaintext)
-            .map_err(|error| CliError::InvalidInput(error.to_string()))?;
         let folder = export
             .folders
             .iter()
             .find(|folder| folder.id == object.folder_id)
             .ok_or_else(|| CliError::NotFound(format!("folder {}", object.folder_id)))?;
-        let page_path = prior_paths
+        let fallback_page_path = prior_paths
             .get(&(object.folder_id.clone(), object.object_id.clone()))
             .cloned()
             .unwrap_or_else(|| format!("{}.md", object.object_id));
+        let (page_path, markdown) =
+            decode_folder_object_page_plaintext(plaintext, fallback_page_path)?;
         readable_folder_ids.insert(object.folder_id.clone());
         opened_pages.push(OpenedPage {
             folder_id: FolderId::new(object.folder_id.clone())
@@ -1110,6 +1115,43 @@ fn preserve_conflicted_markdown(result: &mut LocalSyncResult, change: &WorkingTr
     }
 }
 
+fn encode_folder_object_page_plaintext(
+    path: &SafeRelativePath,
+    markdown: &str,
+) -> Result<String, CliError> {
+    serde_json::to_string(&CliFolderObjectPagePlaintext {
+        version: FOLDER_OBJECT_PAGE_VERSION.to_owned(),
+        path: path.as_str().to_owned(),
+        markdown: markdown.to_owned(),
+    })
+    .map_err(CliError::from)
+}
+
+fn decode_folder_object_page_plaintext(
+    plaintext: Vec<u8>,
+    fallback_path: String,
+) -> Result<(String, String), CliError> {
+    let text =
+        String::from_utf8(plaintext).map_err(|error| CliError::InvalidInput(error.to_string()))?;
+    let Ok(page) = serde_json::from_str::<CliFolderObjectPagePlaintext>(&text) else {
+        return Ok((fallback_path, text));
+    };
+    if page.version != FOLDER_OBJECT_PAGE_VERSION {
+        return Ok((fallback_path, text));
+    }
+    let page_path = SafeRelativePath::new("page_path", page.path)
+        .map_err(|error| CliError::InvalidInput(error.to_string()))?;
+    Ok((page_path.to_string(), page.markdown))
+}
+
+#[derive(Debug, Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CliFolderObjectPagePlaintext {
+    version: String,
+    path: String,
+    markdown: String,
+}
+
 #[derive(Debug, Deserialize, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 struct CliEncryptedVaultExport {
@@ -1401,6 +1443,98 @@ mod tests {
         remove_stale_object_files(root, &state.objects, &new_objects).unwrap();
 
         assert!(!root.join("General/old.md").exists());
+    }
+
+    #[test]
+    fn materialize_remote_projection_uses_encrypted_page_path_without_prior_state() {
+        let temp = TempDir::new().unwrap();
+        let root = temp.path();
+        fs::create_dir_all(root.join(".finitebrain")).unwrap();
+        write_json_file(
+            &root.join(".finitebrain/working-tree-state.json"),
+            &VaultWorkingTreeStateManifest {
+                version: "finite-vault-working-tree-state-v1".to_owned(),
+                folder_roots: Vec::new(),
+                objects: Vec::new(),
+                sync: WorkingTreeSyncState { latest_sequence: 0 },
+            },
+        )
+        .unwrap();
+        let folder_key = FolderKey::from_bytes([3; 32]);
+        let mut agent_state = AgentState::new("vault", "2026-06-26T23:30:00Z");
+        agent_state.local_folder_keys.push(LocalFolderKey {
+            folder_id: "home".to_owned(),
+            key_version: 1,
+            key_base64: folder_key.to_base64(),
+            source: "test".to_owned(),
+            opened_at: "2026-06-26T23:30:00Z".to_owned(),
+        });
+        write_agent_state(root, &agent_state).unwrap();
+        let env = CliEnvironment {
+            cwd: root.to_path_buf(),
+            config_dir: root.join("config"),
+            now: Some("2026-06-26T23:30:00Z".to_owned()),
+        };
+        let object_id = ObjectId::new("obj_remote000001").unwrap();
+        let page_path = SafeRelativePath::new("page_path", "docs/from-envelope.md").unwrap();
+        let plaintext = encode_folder_object_page_plaintext(&page_path, "# Remote\n").unwrap();
+        let aad = FolderObjectAad {
+            vault_id: VaultId::new("vault").unwrap(),
+            folder_id: FolderId::new("home").unwrap(),
+            object_id: object_id.clone(),
+            key_version: 1,
+        };
+        let envelope = encrypt_folder_object(&folder_key, &aad, &plaintext).unwrap();
+        let export = CliEncryptedVaultExport {
+            vault: CliExportVault {
+                id: "vault".to_owned(),
+                kind: "personal".to_owned(),
+                name: "Vault".to_owned(),
+                owner_user_id: Some("npub-owner".to_owned()),
+            },
+            folders: vec![CliExportFolder {
+                id: "home".to_owned(),
+                path: "home".to_owned(),
+                access: "owner".to_owned(),
+                current_key_version: 1,
+                shared_folder_source: false,
+                accessible: true,
+            }],
+            key_grants: Vec::new(),
+            access_state: CliExportAccessState {
+                members: Vec::new(),
+                admins: Vec::new(),
+            },
+        };
+        let bootstrap = CliSyncBootstrap {
+            latest_sequence: 7,
+            objects: vec![CliSyncObject {
+                folder_id: "home".to_owned(),
+                object_id: object_id.as_str().to_owned(),
+                revision: 2,
+                ciphertext: envelope.canonical_json(),
+                deleted: false,
+            }],
+        };
+
+        materialize_remote_projection(
+            &env,
+            root,
+            "npub-owner",
+            &export,
+            &bootstrap,
+            &BTreeMap::new(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            fs::read_to_string(root.join("home/docs/from-envelope.md")).unwrap(),
+            "# Remote\n"
+        );
+        let state = read_working_tree_state(root).unwrap();
+        assert_eq!(state.objects.len(), 1);
+        assert_eq!(state.objects[0].path, "docs/from-envelope.md");
+        assert_eq!(state.sync.latest_sequence, 7);
     }
 
     #[test]

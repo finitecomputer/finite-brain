@@ -1204,10 +1204,7 @@ mod tests {
                     thread::sleep(Duration::from_millis(10));
                     continue;
                 };
-                let mut buffer = [0_u8; 8192];
-                let size = stream.read(&mut buffer).unwrap_or(0);
-                let request = String::from_utf8_lossy(&buffer[..size]).to_string();
-                let request_line = request.lines().next().unwrap_or_default().to_owned();
+                let (request_line, _) = read_http_request(&mut stream);
                 requests.push(request_line.clone());
                 let (status, body) = if request_line.contains("/export") {
                     (

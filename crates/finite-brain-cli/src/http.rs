@@ -83,6 +83,7 @@ pub(crate) fn http_request(
     let body = body.unwrap_or_default();
     let agent = ureq::AgentBuilder::new()
         .timeout(Duration::from_secs(10))
+        .redirects(0)
         .build();
     let mut request = agent
         .request(method, url)
@@ -182,9 +183,25 @@ pub(crate) fn validate_http_url(url: &str) -> Result<(), CliError> {
 fn http_host_without_port(host_port: &str) -> Option<&str> {
     let host_port = host_port.rsplit('@').next().unwrap_or(host_port);
     if let Some(rest) = host_port.strip_prefix('[') {
-        return rest.split_once(']').map(|(host, _)| host);
+        let (host, suffix) = rest.split_once(']')?;
+        if suffix.is_empty() {
+            return Some(host);
+        }
+        let port = suffix.strip_prefix(':')?;
+        if port.parse::<u16>().is_ok() {
+            return Some(host);
+        }
+        return None;
     }
-    host_port.split(':').next().filter(|host| !host.is_empty())
+    let (host, port) = host_port
+        .split_once(':')
+        .map_or((host_port, None), |(host, port)| (host, Some(port)));
+    if let Some(port) = port {
+        if port.parse::<u16>().is_err() {
+            return None;
+        }
+    }
+    (!host.is_empty()).then_some(host)
 }
 
 fn is_loopback_host(host: &str) -> bool {
@@ -205,4 +222,21 @@ pub(crate) fn absolute_server_url(server_url: &str, path: &str) -> String {
             format!("/{path}")
         }
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn loopback_http_validation_rejects_malformed_bracketed_hosts() {
+        assert!(validate_http_url("http://[::1]:3015/health").is_ok());
+        assert!(validate_http_url("http://[::1]junk:3015/health").is_err());
+    }
+
+    #[test]
+    fn loopback_http_validation_rejects_malformed_ports() {
+        assert!(validate_http_url("http://127.0.0.1:3015/health").is_ok());
+        assert!(validate_http_url("http://127.0.0.1:bad/health").is_err());
+    }
 }
