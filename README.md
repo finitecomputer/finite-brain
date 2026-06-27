@@ -89,17 +89,19 @@ flow.
 The CLI resolves server URLs in this order: explicit `--server`, the saved
 Vault Working Tree server URL, `FINITE_BRAIN_SERVER_URL`, then the legacy
 `FINITE_BRAIN_PUBLIC_BASE_URL` fallback. The CLI HTTP client supports local
-`http://` and production-shaped `https://` endpoints. A resident background
-daemon process and automatic file-watch sync remain hardening work; command
-driven `open`, `daemon start`, `daemon tick`, and `sync now` run the real sync
-path.
+loopback `http://` endpoints and production-shaped `https://` endpoints.
+Plain `http://` is accepted only for `localhost`, loopback IPs, and bracketed
+IPv6 loopback addresses; LAN hosts and container hostnames must use `https://`.
+A resident background daemon process and automatic file-watch sync remain
+hardening work; command driven `open`, `daemon start`, `daemon tick`, and
+`sync now` run the real sync path.
 
 Useful local environment variables:
 
 - `FINITE_BRAIN_ADDR`: bind address, default `127.0.0.1:3015`.
 - `FINITE_BRAIN_SERVER_URL`: agent/CLI transport base URL for `fbrain`
-  commands. This can be a local `http://` endpoint or the smoke/staging
-  `https://` endpoint.
+  commands. This can be a loopback-only `http://` endpoint or the
+  smoke/staging `https://` endpoint.
 - `FINITE_BRAIN_PUBLIC_BASE_URL`: browser-visible Product Client origin used
   by client config, Nostr auth URL checks, default CORS origin derivation, and
   as a legacy `fbrain` fallback when `FINITE_BRAIN_SERVER_URL` is unset.

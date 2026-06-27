@@ -145,11 +145,11 @@ pub(crate) fn select_server_url(
     server_env: Option<String>,
     public_env: Option<String>,
 ) -> Option<String> {
-    explicit
-        .filter(|url| !url.trim().is_empty())
-        .or_else(|| saved.filter(|url| !url.trim().is_empty()))
-        .or_else(|| server_env.filter(|url| !url.trim().is_empty()))
-        .or_else(|| public_env.filter(|url| !url.trim().is_empty()))
+    [explicit, saved, server_env, public_env]
+        .into_iter()
+        .flatten()
+        .map(|url| url.trim().to_owned())
+        .find(|url| !url.is_empty())
 }
 
 fn saved_server_url(env: &CliEnvironment) -> Option<String> {
@@ -238,5 +238,19 @@ mod tests {
     fn loopback_http_validation_rejects_malformed_ports() {
         assert!(validate_http_url("http://127.0.0.1:3015/health").is_ok());
         assert!(validate_http_url("http://127.0.0.1:bad/health").is_err());
+    }
+
+    #[test]
+    fn server_url_selection_trims_selected_candidate() {
+        assert_eq!(
+            select_server_url(
+                Some("  ".to_owned()),
+                None,
+                Some("  http://127.0.0.1:3015  ".to_owned()),
+                Some("https://example.test".to_owned()),
+            )
+            .as_deref(),
+            Some("http://127.0.0.1:3015")
+        );
     }
 }

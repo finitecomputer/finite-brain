@@ -1172,7 +1172,7 @@ mod tests {
     use finite_nostr::NostrPublicKey;
     use nostr::Keys;
     use serde_json::Value;
-    use std::io::Read;
+    use std::io::{ErrorKind, Read};
     use std::net::{TcpListener, TcpStream};
     use std::thread;
     use std::time::{Duration, Instant};
@@ -1262,10 +1262,21 @@ mod tests {
     }
 
     fn read_http_request(stream: &mut TcpStream) -> (String, String) {
+        stream
+            .set_read_timeout(Some(Duration::from_secs(1)))
+            .unwrap();
         let mut bytes = Vec::new();
         let mut buffer = [0_u8; 4096];
         loop {
-            let size = stream.read(&mut buffer).unwrap_or(0);
+            let size = match stream.read(&mut buffer) {
+                Ok(size) => size,
+                Err(error)
+                    if matches!(error.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) =>
+                {
+                    break;
+                }
+                Err(_) => 0,
+            };
             if size == 0 {
                 break;
             }

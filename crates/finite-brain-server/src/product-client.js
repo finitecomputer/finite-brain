@@ -40,11 +40,24 @@ const FiniteBrainProductClient = (() => {
   }
 
   function vaultOnboardingComplete(snapshot) {
+    const openedGrants = snapshot?.keyring?.openedGrants || [];
     return Boolean(
       snapshot?.signerStatus === "connected" &&
         snapshot?.metadata &&
-        (snapshot?.keyring || snapshot?.projection?.pages?.size)
+        (openedGrants.length || hasReadableProjectionPages(snapshot?.projection))
     );
+  }
+
+  function projectionPageValues(projection) {
+    const pages = projection?.pages;
+    if (!pages) return [];
+    if (typeof pages.values === "function") return [...pages.values()];
+    if (Array.isArray(pages)) return pages;
+    return Object.values(pages);
+  }
+
+  function hasReadableProjectionPages(projection) {
+    return projectionPageValues(projection).some(isReadablePage);
   }
 
   function vaultDockDetail(snapshot, readableCount = 0, openedKeyCount = 0) {
@@ -143,7 +156,11 @@ const FiniteBrainProductClient = (() => {
     });
   }
 
-  function accessBadgesForFolder(row, openedFolderIds = new Set()) {
+  function folderKeyVersionKey(folderId, keyVersion) {
+    return `${folderId}@${keyVersion || 1}`;
+  }
+
+  function accessBadgesForFolder(row, openedFolderKeys = new Set()) {
     if (!row) return [];
     const badges = [];
     if (row.access === "admin_only") {
@@ -160,14 +177,16 @@ const FiniteBrainProductClient = (() => {
     if (row.status === "locked" || (row.pageCount > 0 && row.readableCount === 0)) {
       badges.push({ kind: "locked", label: "locked", tone: "warn" });
     }
-    if (openedFolderIds.has(row.id)) badges.push({ kind: "key", label: "key open", tone: "ready" });
+    if (openedFolderKeys.has(folderKeyVersionKey(row.id, row.currentKeyVersion))) {
+      badges.push({ kind: "key", label: "key open", tone: "ready" });
+    }
     badges.push({ kind: "version", label: `v${row.currentKeyVersion || 1}`, tone: "muted" });
     return badges;
   }
 
-  function sidebarAccessBadgesForFolder(row, openedFolderIds = new Set()) {
+  function sidebarAccessBadgesForFolder(row, openedFolderKeys = new Set()) {
     const visibleKinds = new Set(["access", "shared", "setup", "locked"]);
-    return accessBadgesForFolder(row, openedFolderIds).filter((badge) => {
+    return accessBadgesForFolder(row, openedFolderKeys).filter((badge) => {
       if (badge.kind === "access") return row.access !== "all_members";
       return visibleKinds.has(badge.kind);
     });
@@ -237,10 +256,12 @@ const FiniteBrainProductClient = (() => {
     return count ? `${count} restricted ${count === 1 ? "user" : "users"}` : "Restricted";
   }
 
-  function accessKeyStateLabel(row, openedFolders = new Set()) {
+  function accessKeyStateLabel(row, openedFolderKeys = new Set()) {
     if (!row) return "-";
     if (row.setupIncomplete) return "Setup needed";
-    if (openedFolders.has(row.id)) return `Open v${row.currentKeyVersion || 1}`;
+    if (openedFolderKeys.has(folderKeyVersionKey(row.id, row.currentKeyVersion))) {
+      return `Open v${row.currentKeyVersion || 1}`;
+    }
     if (row.status === "locked") return `Locked v${row.currentKeyVersion || 1}`;
     return `Ready v${row.currentKeyVersion || 1}`;
   }
@@ -1694,8 +1715,12 @@ const FiniteBrainProductClient = (() => {
     element.className = `pill ${tone || "muted"}`;
   }
 
-  function openedGrantFolderIds() {
-    return new Set((state.keyring?.openedGrants || []).map((grant) => grant.folderId));
+  function openedGrantFolderKeys() {
+    return new Set(
+      (state.keyring?.openedGrants || []).map((grant) =>
+        folderKeyVersionKey(grant.folderId, grant.keyVersion)
+      )
+    );
   }
 
   function appendAccessBadges(parent, badges) {
@@ -2069,7 +2094,7 @@ const FiniteBrainProductClient = (() => {
 
   function renderAccessPanel() {
     const rows = readerFolderRows(state.metadata);
-    const openedFolders = openedGrantFolderIds();
+    const openedFolders = openedGrantFolderKeys();
     const activeFolderId = state.activeAccessFolderId || state.selectedFolderId;
     const activeRow = rows.find((row) => row.id === activeFolderId) || rows[0] || null;
     if (activeRow && !state.activeAccessFolderId && !state.selectedFolderId) {
@@ -2144,7 +2169,7 @@ const FiniteBrainProductClient = (() => {
           },
         }
       );
-      appendAccessBadges(button, sidebarAccessBadgesForFolder(row, openedGrantFolderIds()));
+      appendAccessBadges(button, sidebarAccessBadgesForFolder(row, openedGrantFolderKeys()));
       item.appendChild(button);
       const childPages = readerPageRows(row.id);
       if (expanded && childPages.length) {

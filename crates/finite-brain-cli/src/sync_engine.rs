@@ -40,7 +40,8 @@ pub(crate) fn run_working_tree_sync(
     let auth = read_auth_required(env)?;
     let export = fetch_encrypted_export(env, &server_url, &agent_state.vault_id)?;
     let opened_grants = open_export_folder_key_grants(env, &root, &auth, &export)?;
-    let local_result = push_local_working_tree_changes(env, &root, &server_url, &agent_state)?;
+    let local_result =
+        push_local_working_tree_changes(env, &root, &server_url, &agent_state, &export)?;
     let bootstrap = fetch_sync_bootstrap(env, &server_url, &agent_state.vault_id)?;
     write_sync_evidence(&root, &export, &bootstrap)?;
 
@@ -180,38 +181,58 @@ fn open_export_folder_key_grants(
         return Ok(0);
     }
 
-    let opened_count = opened.len();
+    let mut persisted_count = 0_usize;
     mutate_agent_state_at_root(root, timestamp(env), |state, now| {
+        let mut changed = false;
         for grant in opened {
+            let folder_id = grant.folder_id.clone();
+            let key_version = grant.key_version;
             if !state
                 .local_folder_keys
                 .iter()
-                .any(|key| key.folder_id == grant.folder_id && key.key_version == grant.key_version)
+                .any(|key| key.folder_id == folder_id && key.key_version == key_version)
             {
                 state.local_folder_keys.push(LocalFolderKey {
-                    folder_id: grant.folder_id.clone(),
-                    key_version: grant.key_version,
+                    folder_id: folder_id.clone(),
+                    key_version,
                     key_base64: grant.folder_key.clone(),
                     source: format!("folder-key-grant:{}", grant.issuer_npub),
                     opened_at: now.clone(),
                 });
+                persisted_count += 1;
+                changed = true;
             }
-            if !state
+            if let Some(folder) = state
                 .unlocked_folders
                 .iter()
-                .any(|folder| folder.folder_id == grant.folder_id)
+                .find(|folder| folder.folder_id == folder_id)
             {
+                if key_version > folder.key_version {
+                    let folder = state
+                        .unlocked_folders
+                        .iter_mut()
+                        .find(|folder| folder.folder_id == folder_id)
+                        .expect("folder found above");
+                    folder.key_version = key_version;
+                    folder.opened_at = now.clone();
+                    folder.source = "folder-key-grant".to_owned();
+                    changed = true;
+                }
+            } else {
                 state.unlocked_folders.push(UnlockedFolder {
-                    folder_id: grant.folder_id,
-                    key_version: grant.key_version,
+                    folder_id,
+                    key_version,
                     opened_at: now.clone(),
                     source: "folder-key-grant".to_owned(),
                 });
+                changed = true;
             }
         }
-        state.add_activity(now, "folder_keys.opened", "Folder Key Grants opened");
+        if changed {
+            state.add_activity(now, "folder_keys.opened", "Folder Key Grants opened");
+        }
     })?;
-    Ok(opened_count)
+    Ok(persisted_count)
 }
 
 fn push_local_working_tree_changes(
@@ -219,6 +240,7 @@ fn push_local_working_tree_changes(
     root: &Path,
     server_url: &str,
     agent_state: &AgentState,
+    export: &CliEncryptedVaultExport,
 ) -> Result<LocalSyncResult, CliError> {
     let tree_state = read_working_tree_state(root)?;
     let changes = scan_working_tree_changes(root, &tree_state)?;
@@ -232,7 +254,11 @@ fn push_local_working_tree_changes(
         .into_iter()
         .map(|key| ((key.folder_id.clone(), key.key_version), key))
         .collect::<BTreeMap<_, _>>();
-    let latest_key_by_folder = latest_local_key_by_folder(&keys_by_folder);
+    let current_key_version_by_folder = export
+        .folders
+        .iter()
+        .map(|folder| (folder.id.clone(), folder.current_key_version))
+        .collect::<BTreeMap<_, _>>();
     let signing_keys = Keys::parse(&read_auth_required(env)?.secret_key)
         .map_err(|error| CliError::InvalidSigner(error.to_string()))?;
     let actor_npub = NostrPublicKey::from_protocol(signing_keys.public_key())
@@ -246,7 +272,7 @@ fn push_local_working_tree_changes(
         signing_keys: &signing_keys,
         actor_npub: &actor_npub,
         keys_by_folder: &keys_by_folder,
-        latest_key_by_folder: &latest_key_by_folder,
+        current_key_version_by_folder: &current_key_version_by_folder,
     };
     let mut result = LocalSyncResult::default();
     let mut conflicts = Vec::new();
@@ -307,7 +333,7 @@ struct SubmitIntentContext<'a> {
     signing_keys: &'a Keys,
     actor_npub: &'a str,
     keys_by_folder: &'a BTreeMap<(String, u32), LocalFolderKey>,
-    latest_key_by_folder: &'a BTreeMap<String, LocalFolderKey>,
+    current_key_version_by_folder: &'a BTreeMap<String, u32>,
 }
 
 fn submit_change_intent(
@@ -333,6 +359,24 @@ fn submit_change_intent(
         .object_id
         .as_ref()
         .ok_or_else(|| CliError::InvalidInput("missing intent object id".to_owned()))?;
+    let Some(current_key_version) = context
+        .current_key_version_by_folder
+        .get(folder_id.as_str())
+        .copied()
+    else {
+        return Ok(SubmitIntentOutcome::Conflict(format!(
+            "folder {folder_id} is missing from encrypted export"
+        )));
+    };
+    let current_local_key = context
+        .keys_by_folder
+        .get(&(folder_id.to_string(), current_key_version))
+        .cloned();
+    if current_local_key.is_none() {
+        return Ok(SubmitIntentOutcome::Conflict(format!(
+            "current Folder Key v{current_key_version} unavailable for {folder_id}"
+        )));
+    }
 
     match intent.action {
         WorkingTreeIntentAction::Create
@@ -344,20 +388,7 @@ fn submit_change_intent(
             let target_path = intent.target_path.as_ref().ok_or_else(|| {
                 CliError::InvalidInput("write intent is missing target path".to_owned())
             })?;
-            let local_key = intent
-                .base_revision
-                .and_then(|_| {
-                    key_for_existing_object(context.keys_by_folder, folder_id.as_str(), intent)
-                })
-                .or_else(|| {
-                    context
-                        .latest_key_by_folder
-                        .get(folder_id.as_str())
-                        .cloned()
-                })
-                .ok_or_else(|| {
-                    CliError::InvalidInput(format!("no local Folder Key for {folder_id}"))
-                })?;
+            let local_key = current_local_key.expect("checked above");
             let key = FolderKey::from_base64(&local_key.key_base64)
                 .map_err(|error| CliError::InvalidInput(error.to_string()))?;
             let aad = FolderObjectAad {
@@ -1019,34 +1050,6 @@ fn write_projection_files(root: &Path, files: &BTreeMap<String, String>) -> Resu
     Ok(())
 }
 
-fn latest_local_key_by_folder(
-    keys_by_folder: &BTreeMap<(String, u32), LocalFolderKey>,
-) -> BTreeMap<String, LocalFolderKey> {
-    let mut latest = BTreeMap::new();
-    for ((folder_id, _), key) in keys_by_folder {
-        let replace = latest
-            .get(folder_id)
-            .is_none_or(|existing: &LocalFolderKey| key.key_version > existing.key_version);
-        if replace {
-            latest.insert(folder_id.clone(), key.clone());
-        }
-    }
-    latest
-}
-
-fn key_for_existing_object(
-    keys_by_folder: &BTreeMap<(String, u32), LocalFolderKey>,
-    folder_id: &str,
-    intent: &WorkingTreeChangeIntent,
-) -> Option<LocalFolderKey> {
-    keys_by_folder
-        .iter()
-        .filter(|((key_folder_id, _), _)| key_folder_id == folder_id)
-        .filter(|((_, key_version), _)| intent.base_revision.is_some_and(|_| *key_version > 0))
-        .max_by_key(|((_, key_version), _)| *key_version)
-        .map(|(_, key)| key.clone())
-}
-
 fn conflict_for_change(
     change: &WorkingTreeChange,
     intent: &WorkingTreeChangeIntent,
@@ -1141,6 +1144,15 @@ fn decode_folder_object_page_plaintext(
     }
     let page_path = SafeRelativePath::new("page_path", page.path)
         .map_err(|error| CliError::InvalidInput(error.to_string()))?;
+    if Path::new(page_path.as_str())
+        .extension()
+        .and_then(|extension| extension.to_str())
+        != Some("md")
+    {
+        return Err(CliError::InvalidInput(
+            "folder object page path must end in .md".to_owned(),
+        ));
+    }
     Ok((page_path.to_string(), page.markdown))
 }
 
@@ -1341,6 +1353,73 @@ mod tests {
         };
 
         validate_revision_event(&event, &expected).unwrap();
+    }
+
+    #[test]
+    fn submit_change_intent_conflicts_without_current_folder_key() {
+        let temp = TempDir::new().unwrap();
+        let env = CliEnvironment {
+            cwd: temp.path().to_path_buf(),
+            config_dir: temp.path().join("config"),
+            now: Some("2026-06-26T23:30:00Z".to_owned()),
+        };
+        let keys = Keys::parse("0000000000000000000000000000000000000000000000000000000000000001")
+            .unwrap();
+        let actor_npub = NostrPublicKey::from_protocol(keys.public_key())
+            .to_npub()
+            .unwrap();
+        let agent_state = AgentState::new("vault", "2026-06-26T23:30:00Z");
+        let keys_by_folder = BTreeMap::from([(
+            ("general".to_owned(), 1),
+            LocalFolderKey {
+                folder_id: "general".to_owned(),
+                key_version: 1,
+                key_base64: FolderKey::from_bytes([1; 32]).to_base64(),
+                source: "test".to_owned(),
+                opened_at: "2026-06-26T23:30:00Z".to_owned(),
+            },
+        )]);
+        let current_key_version_by_folder = BTreeMap::from([("general".to_owned(), 2)]);
+        let context = SubmitIntentContext {
+            env: &env,
+            server_url: "http://127.0.0.1:9",
+            agent_state: &agent_state,
+            signing_keys: &keys,
+            actor_npub: &actor_npub,
+            keys_by_folder: &keys_by_folder,
+            current_key_version_by_folder: &current_key_version_by_folder,
+        };
+        let intent = WorkingTreeChangeIntent {
+            action: WorkingTreeIntentAction::Create,
+            route: WorkingTreeIntentRoute::EncryptedObjectWrite,
+            folder_id: Some(FolderId::new("general").unwrap()),
+            object_id: Some(ObjectId::new("obj_currentkey01").unwrap()),
+            target_path: Some(SafeRelativePath::new("page_path", "page.md").unwrap()),
+            from_path: None,
+            base_revision: None,
+            markdown: Some("# Page\n".to_owned()),
+            reason: None,
+        };
+
+        let outcome = submit_change_intent(&context, &intent).unwrap();
+
+        assert!(matches!(
+            outcome,
+            SubmitIntentOutcome::Conflict(reason)
+                if reason.contains("current Folder Key v2 unavailable")
+        ));
+    }
+
+    #[test]
+    fn encrypted_page_plaintext_requires_markdown_path() {
+        let path = SafeRelativePath::new("page_path", "notes/page.txt").unwrap();
+        let plaintext = encode_folder_object_page_plaintext(&path, "# Page\n").unwrap();
+
+        let error =
+            decode_folder_object_page_plaintext(plaintext.into_bytes(), "fallback.md".to_owned())
+                .unwrap_err();
+
+        assert!(error.to_string().contains("must end in .md"));
     }
 
     #[test]

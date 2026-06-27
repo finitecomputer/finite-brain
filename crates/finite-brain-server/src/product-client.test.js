@@ -101,8 +101,12 @@ assert.match(folderRows[1].detail, /source/);
 assert.match(folderRows[1].detail, /locked/);
 const badgeLabels = (badges) => Array.from(badges, (badge) => badge.label);
 assert.deepEqual(
-  badgeLabels(client.accessBadgesForFolder(folderRows[1], new Set(["restricted"]))),
+  badgeLabels(client.accessBadgesForFolder(folderRows[1], new Set(["restricted@3"]))),
   ["restricted", "shared", "locked", "key open", "v3"]
+);
+assert.deepEqual(
+  badgeLabels(client.accessBadgesForFolder(folderRows[1], new Set(["restricted@2"]))),
+  ["restricted", "shared", "locked", "v3"]
 );
 assert.deepEqual(
   badgeLabels(client.sidebarAccessBadgesForFolder(folderRows[0])),
@@ -127,7 +131,8 @@ assert.equal(client.accessPanelState("manage", folderRows[1]).title, "Manage Res
 assert.match(client.accessPanelState("manage", folderRows[1]).detail, /Review access state/);
 assert.equal(client.accessAudienceLabel(folderRows[0]), "All members");
 assert.equal(client.accessAudienceLabel(folderRows[1]), "Restricted");
-assert.equal(client.accessKeyStateLabel(folderRows[1], new Set(["restricted"])), "Open v3");
+assert.equal(client.accessKeyStateLabel(folderRows[1], new Set(["restricted@3"])), "Open v3");
+assert.equal(client.accessKeyStateLabel(folderRows[1], new Set(["restricted@2"])), "Locked v3");
 assert.equal(client.accessPageStateLabel(folderRows[1]), "No pages");
 
 (async () => {
@@ -366,15 +371,31 @@ assert.equal(client.accessPageStateLabel(folderRows[1]), "No pages");
       metadata: { name: "Smoke" },
       keyring: { openedGrants: [] },
     }),
+    false
+  );
+  assert.equal(
+    client.vaultOnboardingComplete({
+      signerStatus: "connected",
+      metadata: { name: "Smoke" },
+      keyring: { openedGrants: [{ folderId: "general", keyVersion: 1 }] },
+    }),
     true
   );
   assert.equal(
     client.vaultOnboardingComplete({
       signerStatus: "connected",
       metadata: { name: "Smoke" },
-      projection: { pages: new Map([["index", {}]]) },
+      projection: { pages: new Map([["index", { status: "ready", text: "# Page" }]]) },
     }),
     true
+  );
+  assert.equal(
+    client.vaultOnboardingComplete({
+      signerStatus: "connected",
+      metadata: { name: "Smoke" },
+      projection: { pages: new Map([["locked", { status: "locked" }]]) },
+    }),
+    false
   );
   assert.equal(
     client.vaultOnboardingComplete({
