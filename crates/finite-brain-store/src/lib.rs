@@ -2460,6 +2460,41 @@ mod tests {
     }
 
     #[test]
+    fn grants_all_members_folder_key_without_restricted_access_row() {
+        let mut store = bootstrapped_org_store();
+        let vault_id = VaultId::new("acme").unwrap();
+        let member = UserId::new("npub-member").unwrap();
+        store.add_member(&vault_id, &member).unwrap();
+
+        store
+            .grant_folder_access(
+                &vault_id,
+                &FolderId::new("general").unwrap(),
+                &member,
+                &grant(
+                    "grant-general-member",
+                    "general",
+                    1,
+                    "npub-admin",
+                    member.as_str(),
+                ),
+            )
+            .unwrap();
+
+        let stored = store.load_vault(&vault_id).unwrap();
+        assert!(
+            !stored
+                .folder_access
+                .contains_key(&FolderId::new("general").unwrap())
+        );
+        assert!(stored.grants.iter().any(|grant| {
+            grant.folder_id == FolderId::new("general").unwrap()
+                && grant.key_version == 1
+                && grant.recipient_npub == member
+        }));
+    }
+
+    #[test]
     fn vault_invitation_is_single_user_single_use_and_retry_safe() {
         let mut store = bootstrapped_org_store();
         let vault_id = VaultId::new("acme").unwrap();

@@ -1061,7 +1061,7 @@ fn permissions<W: Write>(
                 .find(|folder| folder.id == folder_id)
                 .map(|folder| folder.current_key_version)
                 .ok_or_else(|| CliError::NotFound(format!("folder {folder_id}")))?;
-            let folder_key = FolderKey::generate();
+            let folder_key = opened_folder_key(env, &folder_id, key_version)?;
             let auth = read_auth_required(env)?;
             let event = admin_access_change_event(
                 env,
@@ -1301,8 +1301,8 @@ mod tests {
     use super::*;
     use base64::Engine;
     use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
-    use finite_nostr::NostrPublicKey;
-    use nostr::Keys;
+    use finite_nostr::{GiftWrapValidation, NostrPublicKey, open_gift_wrap};
+    use nostr::{Event, Keys};
     use serde_json::Value;
     use std::io::{ErrorKind, Read};
     use std::net::{TcpListener, TcpStream};
@@ -1440,6 +1440,60 @@ mod tests {
                 let response = format!(
                     "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
                     body.len()
+                );
+                stream.write_all(response.as_bytes()).unwrap();
+            }
+            requests
+        });
+        (url, handle)
+    }
+
+    fn start_metadata_and_grant_server(
+        admin_npub: String,
+    ) -> (String, thread::JoinHandle<Vec<(String, String)>>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let handle = thread::spawn(move || {
+            let started = Instant::now();
+            let mut requests = Vec::new();
+            while requests.len() < 2 && started.elapsed() < Duration::from_secs(5) {
+                let Ok((mut stream, _)) = listener.accept() else {
+                    thread::sleep(Duration::from_millis(10));
+                    continue;
+                };
+                let (request_line, body) = read_http_request(&mut stream);
+                let response_body = if request_line.contains("/metadata") {
+                    serde_json::json!({
+                        "vaultId": "acme",
+                        "kind": "organization",
+                        "name": "Acme",
+                        "ownerUserId": null,
+                        "members": [admin_npub],
+                        "admins": [admin_npub],
+                        "folders": [{
+                            "id": "general",
+                            "name": "general",
+                            "role": "general",
+                            "access": "all_members",
+                            "parentFolderId": null,
+                            "path": "general",
+                            "sharedFolderSource": false,
+                            "accessUserIds": [],
+                            "currentKeyVersion": 1,
+                            "setupIncomplete": false
+                        }],
+                        "mountedFolders": [],
+                        "grantCount": 1
+                    })
+                    .to_string()
+                } else {
+                    serde_json::json!({ "status": "ok" }).to_string()
+                };
+                requests.push((request_line, body));
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{response_body}",
+                    response_body.len()
                 );
                 stream.write_all(response.as_bytes()).unwrap();
             }
@@ -1662,6 +1716,63 @@ mod tests {
         assert_eq!(json["auth"]["state"], "authenticated");
         assert_eq!(json["daemon"]["state"], "running");
         assert_eq!(json["sync"]["mode"], "automatic");
+    }
+
+    #[test]
+    fn grant_folder_uses_opened_local_folder_key() {
+        let tmp = TempDir::new().unwrap();
+        let secret = "0000000000000000000000000000000000000000000000000000000000000001";
+        run(&tmp, &["auth", "login", "--nsec", secret]);
+        let admin_npub = run(&tmp, &["signer", "public-key"]).trim().to_owned();
+        let folder_key = FolderKey::from_bytes([7; 32]);
+        let tree = tmp.path().join("org");
+        fs::create_dir_all(tree.join(".finitebrain")).unwrap();
+        let mut state = AgentState::new("acme", "2026-06-24T20:46:36Z");
+        state.local_folder_keys.push(LocalFolderKey {
+            folder_id: "general".to_owned(),
+            key_version: 1,
+            key_base64: folder_key.to_base64(),
+            source: "test".to_owned(),
+            opened_at: "2026-06-24T20:46:36Z".to_owned(),
+        });
+        write_agent_state(&tree, &state).unwrap();
+
+        let (server_url, server) = start_metadata_and_grant_server(admin_npub.clone());
+        let mut env = env_for(&tmp);
+        env.cwd = tree;
+        let mut output = Vec::new();
+        run_with_env(
+            [
+                "permissions",
+                "grant-folder",
+                "--vault",
+                "acme",
+                "--folder",
+                "general",
+                "--target",
+                &admin_npub,
+                "--server",
+                &server_url,
+                "--json",
+            ],
+            env,
+            &mut output,
+        )
+        .unwrap();
+
+        let requests = server.join().unwrap();
+        let (_, body) = requests
+            .iter()
+            .find(|(request, _)| request.starts_with("POST "))
+            .expect("grant request captured");
+        let body: Value = serde_json::from_str(body).unwrap();
+        let wrapped = body["grant"]["wrappedEventJson"].as_str().unwrap();
+        let event = Event::from_json(wrapped).unwrap();
+        let keys = Keys::parse(secret).unwrap();
+        let recipient = NostrPublicKey::parse(&admin_npub).unwrap();
+        let opened = open_gift_wrap(&keys, &event, &GiftWrapValidation::new(recipient)).unwrap();
+        let plaintext: Value = serde_json::from_str(&opened.rumor.content).unwrap();
+        assert_eq!(plaintext["folderKey"], folder_key.to_base64());
     }
 
     #[test]

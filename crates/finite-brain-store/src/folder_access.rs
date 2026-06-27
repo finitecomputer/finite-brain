@@ -98,7 +98,10 @@ impl BrainStore {
         Ok(())
     }
 
-    /// Grant access to one organization member for a restricted Folder.
+    /// Grant the current Folder Key to one organization member.
+    ///
+    /// Restricted Folders also add the member to the Folder access list. All-members Folders
+    /// already grant metadata access to every member, so this path only records the missing key.
     pub fn grant_folder_access(
         &mut self,
         vault_id: &VaultId,
@@ -115,21 +118,6 @@ impl BrainStore {
             .ok_or_else(|| StoreError::MissingFolder {
                 folder_id: folder_id.to_string(),
             })?;
-        if folder.access != FolderAccessMode::Restricted {
-            return Err(StoreError::BrokenInvariant {
-                reason: "folder access grants require a restricted folder".to_owned(),
-            });
-        }
-        let current_access = stored
-            .folder_access
-            .get(folder_id)
-            .cloned()
-            .unwrap_or_default();
-        if current_access.contains(user_id) {
-            return Err(StoreError::BrokenInvariant {
-                reason: "folder access is already granted".to_owned(),
-            });
-        }
         validate_access_membership(&stored.vault, &BTreeSet::from([user_id.clone()]))?;
         validate_grant_metadata(grant)?;
         validate_grant_issuer(&stored.vault, grant)?;
@@ -149,11 +137,47 @@ impl BrainStore {
             });
         }
 
+        let inserts_access_row = match folder.access {
+            FolderAccessMode::Restricted => {
+                let current_access = stored
+                    .folder_access
+                    .get(folder_id)
+                    .cloned()
+                    .unwrap_or_default();
+                if current_access.contains(user_id) {
+                    return Err(StoreError::BrokenInvariant {
+                        reason: "folder access is already granted".to_owned(),
+                    });
+                }
+                true
+            }
+            FolderAccessMode::AllMembers => {
+                if stored.grants.iter().any(|existing| {
+                    existing.folder_id == *folder_id
+                        && existing.key_version == folder.current_key_version
+                        && existing.recipient_npub == *user_id
+                }) {
+                    return Err(StoreError::BrokenInvariant {
+                        reason: "folder key grant is already present".to_owned(),
+                    });
+                }
+                false
+            }
+            FolderAccessMode::AdminOnly | FolderAccessMode::Owner => {
+                return Err(StoreError::BrokenInvariant {
+                    reason: "folder access grants require a restricted or all-members folder"
+                        .to_owned(),
+                });
+            }
+        };
+
         let tx = self.conn.transaction()?;
-        tx.execute(
-            "INSERT INTO folder_access (vault_id, folder_id, user_id) VALUES (?1, ?2, ?3)",
-            params![vault_id.as_str(), folder_id.as_str(), user_id.as_str()],
-        )?;
+        if inserts_access_row {
+            tx.execute(
+                "INSERT INTO folder_access (vault_id, folder_id, user_id) VALUES (?1, ?2, ?3)",
+                params![vault_id.as_str(), folder_id.as_str(), user_id.as_str()],
+            )?;
+        }
         insert_grant(&tx, vault_id, grant)?;
         tx.commit()?;
         Ok(())

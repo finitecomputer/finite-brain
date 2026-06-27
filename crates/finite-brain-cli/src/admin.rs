@@ -11,9 +11,9 @@ use nostr::{Keys, Kind, Tag};
 
 use crate::{
     APP_SPECIFIC_KIND, CliEnvironment, CliError, LocalFolderKey, PrototypeAuth, UnlockedFolder,
-    VaultMetadataView, deterministic_id, find_agent_state, mutate_agent_state,
-    normalize_folder_access, read_auth_required, read_working_tree_state, sign_event,
-    signed_json_request, tag_vec, timestamp, unix_timestamp, write_json_file,
+    VaultMetadataView, current_tree_root, deterministic_id, find_agent_state, mutate_agent_state,
+    normalize_folder_access, read_agent_state, read_auth_required, read_working_tree_state,
+    sign_event, signed_json_request, tag_vec, timestamp, unix_timestamp, write_json_file,
 };
 
 pub(crate) fn fetch_vault_metadata(
@@ -122,6 +122,26 @@ pub(crate) fn folder_key_grant_request(
         "wrappedEventJson": wrapped.as_json(),
         "createdAt": timestamp(env)
     }))
+}
+
+pub(crate) fn opened_folder_key(
+    env: &CliEnvironment,
+    folder_id: &str,
+    key_version: u32,
+) -> Result<FolderKey, CliError> {
+    let root = current_tree_root(env)?;
+    let state = read_agent_state(&root)?;
+    let local_key = state
+        .local_folder_keys
+        .iter()
+        .find(|key| key.folder_id == folder_id && key.key_version == key_version)
+        .ok_or_else(|| {
+            CliError::InvalidInput(format!(
+                "Folder Key for {folder_id} v{key_version} is not opened locally; run fbrain open/sync as an admin first"
+            ))
+        })?;
+    FolderKey::from_base64(&local_key.key_base64)
+        .map_err(|error| CliError::InvalidInput(error.to_string()))
 }
 
 pub(crate) fn admin_access_change_event(
