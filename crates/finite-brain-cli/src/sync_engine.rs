@@ -43,16 +43,15 @@ pub(crate) fn run_working_tree_sync(
     let bootstrap = fetch_sync_bootstrap(env, &server_url, &agent_state.vault_id)?;
     write_sync_evidence(&root, &export, &bootstrap)?;
 
-    if local_result.conflict_count == 0 {
-        materialize_remote_projection(
-            env,
-            &root,
-            &auth.npub,
-            &export,
-            &bootstrap,
-            &local_result.path_overrides,
-        )?;
-    }
+    materialize_remote_projection(
+        env,
+        &root,
+        &auth.npub,
+        &export,
+        &bootstrap,
+        &local_result.path_overrides,
+    )?;
+    restore_conflicted_markdown(&root, &local_result.conflicted_markdown)?;
 
     let latest_sequence = bootstrap.latest_sequence;
     let remote_count = bootstrap
@@ -119,6 +118,20 @@ fn write_sync_evidence(
     fs::create_dir_all(&sync_dir)?;
     write_json_file(&sync_dir.join("export.json"), export)?;
     write_json_file(&sync_dir.join("bootstrap.json"), bootstrap)?;
+    Ok(())
+}
+
+fn restore_conflicted_markdown(
+    root: &Path,
+    conflicted_markdown: &BTreeMap<String, String>,
+) -> Result<(), CliError> {
+    for (relative_path, markdown) in conflicted_markdown {
+        let path = root.join(relative_path);
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        fs::write(path, markdown)?;
+    }
     Ok(())
 }
 
@@ -253,10 +266,12 @@ fn push_local_working_tree_changes(
             }
             Ok(SubmitIntentOutcome::Conflict(reason)) => {
                 result.conflict_count += 1;
+                preserve_conflicted_markdown(&mut result, change);
                 conflicts.push(conflict_for_change(change, intent, reason, timestamp(env)));
             }
             Err(error) if is_http_conflict(&error) => {
                 result.conflict_count += 1;
+                preserve_conflicted_markdown(&mut result, change);
                 conflicts.push(conflict_for_change(
                     change,
                     intent,
@@ -635,10 +650,7 @@ fn materialize_remote_projection(
     }
 
     for folder in &export.folders {
-        if local_keys
-            .keys()
-            .any(|(folder_id, _)| folder_id == &folder.id)
-        {
+        if local_keys.contains_key(&(folder.id.clone(), folder.current_key_version)) {
             readable_folder_ids.insert(folder.id.clone());
         }
     }
@@ -950,12 +962,22 @@ fn remove_stale_object_files(
     old_objects: &[WorkingTreeObjectManifestEntry],
     new_objects: &[WorkingTreeObjectManifestEntry],
 ) -> Result<(), CliError> {
-    let new_keys = new_objects
+    let new_paths = new_objects
         .iter()
-        .map(|object| (object.folder_id.clone(), object.object_id.clone()))
-        .collect::<BTreeSet<_>>();
+        .map(|object| {
+            (
+                (object.folder_id.clone(), object.object_id.clone()),
+                object.path.clone(),
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
     for old in old_objects {
-        if new_keys.contains(&(old.folder_id.clone(), old.object_id.clone())) {
+        let key = (old.folder_id.clone(), old.object_id.clone());
+        let should_remove = match new_paths.get(&key) {
+            Some(new_path) => new_path != &old.path,
+            None => true,
+        };
+        if !should_remove {
             continue;
         }
         let Some(folder_path) = folder_path_for_removed_object(root, old)? else {
@@ -1072,11 +1094,20 @@ struct LocalSyncResult {
     pushed_count: usize,
     conflict_count: usize,
     path_overrides: BTreeMap<(String, String), String>,
+    conflicted_markdown: BTreeMap<String, String>,
 }
 
 enum SubmitIntentOutcome {
     Submitted,
     Conflict(String),
+}
+
+fn preserve_conflicted_markdown(result: &mut LocalSyncResult, change: &WorkingTreeChange) {
+    if let WorkingTreeChange::Upsert { path, markdown } = change {
+        result
+            .conflicted_markdown
+            .insert(path.to_string(), markdown.clone());
+    }
 }
 
 #[derive(Debug, Deserialize, serde::Serialize)]
@@ -1328,6 +1359,120 @@ mod tests {
         assert_eq!(projection.state.folder_roots[0].folder_id, "home");
         assert!(projection.files.contains_key("home/AGENTS.md"));
         assert!(projection.files.contains_key("home/raw/.keep"));
+    }
+
+    #[test]
+    fn stale_object_cleanup_removes_old_path_after_move() {
+        let temp = TempDir::new().unwrap();
+        let root = temp.path();
+        fs::create_dir_all(root.join(".finitebrain")).unwrap();
+        fs::create_dir_all(root.join("General")).unwrap();
+        fs::write(root.join("General/old.md"), "# Old\n").unwrap();
+        let state = VaultWorkingTreeStateManifest {
+            version: "finite-vault-working-tree-state-v1".to_owned(),
+            folder_roots: vec![WorkingTreeFolderRoot {
+                folder_id: "general".to_owned(),
+                path: "General".to_owned(),
+                can_read: true,
+                metadata_only: false,
+            }],
+            objects: vec![WorkingTreeObjectManifestEntry {
+                folder_id: "general".to_owned(),
+                path: "old.md".to_owned(),
+                object_id: "obj_same0000000".to_owned(),
+                revision: 1,
+                key_version: 1,
+                content_type: "text/markdown".to_owned(),
+                content_hash: sha256_hex("# Old\n".as_bytes()),
+            }],
+            sync: WorkingTreeSyncState { latest_sequence: 1 },
+        };
+        write_json_file(&root.join(".finitebrain/working-tree-state.json"), &state).unwrap();
+        let new_objects = vec![WorkingTreeObjectManifestEntry {
+            folder_id: "general".to_owned(),
+            path: "new.md".to_owned(),
+            object_id: "obj_same0000000".to_owned(),
+            revision: 2,
+            key_version: 1,
+            content_type: "text/markdown".to_owned(),
+            content_hash: sha256_hex("# New\n".as_bytes()),
+        }];
+
+        remove_stale_object_files(root, &state.objects, &new_objects).unwrap();
+
+        assert!(!root.join("General/old.md").exists());
+    }
+
+    #[test]
+    fn historical_local_keys_do_not_make_current_folder_readable() {
+        let temp = TempDir::new().unwrap();
+        let root = temp.path();
+        fs::create_dir_all(root.join(".finitebrain")).unwrap();
+        write_json_file(
+            &root.join(".finitebrain/working-tree-state.json"),
+            &VaultWorkingTreeStateManifest {
+                version: "finite-vault-working-tree-state-v1".to_owned(),
+                folder_roots: Vec::new(),
+                objects: Vec::new(),
+                sync: WorkingTreeSyncState { latest_sequence: 0 },
+            },
+        )
+        .unwrap();
+        let mut agent_state = AgentState::new("vault", "2026-06-26T23:30:00Z");
+        agent_state.local_folder_keys.push(LocalFolderKey {
+            folder_id: "home".to_owned(),
+            key_version: 1,
+            key_base64: FolderKey::from_bytes([1; 32]).to_base64(),
+            source: "test".to_owned(),
+            opened_at: "2026-06-26T23:30:00Z".to_owned(),
+        });
+        write_agent_state(root, &agent_state).unwrap();
+        let env = CliEnvironment {
+            cwd: root.to_path_buf(),
+            config_dir: root.join("config"),
+            now: Some("2026-06-26T23:30:00Z".to_owned()),
+        };
+        let export = CliEncryptedVaultExport {
+            vault: CliExportVault {
+                id: "vault".to_owned(),
+                kind: "personal".to_owned(),
+                name: "Vault".to_owned(),
+                owner_user_id: Some("npub-owner".to_owned()),
+            },
+            folders: vec![CliExportFolder {
+                id: "home".to_owned(),
+                path: "home".to_owned(),
+                access: "owner".to_owned(),
+                current_key_version: 2,
+                shared_folder_source: false,
+                accessible: true,
+            }],
+            key_grants: Vec::new(),
+            access_state: CliExportAccessState {
+                members: Vec::new(),
+                admins: Vec::new(),
+            },
+        };
+        let bootstrap = CliSyncBootstrap {
+            latest_sequence: 0,
+            objects: Vec::new(),
+        };
+
+        materialize_remote_projection(
+            &env,
+            root,
+            "npub-owner",
+            &export,
+            &bootstrap,
+            &BTreeMap::new(),
+        )
+        .unwrap();
+
+        let state = read_working_tree_state(root).unwrap();
+        assert_eq!(state.folder_roots.len(), 1);
+        assert_eq!(state.folder_roots[0].folder_id, "home");
+        assert!(!state.folder_roots[0].can_read);
+        assert!(state.folder_roots[0].metadata_only);
     }
 
     #[allow(dead_code)]

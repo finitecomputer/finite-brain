@@ -23,8 +23,10 @@ pub(crate) fn unix_timestamp() -> u64 {
 }
 
 pub(crate) fn timestamp_from_unix(seconds: u64) -> String {
-    let datetime =
-        OffsetDateTime::from_unix_timestamp(seconds as i64).unwrap_or(OffsetDateTime::UNIX_EPOCH);
+    let datetime = i64::try_from(seconds)
+        .ok()
+        .and_then(|seconds| OffsetDateTime::from_unix_timestamp(seconds).ok())
+        .unwrap_or(OffsetDateTime::UNIX_EPOCH);
     datetime
         .format(&Rfc3339)
         .unwrap_or_else(|_| "1970-01-01T00:00:00Z".to_owned())

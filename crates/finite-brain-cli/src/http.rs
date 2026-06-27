@@ -1,4 +1,5 @@
 use std::env;
+use std::net::IpAddr;
 use std::time::Duration;
 
 use nostr::Keys;
@@ -159,13 +160,39 @@ fn saved_server_url(env: &CliEnvironment) -> Option<String> {
 }
 
 pub(crate) fn validate_http_url(url: &str) -> Result<(), CliError> {
-    if url.starts_with("http://") || url.starts_with("https://") {
-        Ok(())
-    } else {
-        Err(CliError::Unsupported(
-            "fbrain HTTP transport supports http:// and https:// URLs".to_owned(),
-        ))
+    if url.starts_with("https://") {
+        return Ok(());
     }
+    if let Some(rest) = url.strip_prefix("http://") {
+        let host = rest
+            .split('/')
+            .next()
+            .and_then(http_host_without_port)
+            .unwrap_or_default();
+        if is_loopback_host(host) {
+            return Ok(());
+        }
+    }
+    Err(CliError::Unsupported(
+        "fbrain HTTP transport requires https:// except for localhost or loopback http:// URLs"
+            .to_owned(),
+    ))
+}
+
+fn http_host_without_port(host_port: &str) -> Option<&str> {
+    let host_port = host_port.rsplit('@').next().unwrap_or(host_port);
+    if let Some(rest) = host_port.strip_prefix('[') {
+        return rest.split_once(']').map(|(host, _)| host);
+    }
+    host_port.split(':').next().filter(|host| !host.is_empty())
+}
+
+fn is_loopback_host(host: &str) -> bool {
+    host.eq_ignore_ascii_case("localhost")
+        || host
+            .parse::<IpAddr>()
+            .map(|address| address.is_loopback())
+            .unwrap_or(false)
 }
 
 pub(crate) fn absolute_server_url(server_url: &str, path: &str) -> String {

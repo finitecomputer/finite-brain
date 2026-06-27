@@ -48,6 +48,7 @@
 - Worthy fixes applied:
   - Passed sync command args into the server URL resolver so `fbrain sync now --server ...` uses the explicit URL.
   - Refactored sync submit/revision helper arguments to satisfy clippy with warnings denied.
+  - Addressed local CodeRabbit findings for local-only plaintext HTTP, validated `open` URL persistence, timestamp overflow handling, and bootstrap Folder Key reuse.
 - Findings ignored with reasons: none.
 
 ## Risks

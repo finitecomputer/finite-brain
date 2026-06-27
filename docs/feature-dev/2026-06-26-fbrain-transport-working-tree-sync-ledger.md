@@ -9,7 +9,7 @@
 - Feature branch: `feature/fbrain-transport-working-tree-sync`
 - Human owner: Austin
 - Started: `2026-06-26T23:28:22Z`
-- Current status: local implementation and review complete; local CodeRabbit pending
+- Current status: local implementation, review, and local CodeRabbit fixes complete
 - Skill setup status: present (`AGENTS.md`, `docs/agents/issue-tracker.md`, `docs/agents/triage-labels.md`, `docs/agents/domain.md`)
 
 ## Goal
@@ -37,7 +37,7 @@ Do missing rollout items 3 and 6 end to end: harden `fbrain` server transport co
 - Review packets:
   - `docs/feature-dev/2026-06-26-issue-45-fbrain-transport-review-packet.md`
   - `docs/feature-dev/2026-06-26-issue-44-working-tree-sync-review-packet.md`
-- Local CodeRabbit report: pending
+- Local CodeRabbit report: `docs/feature-dev/2026-06-27-local-coderabbit-fbrain-transport-working-tree-sync.md`
 - PR URL: pending
 
 ## Commands
@@ -51,6 +51,7 @@ Do missing rollout items 3 and 6 end to end: harden `fbrain` server transport co
   - Temp DB: `/tmp/fbrain-sync-smoke.oC4srw/finite-brain.sqlite3`
   - Server: `http://127.0.0.1:4016`
   - Commands proved: `auth login`, `vault create personal-beta`, `open`, readable `home`, create/update/delete `home/smoke.md` through `sync now`, empty conflicts, final latest sequence `3`
+  - Rerun after local CodeRabbit fixes used temp DB `/tmp/fbrain-sync-smoke.WWDQFD/finite-brain.sqlite3`, vault `personal-gamma`, and final latest sequence `3`
 
 ## Slice Ledger
 
@@ -78,6 +79,22 @@ None.
 - Standards result: pass, no findings.
 - Spec sources: `finitecomputer/finite-brain#43`, `#44`, and `#45`.
 - Spec result: pass, no findings.
+
+## Local CodeRabbit
+
+- Command: `coderabbit review --agent --type all --base staging`
+- Availability: completed through the free CLI allowance
+- Findings: 8 addressed, 0 ignored
+- Fix evidence:
+  - Partial-success sync now rematerializes accepted writes and restores conflicted markdown edits.
+  - `timestamp_from_unix` guards oversized values.
+  - Folder readability requires the current Folder Key version.
+  - Stale moved object paths are removed.
+  - Bootstrap grant requests are validated against required recipients before conversion.
+  - Plaintext HTTP is restricted to localhost/loopback.
+  - `fbrain open` validates the server URL before persistence.
+  - Bootstrap grant generation reuses one Folder Key per folder/key version across recipients.
+  - Product Client asset test body cap was raised after full-suite verification found the checked-in HTML exceeded the stale 16 KiB test cap.
 
 ## Open Questions
 

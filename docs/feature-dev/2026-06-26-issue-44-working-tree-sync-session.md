@@ -46,7 +46,8 @@
 - Spec findings: none from direct two-axis review.
 - Worthy fixes applied:
   - Added the public-seam conflict test after review found unit-only conflict coverage too weak.
-  - Confirmed store validation rejects partial bootstrap grant sets; no extra route-level duplicate was needed.
+  - Added route-level bootstrap grant set validation before server conversion; store validation still enforces the authoritative invariant transactionally.
+  - Addressed local CodeRabbit findings for partial-success rematerialization, current-key readability, stale moved-file cleanup, and bootstrap grant validation.
 - Findings ignored with reasons: none.
 
 ## Risks

@@ -591,6 +591,39 @@ fn bootstrap_grant_requests_to_metadata(
         .collect()
 }
 
+fn validate_bootstrap_grant_requests(
+    requests: &[CreateVaultFolderKeyGrantRequest],
+    required: &[RequiredFolderKeyGrant],
+) -> Result<(), ApiError> {
+    let required_set = required
+        .iter()
+        .map(|grant| {
+            (
+                grant.folder_id.to_string(),
+                grant.key_version,
+                grant.recipient_user_id.to_string(),
+            )
+        })
+        .collect::<BTreeSet<_>>();
+    let provided_set = requests
+        .iter()
+        .map(|request| {
+            (
+                request.folder_id.clone(),
+                request.grant.key_version,
+                request.grant.recipient_npub.clone(),
+            )
+        })
+        .collect::<BTreeSet<_>>();
+    if provided_set != required_set || requests.len() != required.len() {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "bootstrap grants must exactly match required Folder Key Grant recipients",
+        ));
+    }
+    Ok(())
+}
+
 fn grant_request_to_metadata(
     request: &FolderKeyGrantRequest,
     folder_id: &FolderId,
@@ -1146,7 +1179,7 @@ mod tests {
             .await
             .expect("client response");
         assert_eq!(client_response.status(), StatusCode::OK);
-        let client_body = to_bytes(client_response.into_body(), 16 * 1024)
+        let client_body = to_bytes(client_response.into_body(), 256 * 1024)
             .await
             .expect("client body");
         let client_body = std::str::from_utf8(&client_body).expect("client utf8");
@@ -1164,6 +1197,9 @@ mod tests {
         assert!(client_body.contains("accessFolderInspector"));
         assert!(client_body.contains("accessManageButton"));
         assert!(client_body.contains("accessShareButton"));
+        assert!(client_body.contains("accessModePanel"));
+        assert!(client_body.contains("accessManageSheet"));
+        assert!(client_body.contains("accessShareSheet"));
         assert!(client_body.contains("Page Loop"));
         assert!(client_body.contains("Save Page"));
         assert!(client_body.contains("OKF Import"));
@@ -1587,6 +1623,39 @@ mod tests {
         let response = post_vault(test_router(), &keys, &body, TEST_NOW, None, None, None).await;
 
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[test]
+    fn bootstrap_grant_requests_must_match_required_recipients() {
+        let required = vec![RequiredFolderKeyGrant {
+            folder_id: FolderId::new("home").unwrap(),
+            key_version: 1,
+            recipient_user_id: UserId::new("npub-owner").unwrap(),
+        }];
+        let matching = vec![CreateVaultFolderKeyGrantRequest {
+            folder_id: "home".to_owned(),
+            grant: FolderKeyGrantRequest {
+                id: "grant-home-owner".to_owned(),
+                key_version: 1,
+                recipient_npub: "npub-owner".to_owned(),
+                wrapped_event_json: "{}".to_owned(),
+                created_at: None,
+            },
+        }];
+        let unrelated = vec![CreateVaultFolderKeyGrantRequest {
+            folder_id: "general".to_owned(),
+            grant: FolderKeyGrantRequest {
+                id: "grant-general-owner".to_owned(),
+                key_version: 1,
+                recipient_npub: "npub-owner".to_owned(),
+                wrapped_event_json: "{}".to_owned(),
+                created_at: None,
+            },
+        }];
+
+        assert!(validate_bootstrap_grant_requests(&matching, &required).is_ok());
+        let error = validate_bootstrap_grant_requests(&unrelated, &required).unwrap_err();
+        assert_eq!(error.status, StatusCode::BAD_REQUEST);
     }
 
     #[tokio::test]
