@@ -9,7 +9,7 @@
 - Feature branch: `feature/fbrain-transport-working-tree-sync`
 - Human owner: Austin
 - Started: `2026-06-26T23:28:22Z`
-- Current status: local implementation, review, local CodeRabbit fixes, clean verification, and live smoke complete; ready for final local CodeRabbit pass and staging PR
+- Current status: local implementation, review, local CodeRabbit rounds, clean verification, and live smoke complete; ready for staging PR
 - Skill setup status: present (`AGENTS.md`, `docs/agents/issue-tracker.md`, `docs/agents/triage-labels.md`, `docs/agents/domain.md`)
 
 ## Goal
@@ -53,6 +53,7 @@ Do missing rollout items 3 and 6 end to end: harden `fbrain` server transport co
   - Commands proved: `auth login`, `vault create personal-beta`, `open`, readable `home`, create/update/delete `home/smoke.md` through `sync now`, empty conflicts, final latest sequence `3`
   - Rerun after local CodeRabbit fixes used temp DB `/tmp/fbrain-sync-smoke.WWDQFD/finite-brain.sqlite3`, vault `personal-gamma`, and final latest sequence `3`
   - Rerun after local CodeRabbit round-two fixes used temp DB `/tmp/fbrain-sync-smoke-round2.BzarH1/finite-brain.sqlite3`, server `http://127.0.0.1:4018`, vault `personal-round2`, and final latest sequence `3` with `conflicts=[]`
+  - Final rerun after local CodeRabbit round-three fixes used temp DB `/tmp/fbrain-sync-smoke-final.LlHQ5M/finite-brain.sqlite3`, server `http://127.0.0.1:4019`, vault `personal-final`, and final latest sequence `3` with `conflicts=[]`
 
 ## Slice Ledger
 
@@ -112,6 +113,20 @@ None.
   - Verification passed: `cargo test -p finite-brain-server product_client_serves_spine_assets_and_config`; `node crates/finite-brain-server/src/product-client.test.js`; `node scripts/verify-obsidian-product-client.mjs`.
 - Clean verification after round 2:
   - Passed from `/tmp/fbrain-verify-worktree.KosIBG`: `cargo fmt --check && cargo check --workspace && cargo test --workspace && cargo clippy --workspace --all-targets -- -D warnings && cargo build && git diff --check`.
+- Round 3 command: `coderabbit review --agent --type all --base staging`
+- Round 3 findings: 8 addressed, 1 false positive recorded
+- Round 3 fix commit: `f17784c` Address final fbrain CodeRabbit findings
+- Round 3 fix evidence:
+  - Test HTTP request reads are bounded.
+  - Product Client opened-key and onboarding state is key-version/readability aware.
+  - README and URL selection now align with loopback-only `http://`.
+  - Local sync refuses current-key-missing writes as conflicts instead of using historical Folder Keys.
+  - Opened-grant counts and unlocked-folder metadata now reflect newly persisted grants.
+  - Encrypted page paths must be `.md`.
+- Round 3 finding not addressed:
+  - Missing `nostr::JsonUtil` import was a false positive; clean workspace check/test/clippy passed without it.
+- Clean verification after round 3:
+  - Passed from `/tmp/fbrain-verify-worktree.8TW46X`: `cargo fmt --check && cargo check --workspace && cargo test --workspace && cargo clippy --workspace --all-targets -- -D warnings && cargo build && git diff --check`.
 
 ## Open Questions
 

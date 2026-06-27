@@ -72,3 +72,43 @@ None.
   - Clean full verification passed from `/tmp/fbrain-verify-worktree.KosIBG`: `cargo fmt --check && cargo check --workspace && cargo test --workspace && cargo clippy --workspace --all-targets -- -D warnings && cargo build && git diff --check`.
   - Live smoke after round-two fixes passed against `http://127.0.0.1:4018` with temp DB `/tmp/fbrain-sync-smoke-round2.BzarH1/finite-brain.sqlite3`; create/update/delete of `home/round2.md` ended at `latestSequence=3` with `conflicts=[]`.
   - Branch hygiene: commit `331ccd0` restored Product Client asset parity because commit `f17e40b` had already added server asset assertions for Product Client controls. Verification passed with `cargo test -p finite-brain-server product_client_serves_spine_assets_and_config`, `node crates/finite-brain-server/src/product-client.test.js`, and `node scripts/verify-obsidian-product-client.mjs`.
+
+## Round 3
+
+- Scope: local
+- Round number: 3
+- Command or trigger: `coderabbit review --agent --type all --base staging`
+- Started: `2026-06-27`
+- Completed: `2026-06-27`
+- Availability: completed
+- Fallback review thread: none
+- Fix commit: `f17784c` Address final fbrain CodeRabbit findings
+
+## Findings To Address
+
+| Finding | Severity | Decision | Notes |
+| --- | --- | --- | --- |
+| In-process HTTP test server reads could block forever on stalled clients. | minor | fixed | Added a per-request read timeout to the shared test request reader. |
+| Product Client treated opened Folder ids as key openness without key versions. | minor | fixed | Open-key UI state now keys opened grants by `(folderId, keyVersion)` and tests cover stale key versions. |
+| Product Client onboarding completion accepted empty keyrings and locked-only projections. | minor | fixed | Completion now requires connected signer, metadata, and either opened grants or readable Pages. |
+| README said local `http://` too broadly. | minor | fixed | Documented loopback-only `http://` support and clarified LAN/container hosts require `https://`. |
+| Server URL selection preserved surrounding whitespace. | minor | fixed | URL resolver now trims the selected candidate before returning it. |
+| Local working-tree push could submit with only historical Folder Keys. | major | fixed | Local sync now gates intents on the export's current Folder Key version and records a conflict when the current key is unavailable. |
+| Opened grant count included already-known grants and left stale unlocked-folder metadata. | minor | fixed | Grant opening now counts newly persisted local keys and refreshes unlocked-folder version metadata when newer grants arrive. |
+| Encrypted page payload paths could be non-Markdown. | minor | fixed | Decoded `finite-folder-object-page-v1` paths must end in `.md`; legacy fallback behavior is unchanged. |
+
+## Findings Not Addressed
+
+| Finding | Reason |
+| --- | --- |
+| Missing `nostr::JsonUtil` import in `sync_engine.rs`. | False positive: `cargo check --workspace`, `cargo test --workspace`, and `cargo clippy --workspace --all-targets -- -D warnings` pass without the import. |
+
+## Result
+
+- Continue: yes
+- Escalate: no
+- Notes:
+  - Focused verification passed: `cargo test -p finite-brain-cli`; `cargo test -p finite-brain-server product_client_serves_spine_assets_and_config`; `cargo clippy -p finite-brain-cli --all-targets -- -D warnings`; `node crates/finite-brain-server/src/product-client.test.js`; `node scripts/verify-obsidian-product-client.mjs`.
+  - Clean full verification passed from `/tmp/fbrain-verify-worktree.8TW46X`: `cargo fmt --check && cargo check --workspace && cargo test --workspace && cargo clippy --workspace --all-targets -- -D warnings && cargo build && git diff --check`.
+  - Final live smoke passed against `http://127.0.0.1:4019` with temp DB `/tmp/fbrain-sync-smoke-final.LlHQ5M/finite-brain.sqlite3`; create/update/delete of `home/final.md` ended at `latestSequence=3` with `conflicts=[]`.
+  - No fourth local CodeRabbit pass was run; the loop's local retry budget was reached, and all valid round-three findings were fixed with clean full verification.
