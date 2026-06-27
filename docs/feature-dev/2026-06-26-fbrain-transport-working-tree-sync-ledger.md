@@ -9,7 +9,7 @@
 - Feature branch: `feature/fbrain-transport-working-tree-sync`
 - Human owner: Austin
 - Started: `2026-06-26T23:28:22Z`
-- Current status: local implementation, review, local CodeRabbit rounds, clean verification, and live smoke complete; ready for staging PR
+- Current status: open non-draft staging PR with green CI; PR CodeRabbit was silent past the wait cap and fallback review is recorded
 - Skill setup status: present (`AGENTS.md`, `docs/agents/issue-tracker.md`, `docs/agents/triage-labels.md`, `docs/agents/domain.md`)
 
 ## Goal
@@ -38,7 +38,8 @@ Do missing rollout items 3 and 6 end to end: harden `fbrain` server transport co
   - `docs/feature-dev/2026-06-26-issue-45-fbrain-transport-review-packet.md`
   - `docs/feature-dev/2026-06-26-issue-44-working-tree-sync-review-packet.md`
 - Local CodeRabbit report: `docs/feature-dev/2026-06-27-local-coderabbit-fbrain-transport-working-tree-sync.md`
-- PR URL: pending
+- PR CodeRabbit report: `docs/feature-dev/2026-06-27-pr-coderabbit-fbrain-transport-working-tree-sync.md`
+- PR URL: `https://github.com/finitecomputer/finite-brain/pull/46`
 
 ## Commands
 
@@ -127,6 +128,15 @@ None.
   - Missing `nostr::JsonUtil` import was a false positive; clean workspace check/test/clippy passed without it.
 - Clean verification after round 3:
   - Passed from `/tmp/fbrain-verify-worktree.8TW46X`: `cargo fmt --check && cargo check --workspace && cargo test --workspace && cargo clippy --workspace --all-targets -- -D warnings && cargo build && git diff --check`.
+
+## PR CodeRabbit
+
+- PR: `https://github.com/finitecomputer/finite-brain/pull/46`
+- Trigger: `@coderabbit full review`
+- Posted: `2026-06-27T15:09:29Z`
+- Wait result: no CodeRabbit comments or reviews through `2026-06-27T15:30:43Z`
+- Fallback: current-thread direct review, because PR CodeRabbit stayed silent past the Feature Dev loop cap
+- CI at fallback: `Rust workspace` passed; `Product Client JavaScript` passed
 
 ## Open Questions
 
