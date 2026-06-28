@@ -334,6 +334,55 @@ assert.equal(client.accessPanelState("manage", folderRows[1]).title, "Manage Res
   assert.equal(hardenedOpen.opened.length, 1);
   assert.equal(hardenedOpen.skipped.length, 0);
   assert.equal(hardenedKeyring.openedGrants[0].folderId, "restricted");
+  let providerEncryptCalls = 0;
+  let providerDecryptCalls = 0;
+  const providerBackedNostr = {
+    signEvent: context.window.nostr.signEvent,
+    nip44: {
+      encrypt(pubkey, plaintext) {
+        if (!this.provider) throw new TypeError("Cannot read properties of undefined (reading 'enable')");
+        providerEncryptCalls += 1;
+        return fakeEncrypt(pubkey, plaintext);
+      },
+      decrypt(pubkey, ciphertext) {
+        if (!this.provider) throw new TypeError("Cannot read properties of undefined (reading 'enable')");
+        providerDecryptCalls += 1;
+        return fakeDecrypt(pubkey, ciphertext);
+      },
+    },
+  };
+  const providerBoundGrant = await client.buildFolderKeyGrantRequest({
+    id: "grant-provider-backed",
+    vaultId: "smoke",
+    folderId: "restricted",
+    keyVersion: 2,
+    folderKey,
+    issuerNpub: authorNpub,
+    provider: providerBackedNostr,
+    recipientNpub: authorNpub,
+    signEvent: providerBackedNostr.signEvent,
+    createdAtUnix: 1780000001,
+  });
+  assert.equal(providerEncryptCalls, 2);
+  const providerBoundOpen = await client.openFolderKeyGrants(
+    client.createSessionKeyring(),
+    {
+      keyGrants: [
+        {
+          id: "grant-provider-backed",
+          folderId: "restricted",
+          keyVersion: 2,
+          recipientNpub: authorNpub,
+          wrappedEventJson: providerBoundGrant.wrappedEventJson,
+        },
+      ],
+    },
+    authorNpub,
+    { provider: providerBackedNostr }
+  );
+  assert.equal(providerBoundOpen.opened.length, 1);
+  assert.equal(providerBoundOpen.skipped.length, 0);
+  assert.equal(providerDecryptCalls, 2);
   const wrongRecipientOpen = await client.openFolderKeyGrants(
     client.createSessionKeyring(),
     {

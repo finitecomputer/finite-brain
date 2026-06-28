@@ -552,7 +552,8 @@ const FiniteBrainProductClient = (() => {
     if (options.decrypt) return options.decrypt;
     const provider = options.provider || window.nostr;
     if (provider?.nip44 && typeof provider.nip44.decrypt === "function") {
-      return (pubkeyHex, ciphertext) => provider.nip44.decrypt(pubkeyHex, ciphertext);
+      return (pubkeyHex, ciphertext) =>
+        invokeNip44ProviderMethod(provider, "decrypt", pubkeyHex, ciphertext);
     }
     return null;
   }
@@ -561,9 +562,22 @@ const FiniteBrainProductClient = (() => {
     if (options.encrypt) return options.encrypt;
     const provider = options.provider || window.nostr;
     if (provider?.nip44 && typeof provider.nip44.encrypt === "function") {
-      return (pubkeyHex, plaintext) => provider.nip44.encrypt(pubkeyHex, plaintext);
+      return (pubkeyHex, plaintext) =>
+        invokeNip44ProviderMethod(provider, "encrypt", pubkeyHex, plaintext);
     }
     return null;
+  }
+
+  async function invokeNip44ProviderMethod(provider, method, peerHex, payload) {
+    const api = provider?.nip44;
+    const operation = api?.[method];
+    if (typeof operation !== "function") throw new Error(`NIP-44 ${method} is unavailable`);
+    try {
+      return await operation.call(api, peerHex, payload);
+    } catch (error) {
+      if (!/reading 'enable'/.test(String(error?.message || error))) throw error;
+      return operation.call({ provider }, peerHex, payload);
+    }
   }
 
   async function plaintextGrantFromGiftWrappedExportGrant(grant, expectedRecipientNpub = null, options = {}) {
