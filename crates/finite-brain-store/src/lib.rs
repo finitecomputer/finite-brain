@@ -2495,6 +2495,70 @@ mod tests {
     }
 
     #[test]
+    fn grants_admin_only_folder_key_to_existing_admin_without_access_row() {
+        let mut store = bootstrapped_org_store();
+        let vault_id = VaultId::new("acme").unwrap();
+        let admin = UserId::new("npub-second-admin").unwrap();
+        store.add_member(&vault_id, &admin).unwrap();
+        store.add_admin(&vault_id, &admin).unwrap();
+
+        store
+            .grant_folder_access(
+                &vault_id,
+                &FolderId::new("vault-ops").unwrap(),
+                &admin,
+                &grant(
+                    "grant-vault-ops-second-admin",
+                    "vault-ops",
+                    1,
+                    "npub-admin",
+                    admin.as_str(),
+                ),
+            )
+            .unwrap();
+
+        let stored = store.load_vault(&vault_id).unwrap();
+        assert!(
+            !stored
+                .folder_access
+                .contains_key(&FolderId::new("vault-ops").unwrap())
+        );
+        assert!(stored.grants.iter().any(|grant| {
+            grant.folder_id == FolderId::new("vault-ops").unwrap()
+                && grant.key_version == 1
+                && grant.recipient_npub == admin
+        }));
+    }
+
+    #[test]
+    fn rejects_admin_only_folder_key_grant_to_non_admin() {
+        let mut store = bootstrapped_org_store();
+        let vault_id = VaultId::new("acme").unwrap();
+        let member = UserId::new("npub-member").unwrap();
+        store.add_member(&vault_id, &member).unwrap();
+
+        assert_eq!(
+            store
+                .grant_folder_access(
+                    &vault_id,
+                    &FolderId::new("vault-ops").unwrap(),
+                    &member,
+                    &grant(
+                        "grant-vault-ops-member",
+                        "vault-ops",
+                        1,
+                        "npub-admin",
+                        member.as_str(),
+                    ),
+                )
+                .unwrap_err(),
+            StoreError::BrokenInvariant {
+                reason: "admin-only folder grants require a vault admin target".to_owned()
+            }
+        );
+    }
+
+    #[test]
     fn vault_invitation_is_single_user_single_use_and_retry_safe() {
         let mut store = bootstrapped_org_store();
         let vault_id = VaultId::new("acme").unwrap();

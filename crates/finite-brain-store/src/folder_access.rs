@@ -163,7 +163,24 @@ impl BrainStore {
                 }
                 false
             }
-            FolderAccessMode::AdminOnly | FolderAccessMode::Owner => {
+            FolderAccessMode::AdminOnly => {
+                if !stored.vault.admins.iter().any(|admin| admin == user_id) {
+                    return Err(StoreError::BrokenInvariant {
+                        reason: "admin-only folder grants require a vault admin target".to_owned(),
+                    });
+                }
+                if stored.grants.iter().any(|existing| {
+                    existing.folder_id == *folder_id
+                        && existing.key_version == folder.current_key_version
+                        && existing.recipient_npub == *user_id
+                }) {
+                    return Err(StoreError::BrokenInvariant {
+                        reason: "folder key grant is already present".to_owned(),
+                    });
+                }
+                false
+            }
+            FolderAccessMode::Owner => {
                 return Err(StoreError::BrokenInvariant {
                     reason: "folder access grants require a restricted or all-members folder"
                         .to_owned(),

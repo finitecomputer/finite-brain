@@ -1169,7 +1169,7 @@ fn share<W: Write>(
                 .find(|folder| folder.id == folder_id)
                 .map(|folder| folder.current_key_version)
                 .ok_or_else(|| CliError::NotFound(format!("folder {folder_id}")))?;
-            let folder_key = FolderKey::generate();
+            let folder_key = opened_folder_key(env, &folder_id, key_version)?;
             let auth = read_auth_required(env)?;
             let event = admin_access_change_event(
                 env,
@@ -1255,7 +1255,7 @@ fn share<W: Write>(
                 .find(|folder| folder.id == folder_id)
                 .map(|folder| folder.current_key_version)
                 .ok_or_else(|| CliError::NotFound(format!("folder {folder_id}")))?;
-            let folder_key = FolderKey::generate();
+            let folder_key = opened_folder_key(env, &folder_id, key_version)?;
             let auth = read_auth_required(env)?;
             let event = admin_access_change_event(
                 env,
@@ -1306,6 +1306,7 @@ mod tests {
     use serde_json::Value;
     use std::io::{ErrorKind, Read};
     use std::net::{TcpListener, TcpStream};
+    use std::path::Path;
     use std::thread;
     use std::time::{Duration, Instant};
     use tempfile::TempDir;
@@ -1500,6 +1501,29 @@ mod tests {
             requests
         });
         (url, handle)
+    }
+
+    fn write_opened_test_folder_key(tree: &Path, folder_id: &str, folder_key: &FolderKey) {
+        fs::create_dir_all(tree.join(".finitebrain")).unwrap();
+        let mut state = AgentState::new("acme", "2026-06-24T20:46:36Z");
+        state.local_folder_keys.push(LocalFolderKey {
+            folder_id: folder_id.to_owned(),
+            key_version: 1,
+            key_base64: folder_key.to_base64(),
+            source: "test".to_owned(),
+            opened_at: "2026-06-24T20:46:36Z".to_owned(),
+        });
+        write_agent_state(tree, &state).unwrap();
+    }
+
+    fn grant_plaintext_folder_key(body: &Value, secret: &str, recipient_npub: &str) -> String {
+        let wrapped = body["grant"]["wrappedEventJson"].as_str().unwrap();
+        let event = Event::from_json(wrapped).unwrap();
+        let keys = Keys::parse(secret).unwrap();
+        let recipient = NostrPublicKey::parse(recipient_npub).unwrap();
+        let opened = open_gift_wrap(&keys, &event, &GiftWrapValidation::new(recipient)).unwrap();
+        let plaintext: Value = serde_json::from_str(&opened.rumor.content).unwrap();
+        plaintext["folderKey"].as_str().unwrap().to_owned()
     }
 
     fn read_http_request(stream: &mut TcpStream) -> (String, String) {
@@ -1726,16 +1750,7 @@ mod tests {
         let admin_npub = run(&tmp, &["signer", "public-key"]).trim().to_owned();
         let folder_key = FolderKey::from_bytes([7; 32]);
         let tree = tmp.path().join("org");
-        fs::create_dir_all(tree.join(".finitebrain")).unwrap();
-        let mut state = AgentState::new("acme", "2026-06-24T20:46:36Z");
-        state.local_folder_keys.push(LocalFolderKey {
-            folder_id: "general".to_owned(),
-            key_version: 1,
-            key_base64: folder_key.to_base64(),
-            source: "test".to_owned(),
-            opened_at: "2026-06-24T20:46:36Z".to_owned(),
-        });
-        write_agent_state(&tree, &state).unwrap();
+        write_opened_test_folder_key(&tree, "general", &folder_key);
 
         let (server_url, server) = start_metadata_and_grant_server(admin_npub.clone());
         let mut env = env_for(&tmp);
@@ -1766,13 +1781,118 @@ mod tests {
             .find(|(request, _)| request.starts_with("POST "))
             .expect("grant request captured");
         let body: Value = serde_json::from_str(body).unwrap();
-        let wrapped = body["grant"]["wrappedEventJson"].as_str().unwrap();
-        let event = Event::from_json(wrapped).unwrap();
-        let keys = Keys::parse(secret).unwrap();
-        let recipient = NostrPublicKey::parse(&admin_npub).unwrap();
-        let opened = open_gift_wrap(&keys, &event, &GiftWrapValidation::new(recipient)).unwrap();
-        let plaintext: Value = serde_json::from_str(&opened.rumor.content).unwrap();
-        assert_eq!(plaintext["folderKey"], folder_key.to_base64());
+        assert_eq!(
+            grant_plaintext_folder_key(&body, secret, &admin_npub),
+            folder_key.to_base64()
+        );
+    }
+
+    #[test]
+    fn share_link_uses_opened_local_folder_key() {
+        let tmp = TempDir::new().unwrap();
+        let admin_secret = "0000000000000000000000000000000000000000000000000000000000000001";
+        let sharee_secret = "0000000000000000000000000000000000000000000000000000000000000002";
+        run(&tmp, &["auth", "login", "--nsec", admin_secret]);
+        let admin_npub = run(&tmp, &["signer", "public-key"]).trim().to_owned();
+        let sharee_tmp = TempDir::new().unwrap();
+        run(&sharee_tmp, &["auth", "login", "--nsec", sharee_secret]);
+        let sharee_npub = run(&sharee_tmp, &["signer", "public-key"])
+            .trim()
+            .to_owned();
+        let folder_key = FolderKey::from_bytes([11; 32]);
+        let tree = tmp.path().join("org");
+        write_opened_test_folder_key(&tree, "general", &folder_key);
+
+        let (server_url, server) = start_metadata_and_grant_server(admin_npub);
+        let mut env = env_for(&tmp);
+        env.cwd = tree;
+        let mut output = Vec::new();
+        run_with_env(
+            [
+                "share",
+                "link",
+                "--vault",
+                "acme",
+                "--folder",
+                "general",
+                "--target",
+                &sharee_npub,
+                "--server",
+                &server_url,
+                "--json",
+            ],
+            env,
+            &mut output,
+        )
+        .unwrap();
+
+        let requests = server.join().unwrap();
+        let (_, body) = requests
+            .iter()
+            .find(|(request, _)| request.starts_with("POST "))
+            .expect("share link request captured");
+        let body: Value = serde_json::from_str(body).unwrap();
+        assert_eq!(
+            grant_plaintext_folder_key(&body, sharee_secret, &sharee_npub),
+            folder_key.to_base64()
+        );
+    }
+
+    #[test]
+    fn share_folder_invite_uses_opened_local_folder_key() {
+        let tmp = TempDir::new().unwrap();
+        let admin_secret = "0000000000000000000000000000000000000000000000000000000000000001";
+        let destination_admin_secret =
+            "0000000000000000000000000000000000000000000000000000000000000002";
+        run(&tmp, &["auth", "login", "--nsec", admin_secret]);
+        let admin_npub = run(&tmp, &["signer", "public-key"]).trim().to_owned();
+        let destination_tmp = TempDir::new().unwrap();
+        run(
+            &destination_tmp,
+            &["auth", "login", "--nsec", destination_admin_secret],
+        );
+        let destination_admin_npub = run(&destination_tmp, &["signer", "public-key"])
+            .trim()
+            .to_owned();
+        let folder_key = FolderKey::from_bytes([13; 32]);
+        let tree = tmp.path().join("org");
+        write_opened_test_folder_key(&tree, "general", &folder_key);
+
+        let (server_url, server) = start_metadata_and_grant_server(admin_npub);
+        let mut env = env_for(&tmp);
+        env.cwd = tree;
+        let mut output = Vec::new();
+        run_with_env(
+            [
+                "share",
+                "folder-invite",
+                "--vault",
+                "acme",
+                "--folder",
+                "general",
+                "--destination-vault",
+                "partner",
+                "--destination-admin",
+                &destination_admin_npub,
+                "--server",
+                &server_url,
+                "--json",
+            ],
+            env,
+            &mut output,
+        )
+        .unwrap();
+
+        let requests = server.join().unwrap();
+        let (_, body) = requests
+            .iter()
+            .find(|(request, _)| request.starts_with("POST "))
+            .expect("folder invite request captured");
+        let body: Value = serde_json::from_str(body).unwrap();
+        assert_eq!(
+            grant_plaintext_folder_key(&body, destination_admin_secret, &destination_admin_npub),
+            folder_key.to_base64()
+        );
     }
 
     #[test]
