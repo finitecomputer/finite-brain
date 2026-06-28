@@ -7,7 +7,6 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use axum::body::Bytes;
 use axum::extract::{DefaultBodyLimit, OriginalUri, Path as AxumPath, Query, State};
-use axum::http::header::CONTENT_TYPE;
 use axum::http::{HeaderMap, Method, StatusCode};
 use axum::middleware;
 use axum::response::{Html, IntoResponse, Response};
