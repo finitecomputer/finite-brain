@@ -576,7 +576,22 @@ const FiniteBrainProductClient = (() => {
       return await operation.call(api, peerHex, payload);
     } catch (error) {
       if (!/reading 'enable'/.test(String(error?.message || error))) throw error;
-      return operation.call({ provider }, peerHex, payload);
+      const receiver = Object.create(api || null);
+      receiver.provider = provider;
+      const prototypeOperation = Object.getPrototypeOf(api || {})?.[method];
+      const fallbacks =
+        typeof prototypeOperation === "function" && prototypeOperation !== operation
+          ? [prototypeOperation, operation]
+          : [operation];
+      let fallbackError = error;
+      for (const fallback of fallbacks) {
+        try {
+          return await fallback.call(receiver, peerHex, payload);
+        } catch (nextError) {
+          fallbackError = nextError;
+        }
+      }
+      throw fallbackError;
     }
   }
 

@@ -383,6 +383,34 @@ assert.equal(client.accessPanelState("manage", folderRows[1]).title, "Manage Res
   assert.equal(providerBoundOpen.opened.length, 1);
   assert.equal(providerBoundOpen.skipped.length, 0);
   assert.equal(providerDecryptCalls, 2);
+  let boundProviderEncryptCalls = 0;
+  const boundNip44Prototype = {
+    encrypt(pubkey, plaintext) {
+      if (!this.provider) throw new TypeError("Cannot read properties of undefined (reading 'enable')");
+      boundProviderEncryptCalls += 1;
+      return fakeEncrypt(pubkey, plaintext);
+    },
+  };
+  const boundProviderNip44 = Object.create(boundNip44Prototype);
+  boundProviderNip44.encrypt = boundNip44Prototype.encrypt.bind(boundProviderNip44);
+  const boundWrapperNostr = {
+    signEvent: context.window.nostr.signEvent,
+    nip44: boundProviderNip44,
+  };
+  const boundWrapperGrant = await client.buildFolderKeyGrantRequest({
+    id: "grant-bound-wrapper",
+    vaultId: "smoke",
+    folderId: "restricted",
+    keyVersion: 2,
+    folderKey,
+    issuerNpub: authorNpub,
+    provider: boundWrapperNostr,
+    recipientNpub: authorNpub,
+    signEvent: boundWrapperNostr.signEvent,
+    createdAtUnix: 1780000002,
+  });
+  assert.equal(boundWrapperGrant.id, "grant-bound-wrapper");
+  assert.equal(boundProviderEncryptCalls, 2);
   const wrongRecipientOpen = await client.openFolderKeyGrants(
     client.createSessionKeyring(),
     {
