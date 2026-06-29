@@ -4403,7 +4403,7 @@ const FiniteBrainProductClient = (() => {
         `${invitation.vaultId} is now available to this signer.`,
         {
           status: invitation.status,
-          initialFolders: (invitation.initialFolderAccess || []).join(", ") || "none",
+          "folders granted": (invitation.initialFolderAccess || []).join(", ") || "none",
         }
       );
       log("Accepted Vault invitation.", { invitationId: invitation.id, vaultId: invitation.vaultId });
