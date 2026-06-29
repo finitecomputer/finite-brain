@@ -44,6 +44,7 @@ const FiniteBrainProductClient = (() => {
   const FOLDER_OBJECT_VERSION = "finite-folder-object-v1";
   const FOLDER_OBJECT_PAGE_VERSION = "finite-folder-object-page-v1";
   const REVISION_VERSION = "finite-folder-object-revision-v1";
+  const TOMBSTONE_VERSION = "finite-folder-object-tombstone-v1";
   const APP_EVENT_KIND = 30078;
   const MAX_OBJECT_ID_ATTEMPTS = 1000;
   const BECH32_CHARSET = "qpzry9x8gf2tvdw0s3jn54khce6mua7l";
@@ -801,6 +802,31 @@ const FiniteBrainProductClient = (() => {
     ];
   }
 
+  function canonicalTombstonePayload(input) {
+    return `{"version":${JSON.stringify(TOMBSTONE_VERSION)},"vaultId":${JSON.stringify(
+      input.vaultId
+    )},"folderId":${JSON.stringify(input.folderId)},"objectId":${JSON.stringify(
+      input.objectId
+    )},"operation":"delete","revision":${input.revision},"baseRevision":${
+      input.baseRevision
+    },"authorNpub":${JSON.stringify(input.authorNpub)},"deletedAt":${JSON.stringify(
+      input.deletedAt
+    )}}`;
+  }
+
+  function tombstoneTags(input) {
+    return [
+      [
+        "d",
+        `finite-folder-object-tombstone:${input.vaultId}:${input.folderId}:${input.objectId}:${input.revision}`,
+      ],
+      ["vault", input.vaultId],
+      ["folder", input.folderId],
+      ["object", input.objectId],
+      ["operation", "delete"],
+    ];
+  }
+
   async function buildPageWriteRequest(keyring, input) {
     const baseRevision =
       input.baseRevision === "" || input.baseRevision === undefined || input.baseRevision === null
@@ -848,6 +874,41 @@ const FiniteBrainProductClient = (() => {
       cipher: CIPHER,
       ciphertext: envelopeJson,
       revisionEvent,
+    };
+  }
+
+  async function buildPageDeleteRequest(input) {
+    const baseRevision = Number(input.baseRevision);
+    if (!Number.isInteger(baseRevision) || baseRevision < 1) {
+      throw new Error("Page delete requires a positive base revision");
+    }
+    const revision = baseRevision + 1;
+    const createdAtUnix = input.createdAtUnix || Math.floor(Date.now() / 1000);
+    const deletedAt = revisionCreatedAt(createdAtUnix);
+    const payload = canonicalTombstonePayload({
+      authorNpub: input.authorNpub,
+      baseRevision,
+      deletedAt,
+      folderId: input.folderId,
+      objectId: input.objectId,
+      revision,
+      vaultId: input.vaultId,
+    });
+    const eventTemplate = {
+      kind: APP_EVENT_KIND,
+      created_at: createdAtUnix,
+      tags: tombstoneTags({
+        folderId: input.folderId,
+        objectId: input.objectId,
+        revision,
+        vaultId: input.vaultId,
+      }),
+      content: payload,
+    };
+    const tombstoneEvent = await input.signEvent(eventTemplate);
+    return {
+      baseRevision,
+      tombstoneEvent,
     };
   }
 
@@ -1922,13 +1983,14 @@ const FiniteBrainProductClient = (() => {
     if (target.type === "page") {
       return [
         { action: "open-page", label: "Open Page" },
+        { action: "edit-page", label: "Edit Page" },
         { action: "new-page", label: "New Page in Folder" },
         { action: "open-graph", label: "Show in Graph View" },
         { separator: true },
         { action: "copy-page-id", label: "Copy Page ID" },
         { action: "copy-folder-id", label: "Copy Folder ID" },
         { separator: true },
-        { action: "delete-page", label: "Delete Page", disabled: true, danger: true },
+        { action: "delete-page", label: "Delete Page", disabled: false, danger: true },
       ];
     }
     return [
@@ -2037,6 +2099,48 @@ const FiniteBrainProductClient = (() => {
     log("Started a new Page draft.", { folderId, objectId });
     render();
     openEditorDrawerAndFocus();
+  }
+
+  function pageFromContextTarget(target) {
+    if (!target || target.type !== "page") return null;
+    const key = target.pageKey || pageKey(target.folderId, target.objectId);
+    return projectionPages().find((page) => page.key === key) || null;
+  }
+
+  async function deletePageFromContextTarget(target) {
+    const page = pageFromContextTarget(target);
+    if (!page || !isReadablePage(page)) throw new Error("Select a readable Page before deleting");
+    if (!page.revision) throw new Error("Page delete requires a saved revision");
+    if (state.signerStatus !== "connected") throw new Error("Connect a NIP-07 signer before deleting");
+    const title = pageTitleForPage(page);
+    if (window.confirm && !window.confirm(`Delete "${title}"? This writes a signed tombstone.`)) return;
+    const body = await buildPageDeleteRequest({
+      authorNpub: currentActorNpub(),
+      baseRevision: page.revision,
+      folderId: page.folderId,
+      objectId: page.objectId,
+      signEvent: (event) => window.nostr.signEvent(event),
+      vaultId: state.activeVaultId,
+    });
+    const route = `/_admin/vaults/${encodeURIComponent(state.activeVaultId)}/folders/${encodeURIComponent(
+      page.folderId
+    )}/objects/${encodeURIComponent(page.objectId)}`;
+    const result = await protectedRequest(route, {
+      method: "DELETE",
+      body: JSON.stringify(body),
+    });
+    const key = page.key || pageKey(page.folderId, page.objectId);
+    state.projection.pages.delete(key);
+    state.projection.localDrafts.delete(key);
+    if (state.selectedPageKey === key) state.selectedPageKey = null;
+    selectDefaultReaderTargets();
+    log("Deleted Page through signed tombstone.", {
+      folderId: page.folderId,
+      objectId: page.objectId,
+      revision: result.revision,
+      sequence: result.sequence,
+    });
+    render();
   }
 
   function selectReaderFolder(folderId, options = {}) {
@@ -2703,6 +2807,11 @@ const FiniteBrainProductClient = (() => {
       selectReaderPage(target.pageKey);
       return;
     }
+    if (item.action === "edit-page") {
+      selectReaderPage(target.pageKey);
+      openEditorDrawerAndFocus();
+      return;
+    }
     if (item.action === "new-page") {
       startNewPageDraft(target.folderId);
       return;
@@ -2729,6 +2838,15 @@ const FiniteBrainProductClient = (() => {
     if (item.action === "copy-folder-id") {
       writeClipboard(target.folderId).catch(() => {});
       log("Copied Folder ID.", { folderId: target.folderId });
+      return;
+    }
+    if (item.action === "delete-page") {
+      deletePageFromContextTarget(target).catch((error) => {
+        state.lastError = error.message;
+        window.alert?.(error.message);
+        log("Failed to delete Page.", { error: error.message });
+        render();
+      });
       return;
     }
     const accessRoute = accessActionRoute(item.action, target);
@@ -4578,6 +4696,7 @@ const FiniteBrainProductClient = (() => {
     adminAccessChangeTags,
     buildAdminAccessChangeEvent,
     buildFolderKeyGrantRequest,
+    buildPageDeleteRequest,
     buildPageWriteRequest,
     buildAuthEventTemplate,
     buildFolderAccessRemovalRequest,

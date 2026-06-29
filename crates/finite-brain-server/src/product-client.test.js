@@ -584,6 +584,35 @@ assert.equal(client.readerPageRows("general", draftPages)[0].label, "Draft Page"
   assert.match(write.revisionEvent.content, /finite-folder-object-revision-v1/);
   assert.match(write.revisionEvent.content, /ciphertextHash/);
 
+  const deleteRequest = await client.buildPageDeleteRequest({
+    authorNpub,
+    baseRevision: 3,
+    createdAtUnix: 1780000002,
+    folderId: "general",
+    objectId: "obj_000000000001",
+    signEvent: async (template) => ({
+      ...template,
+      id: "tombstone-event-id",
+      pubkey: "00".repeat(32),
+      sig: "tombstone-signature",
+    }),
+    vaultId: "smoke",
+  });
+  assert.equal(deleteRequest.baseRevision, 3);
+  assert.equal(deleteRequest.tombstoneEvent.kind, 30078);
+  assert.equal(
+    JSON.stringify(deleteRequest.tombstoneEvent.tags),
+    JSON.stringify([
+      ["d", "finite-folder-object-tombstone:smoke:general:obj_000000000001:4"],
+      ["vault", "smoke"],
+      ["folder", "general"],
+      ["object", "obj_000000000001"],
+      ["operation", "delete"],
+    ])
+  );
+  assert.match(deleteRequest.tombstoneEvent.content, /finite-folder-object-tombstone-v1/);
+  assert.match(deleteRequest.tombstoneEvent.content, /"baseRevision":3/);
+
   const openedPage = await client.openFolderObject(keyring, {
     vaultId: "smoke",
     folderId: "general",
@@ -904,7 +933,8 @@ assert.equal(client.readerPageRows("general", draftPages)[0].label, "Draft Page"
     objectId: "page-a",
   });
   assert.equal(pageMenu.some((item) => item.action === "open-graph"), true);
-  assert.equal(pageMenu.find((item) => item.action === "delete-page").disabled, true);
+  assert.equal(pageMenu.some((item) => item.action === "edit-page"), true);
+  assert.equal(pageMenu.find((item) => item.action === "delete-page").disabled, false);
   const readerPages = client.readerPageRows("general", openedSync.objects);
   assert.equal(readerPages[0].label, "Hello");
   assert.equal(readerPages[0].detail, "obj_000000000001.md");
