@@ -1092,6 +1092,30 @@ assert.equal(client.readerPageRows("general", draftPages)[0].label, "Draft Page"
     ])
   );
   assert.equal(
+    JSON.stringify(client.markdownPreviewBlocks(
+      [
+        "```bash",
+        "",
+        "  hermes doctor",
+        "",
+        "",
+        "```",
+      ].join("\n")
+    )),
+    JSON.stringify([{ language: "bash", text: "hermes doctor", type: "code" }])
+  );
+  assert.equal(
+    JSON.stringify(client.markdownPreviewBlocks(
+      [
+        "```python",
+        "    if ready:",
+        "        ship()",
+        "```",
+      ].join("\n")
+    )),
+    JSON.stringify([{ language: "python", text: "if ready:\n    ship()", type: "code" }])
+  );
+  assert.equal(
     client.markdownFromEditorElement(
       elementNode("div", [
         elementNode("h1", [textNode("Draft Title")]),
@@ -1128,7 +1152,7 @@ assert.equal(client.readerPageRows("general", draftPages)[0].label, "Draft Page"
         elementNode("blockquote", [textNode("Keep it simple")]),
         elementNode("pre", [], {
           dataset: { language: "js" },
-          textContent: "const ok = true;",
+          textContent: "\n  const ok = true;\n\n",
         }),
         elementNode("table", [
           elementNode("thead", [

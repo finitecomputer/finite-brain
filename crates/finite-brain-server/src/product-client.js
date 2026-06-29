@@ -1107,6 +1107,25 @@ const FiniteBrainProductClient = (() => {
     return Array.from({ length: width }, (_, index) => String(cells[index] || "").trim());
   }
 
+  function normalizeCodeBlockText(value) {
+    let lines = Array.isArray(value)
+      ? value.map((line) => String(line || ""))
+      : String(value || "").replace(/\r\n/g, "\n").split("\n");
+    while (lines.length && !lines[0].trim()) lines.shift();
+    while (lines.length && !lines[lines.length - 1].trim()) lines.pop();
+    const indentedLines = lines.filter((line) => line.trim()).map((line) => line.match(/^[ \t]*/)?.[0] || "");
+    if (indentedLines.length && indentedLines.every((indent) => indent.length > 0)) {
+      let sharedIndent = indentedLines[0];
+      for (const indent of indentedLines.slice(1)) {
+        while (sharedIndent && !indent.startsWith(sharedIndent)) sharedIndent = sharedIndent.slice(0, -1);
+      }
+      if (sharedIndent) {
+        lines = lines.map((line) => (line.startsWith(sharedIndent) ? line.slice(sharedIndent.length) : line));
+      }
+    }
+    return lines.join("\n");
+  }
+
   function markdownPreviewBlocks(markdown) {
     const lines = String(markdown || "").replace(/\r\n/g, "\n").split("\n");
     const blocks = [];
@@ -1136,7 +1155,7 @@ const FiniteBrainProductClient = (() => {
           code.push(lines[index]);
           index += 1;
         }
-        blocks.push({ language, text: code.join("\n"), type: "code" });
+        blocks.push({ language, text: normalizeCodeBlockText(code), type: "code" });
         continue;
       }
       const heading = trimmed.match(/^(#{1,6})\s+(.+?)\s*#*$/);
@@ -2697,7 +2716,7 @@ const FiniteBrainProductClient = (() => {
         .join("\n");
     }
     if (tag === "pre") {
-      const code = String(node.textContent || "").replace(/\n$/g, "");
+      const code = normalizeCodeBlockText(String(node.textContent || "").replace(/\n$/g, ""));
       const language = String(node.dataset?.language || node.getAttribute?.("data-language") || "").trim();
       return `\`\`\`${language}\n${code}\n\`\`\``;
     }
