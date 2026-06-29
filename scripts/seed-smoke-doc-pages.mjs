@@ -1267,7 +1267,7 @@ async function main() {
       sqliteValue(
         `SELECT COALESCE(MAX(sequence), 0)
          FROM vault_record_index
-         WHERE vault_id = ${sqlQuote(vaultId)} AND object_id NOT IN (${quotedIds});`
+         WHERE vault_id = ${sqlQuote(vaultId)};`
       )
     );
 
