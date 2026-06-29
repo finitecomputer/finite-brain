@@ -308,8 +308,8 @@ label,
 
 .editor-toolbar button {
   flex: 0 0 auto;
-  min-width: 32px;
-  min-height: 30px;
+  min-width: 40px;
+  min-height: 40px;
   border-radius: 5px;
   background: transparent;
   color: #b9b9b9;
@@ -1561,6 +1561,7 @@ pre {
 }
 
 .note-markdown > * {
+  width: min(100%, 760px);
   max-width: 760px;
   margin-right: auto;
   margin-left: auto;
@@ -1590,6 +1591,7 @@ pre {
 }
 
 .note-markdown p,
+.note-markdown div,
 .note-markdown ul,
 .note-markdown blockquote,
 .note-markdown pre {
