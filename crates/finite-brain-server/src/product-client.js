@@ -1042,6 +1042,71 @@ const FiniteBrainProductClient = (() => {
     return segments.filter((segment) => segment.text || segment.target);
   }
 
+  function splitMarkdownTableRow(line) {
+    let source = String(line || "").trim();
+    if (!source.includes("|")) return null;
+    if (source.startsWith("|")) source = source.slice(1);
+    if (source.endsWith("|")) source = source.slice(0, -1);
+    const cells = [];
+    let cell = "";
+    let escaped = false;
+    for (const char of source) {
+      if (char === "\\" && !escaped) {
+        escaped = true;
+        cell += char;
+        continue;
+      }
+      if (char === "|" && !escaped) {
+        cells.push(cell.trim().replaceAll("\\|", "|"));
+        cell = "";
+        continue;
+      }
+      escaped = false;
+      cell += char;
+    }
+    cells.push(cell.trim().replaceAll("\\|", "|"));
+    return cells.length > 1 ? cells : null;
+  }
+
+  function tableDelimiterAlignments(cells) {
+    const alignments = [];
+    for (const cell of cells || []) {
+      const value = String(cell || "").trim();
+      if (!/^:?-{3,}:?$/.test(value)) return null;
+      if (value.startsWith(":") && value.endsWith(":")) alignments.push("center");
+      else if (value.endsWith(":")) alignments.push("right");
+      else if (value.startsWith(":")) alignments.push("left");
+      else alignments.push("");
+    }
+    return alignments.length ? alignments : null;
+  }
+
+  function parseMarkdownListItem(line) {
+    const trimmed = String(line || "").trim();
+    const ordered = trimmed.match(/^(\d+)[.)]\s+(.+)$/);
+    if (ordered) {
+      return {
+        checked: null,
+        ordered: true,
+        start: Number(ordered[1]) || 1,
+        text: ordered[2].trim(),
+      };
+    }
+    const unordered = trimmed.match(/^[-*+]\s+(.+)$/);
+    if (!unordered) return null;
+    const task = unordered[1].match(/^\[([ xX])\]\s+(.+)$/);
+    return {
+      checked: task ? task[1].toLowerCase() === "x" : null,
+      ordered: false,
+      start: null,
+      text: (task ? task[2] : unordered[1]).trim(),
+    };
+  }
+
+  function normalizeMarkdownTableRow(cells, width) {
+    return Array.from({ length: width }, (_, index) => String(cells[index] || "").trim());
+  }
+
   function markdownPreviewBlocks(markdown) {
     const lines = String(markdown || "").replace(/\r\n/g, "\n").split("\n");
     const blocks = [];
@@ -1060,32 +1125,67 @@ const FiniteBrainProductClient = (() => {
         flushParagraph();
         continue;
       }
-      if (/^```/.test(trimmed)) {
+      const fence = trimmed.match(/^(```|~~~)\s*([A-Za-z0-9_+.#-]+)?\s*$/);
+      if (fence) {
         flushParagraph();
         const code = [];
+        const fenceMarker = fence[1];
+        const language = fence[2] || "";
         index += 1;
-        while (index < lines.length && !/^```/.test(lines[index].trim())) {
+        while (index < lines.length && !lines[index].trim().startsWith(fenceMarker)) {
           code.push(lines[index]);
           index += 1;
         }
-        blocks.push({ text: code.join("\n"), type: "code" });
+        blocks.push({ language, text: code.join("\n"), type: "code" });
         continue;
       }
-      const heading = trimmed.match(/^(#{1,3})\s+(.+)$/);
+      const heading = trimmed.match(/^(#{1,6})\s+(.+?)\s*#*$/);
       if (heading) {
         flushParagraph();
         blocks.push({ level: heading[1].length, text: heading[2].trim(), type: "heading" });
         continue;
       }
-      if (/^[-*]\s+/.test(trimmed)) {
+      const headerCells = splitMarkdownTableRow(trimmed);
+      const delimiterCells = splitMarkdownTableRow(lines[index + 1] || "");
+      const tableAlignments = tableDelimiterAlignments(delimiterCells);
+      if (headerCells && tableAlignments && headerCells.length === tableAlignments.length) {
         flushParagraph();
-        const items = [];
-        while (index < lines.length && /^[-*]\s+/.test(lines[index].trim())) {
-          items.push(lines[index].trim().replace(/^[-*]\s+/, ""));
+        const width = headerCells.length;
+        const rows = [];
+        index += 2;
+        while (index < lines.length) {
+          const rowCells = splitMarkdownTableRow(lines[index]);
+          if (!rowCells) break;
+          rows.push(normalizeMarkdownTableRow(rowCells, width));
           index += 1;
         }
         index -= 1;
-        blocks.push({ items, type: "list" });
+        blocks.push({
+          alignments: tableAlignments,
+          headers: normalizeMarkdownTableRow(headerCells, width),
+          rows,
+          type: "table",
+        });
+        continue;
+      }
+      const listItem = parseMarkdownListItem(trimmed);
+      if (listItem) {
+        flushParagraph();
+        const ordered = listItem.ordered;
+        const items = [];
+        let start = listItem.start;
+        while (index < lines.length) {
+          const item = parseMarkdownListItem(lines[index]);
+          if (!item || item.ordered !== ordered) break;
+          if (start === null) start = item.start;
+          items.push({
+            checked: item.checked,
+            text: item.text,
+          });
+          index += 1;
+        }
+        index -= 1;
+        blocks.push({ items, ordered, start, type: "list" });
         continue;
       }
       if (/^>\s?/.test(trimmed)) {
@@ -1099,7 +1199,7 @@ const FiniteBrainProductClient = (() => {
         blocks.push({ text: quotes.join(" "), type: "quote" });
         continue;
       }
-      if (/^---+$/.test(trimmed)) {
+      if (/^([-*_])(?:\s*\1){2,}$/.test(trimmed)) {
         flushParagraph();
         blocks.push({ type: "rule" });
         continue;
@@ -2355,7 +2455,7 @@ const FiniteBrainProductClient = (() => {
 
   function appendFormattedText(parent, text) {
     const source = String(text || "");
-    const pattern = /`([^`]+)`|\*\*([^*]+)\*\*|__([^_]+)__|\*([^*]+)\*|_([^_]+)_/g;
+    const pattern = /`([^`]+)`|\*\*([^*]+)\*\*|__([^_]+)__|~~([^~]+)~~|\*([^*]+)\*|_([^_]+)_/g;
     let cursor = 0;
     for (const match of source.matchAll(pattern)) {
       if (match.index > cursor) {
@@ -2369,9 +2469,13 @@ const FiniteBrainProductClient = (() => {
         const strong = document.createElement("strong");
         strong.textContent = match[2] || match[3];
         parent.appendChild(strong);
-      } else if (match[4] || match[5]) {
+      } else if (match[4]) {
+        const strike = document.createElement("del");
+        strike.textContent = match[4];
+        parent.appendChild(strike);
+      } else if (match[5] || match[6]) {
         const emphasis = document.createElement("em");
-        emphasis.textContent = match[4] || match[5];
+        emphasis.textContent = match[5] || match[6];
         parent.appendChild(emphasis);
       }
       cursor = match.index + match[0].length;
@@ -2403,10 +2507,22 @@ const FiniteBrainProductClient = (() => {
         continue;
       }
       if (block.type === "list") {
-        const list = document.createElement("ul");
-        for (const itemText of block.items) {
+        const list = document.createElement(block.ordered ? "ol" : "ul");
+        if (block.ordered && block.start && block.start !== 1) list.start = block.start;
+        if (!block.ordered && block.items.some((item) => item.checked !== null)) {
+          list.className = "task-list";
+        }
+        for (const itemBlock of block.items) {
           const item = document.createElement("li");
-          appendInlineSegments(item, itemText);
+          if (itemBlock.checked !== null) {
+            item.className = "task-list-item";
+            const checkbox = document.createElement("input");
+            checkbox.type = "checkbox";
+            checkbox.checked = Boolean(itemBlock.checked);
+            checkbox.disabled = true;
+            item.appendChild(checkbox);
+          }
+          appendInlineSegments(item, itemBlock.text);
           list.appendChild(item);
         }
         container.appendChild(list);
@@ -2420,10 +2536,43 @@ const FiniteBrainProductClient = (() => {
       }
       if (block.type === "code") {
         const pre = document.createElement("pre");
+        pre.className = "code-block";
+        if (block.language) {
+          pre.dataset.language = block.language;
+          pre.setAttribute?.("data-language", block.language);
+        }
         const code = document.createElement("code");
+        if (block.language) code.className = `language-${block.language}`;
         code.textContent = block.text;
         pre.appendChild(code);
         container.appendChild(pre);
+        continue;
+      }
+      if (block.type === "table") {
+        const table = document.createElement("table");
+        const thead = document.createElement("thead");
+        const headerRow = document.createElement("tr");
+        block.headers.forEach((header, index) => {
+          const cell = document.createElement("th");
+          if (block.alignments[index] && cell.style) cell.style.textAlign = block.alignments[index];
+          appendInlineSegments(cell, header);
+          headerRow.appendChild(cell);
+        });
+        thead.appendChild(headerRow);
+        table.appendChild(thead);
+        const tbody = document.createElement("tbody");
+        for (const row of block.rows) {
+          const tableRow = document.createElement("tr");
+          row.forEach((value, index) => {
+            const cell = document.createElement("td");
+            if (block.alignments[index] && cell.style) cell.style.textAlign = block.alignments[index];
+            appendInlineSegments(cell, value);
+            tableRow.appendChild(cell);
+          });
+          tbody.appendChild(tableRow);
+        }
+        table.appendChild(tbody);
+        container.appendChild(table);
         continue;
       }
       if (block.type === "rule") {
@@ -2455,10 +2604,12 @@ const FiniteBrainProductClient = (() => {
     if (node.nodeType !== 1) return "";
     const tag = String(node.tagName || "").toLowerCase();
     if (tag === "br") return "\n";
+    if (tag === "input") return "";
     const text = Array.from(node.childNodes || []).map(inlineMarkdownFromEditorNode).join("");
     if (!text && tag !== "img") return "";
     if (tag === "strong" || tag === "b") return `**${text}**`;
     if (tag === "em" || tag === "i") return `*${text}*`;
+    if (tag === "del" || tag === "s") return `~~${text}~~`;
     if (tag === "code") return `\`${escapeMarkdownCode(text)}\``;
     if (tag === "a") {
       const target = node.getAttribute?.("href") || node.dataset?.target || "";
@@ -2476,6 +2627,44 @@ const FiniteBrainProductClient = (() => {
     return text;
   }
 
+  function markdownTableCellFromNode(node) {
+    return inlineMarkdownFromEditorNode(node)
+      .replace(/\n+/g, " ")
+      .replaceAll("|", "\\|")
+      .trim();
+  }
+
+  function tableRowsFromSection(section, cellTag) {
+    const rows = [];
+    for (const row of Array.from(section?.children || [])) {
+      const cells = Array.from(row.children || []).filter(
+        (cell) => String(cell.tagName || "").toLowerCase() === cellTag
+      );
+      if (cells.length) rows.push(cells.map(markdownTableCellFromNode));
+    }
+    return rows;
+  }
+
+  function tableMarkdownFromEditorNode(node) {
+    const sections = Array.from(node.children || []);
+    const head = sections.find((child) => String(child.tagName || "").toLowerCase() === "thead");
+    const body = sections.find((child) => String(child.tagName || "").toLowerCase() === "tbody");
+    let headers = tableRowsFromSection(head, "th")[0] || [];
+    let rows = tableRowsFromSection(body, "td");
+    if (!headers.length && rows.length) {
+      headers = rows.shift();
+    }
+    if (!headers.length) return "";
+    const width = Math.max(headers.length, ...rows.map((row) => row.length));
+    const paddedHeaders = normalizeMarkdownTableRow(headers, width);
+    const paddedRows = rows.map((row) => normalizeMarkdownTableRow(row, width));
+    return [
+      `| ${paddedHeaders.join(" | ")} |`,
+      `| ${Array.from({ length: width }, () => "---").join(" | ")} |`,
+      ...paddedRows.map((row) => `| ${row.join(" | ")} |`),
+    ].join("\n");
+  }
+
   function editorBlockMarkdown(node) {
     if (!node) return "";
     if (node.nodeType === 3) return String(node.nodeValue || "").trim();
@@ -2487,8 +2676,16 @@ const FiniteBrainProductClient = (() => {
     if (tag === "ul" || tag === "ol") {
       return Array.from(node.children || [])
         .filter((child) => String(child.tagName || "").toLowerCase() === "li")
-        .map((child) => `- ${inlineMarkdownFromEditorNode(child).trim()}`)
-        .filter((line) => line.trim() !== "-")
+        .map((child, index) => {
+          const checkbox = Array.from(child.children || []).find(
+            (candidate) => String(candidate.tagName || "").toLowerCase() === "input"
+          );
+          const text = inlineMarkdownFromEditorNode(child).trim();
+          if (!text) return "";
+          if (checkbox) return `- [${checkbox.checked ? "x" : " "}] ${text}`;
+          return tag === "ol" ? `${index + 1}. ${text}` : `- ${text}`;
+        })
+        .filter(Boolean)
         .join("\n");
     }
     if (tag === "blockquote") {
@@ -2501,8 +2698,10 @@ const FiniteBrainProductClient = (() => {
     }
     if (tag === "pre") {
       const code = String(node.textContent || "").replace(/\n$/g, "");
-      return `\`\`\`\n${code}\n\`\`\``;
+      const language = String(node.dataset?.language || node.getAttribute?.("data-language") || "").trim();
+      return `\`\`\`${language}\n${code}\n\`\`\``;
     }
+    if (tag === "table") return tableMarkdownFromEditorNode(node);
     if (tag === "hr") return "---";
     return inlineMarkdownFromEditorNode(node).trim();
   }

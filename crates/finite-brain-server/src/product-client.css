@@ -1569,11 +1569,15 @@ pre {
 
 .note-markdown h1,
 .note-markdown h2,
-.note-markdown h3 {
+.note-markdown h3,
+.note-markdown h4,
+.note-markdown h5,
+.note-markdown h6 {
   margin: 0 0 12px;
   color: #f0f0f0;
   font-weight: 760;
   line-height: 1.25;
+  text-wrap: balance;
 }
 
 .note-markdown h1 {
@@ -1590,18 +1594,52 @@ pre {
   font-size: 17px;
 }
 
+.note-markdown h4,
+.note-markdown h5,
+.note-markdown h6 {
+  margin-top: 16px;
+  font-size: 15px;
+}
+
 .note-markdown p,
 .note-markdown div,
 .note-markdown ul,
+.note-markdown ol,
 .note-markdown blockquote,
-.note-markdown pre {
+.note-markdown pre,
+.note-markdown table {
   margin: 0 0 14px;
 }
 
-.note-markdown ul {
+.note-markdown p,
+.note-markdown li {
+  text-wrap: pretty;
+}
+
+.note-markdown ul,
+.note-markdown ol {
   display: grid;
   gap: 6px;
   padding-left: 24px;
+}
+
+.note-markdown .task-list {
+  padding-left: 0;
+  list-style: none;
+}
+
+.note-markdown .task-list-item {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr);
+  gap: 8px;
+  align-items: start;
+}
+
+.note-markdown .task-list-item input {
+  width: 14px;
+  height: 14px;
+  margin: 5px 0 0;
+  accent-color: var(--green);
 }
 
 .note-markdown blockquote {
@@ -1620,6 +1658,7 @@ pre {
 }
 
 .note-markdown pre {
+  position: relative;
   overflow: auto;
   border: 1px solid #343a46;
   border-radius: 7px;
@@ -1627,10 +1666,53 @@ pre {
   padding: 12px;
 }
 
+.note-markdown pre[data-language] {
+  padding-top: 34px;
+}
+
+.note-markdown pre[data-language]::before {
+  position: absolute;
+  top: 8px;
+  right: 10px;
+  color: #8f97a6;
+  content: attr(data-language);
+  font: 11px/1 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  letter-spacing: 0;
+  text-transform: uppercase;
+}
+
 .note-markdown pre code {
   border: 0;
   background: transparent;
   padding: 0;
+}
+
+.note-markdown table {
+  display: table;
+  overflow: hidden;
+  border-collapse: collapse;
+  border: 1px solid #343a46;
+  border-radius: 7px;
+  background: #1c1f25;
+  font-size: 14px;
+}
+
+.note-markdown th,
+.note-markdown td {
+  border-bottom: 1px solid #343a46;
+  padding: 8px 10px;
+  text-align: left;
+  vertical-align: top;
+}
+
+.note-markdown th {
+  background: #232832;
+  color: #f0f0f0;
+  font-weight: 760;
+}
+
+.note-markdown tr:last-child td {
+  border-bottom: 0;
 }
 
 .note-markdown hr {

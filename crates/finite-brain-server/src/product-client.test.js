@@ -73,9 +73,12 @@ function elementNode(tagName, children = [], attributes = {}) {
     tagName: tagName.toUpperCase(),
     childNodes: children,
     children: children.filter((child) => child.nodeType === 1),
+    checked: Boolean(attributes.checked),
     className: attributes.className || "",
     dataset: attributes.dataset || {},
+    style: attributes.style || {},
     textContent: attributes.textContent ?? children.map(nodeTextContent).join(""),
+    type: attributes.type || "",
     getAttribute(name) {
       return attributes[name] || null;
     },
@@ -1037,12 +1040,55 @@ assert.equal(client.readerPageRows("general", draftPages)[0].label, "Draft Page"
     ])
   );
   assert.equal(
-    JSON.stringify(client.markdownPreviewBlocks("# Title\n\n- One\n- Two\n\n> Note\n\n```js\nconst ok = true;\n```")),
+    JSON.stringify(client.markdownPreviewBlocks(
+      [
+        "# Title",
+        "",
+        "- One",
+        "- [x] Done",
+        "",
+        "1. First",
+        "2. Second",
+        "",
+        "> Note",
+        "",
+        "| Name | Status |",
+        "| --- | :---: |",
+        "| Brain | **ready** |",
+        "",
+        "```js",
+        "const ok = true;",
+        "```",
+      ].join("\n")
+    )),
     JSON.stringify([
       { level: 1, text: "Title", type: "heading" },
-      { items: ["One", "Two"], type: "list" },
+      {
+        items: [
+          { checked: null, text: "One" },
+          { checked: true, text: "Done" },
+        ],
+        ordered: false,
+        start: null,
+        type: "list",
+      },
+      {
+        items: [
+          { checked: null, text: "First" },
+          { checked: null, text: "Second" },
+        ],
+        ordered: true,
+        start: 1,
+        type: "list",
+      },
       { text: "Note", type: "quote" },
-      { text: "const ok = true;", type: "code" },
+      {
+        alignments: ["", "center"],
+        headers: ["Name", "Status"],
+        rows: [["Brain", "**ready**"]],
+        type: "table",
+      },
+      { language: "js", text: "const ok = true;", type: "code" },
     ])
   );
   assert.equal(
@@ -1061,23 +1107,55 @@ assert.equal(client.readerPageRows("general", draftPages)[0].label, "Draft Page"
             className: "internal-link",
             dataset: { target: "roadmap" },
           }),
+          textNode(", not "),
+          elementNode("del", [textNode("stale")]),
           textNode("."),
         ]),
         elementNode("ul", [
           elementNode("li", [textNode("First")]),
           elementNode("li", [textNode("Second")]),
         ]),
+        elementNode("ol", [
+          elementNode("li", [textNode("Plan")]),
+          elementNode("li", [textNode("Ship")]),
+        ]),
+        elementNode("ul", [
+          elementNode("li", [
+            elementNode("input", [], { checked: true, type: "checkbox" }),
+            textNode("Verified"),
+          ]),
+        ]),
         elementNode("blockquote", [textNode("Keep it simple")]),
-        elementNode("pre", [], { textContent: "const ok = true;" }),
+        elementNode("pre", [], {
+          dataset: { language: "js" },
+          textContent: "const ok = true;",
+        }),
+        elementNode("table", [
+          elementNode("thead", [
+            elementNode("tr", [
+              elementNode("th", [textNode("Name")]),
+              elementNode("th", [textNode("Status")]),
+            ]),
+          ]),
+          elementNode("tbody", [
+            elementNode("tr", [
+              elementNode("td", [textNode("Brain")]),
+              elementNode("td", [elementNode("strong", [textNode("ready")])]),
+            ]),
+          ]),
+        ]),
         elementNode("hr"),
       ])
     ),
     [
       "# Draft Title",
-      "Write **bold**, *soft*, `local`, and [[roadmap|Roadmap]].",
+      "Write **bold**, *soft*, `local`, and [[roadmap|Roadmap]], not ~~stale~~.",
       "- First\n- Second",
+      "1. Plan\n2. Ship",
+      "- [x] Verified",
       "> Keep it simple",
-      "```\nconst ok = true;\n```",
+      "```js\nconst ok = true;\n```",
+      "| Name | Status |\n| --- | --- |\n| Brain | **ready** |",
       "---",
     ].join("\n\n")
   );
