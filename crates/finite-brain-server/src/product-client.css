@@ -932,7 +932,7 @@ pre {
 
 .sidebar-tool-panel {
   display: grid;
-  grid-template-rows: auto auto minmax(0, 1fr);
+  grid-template-rows: auto auto auto minmax(0, 1fr);
   gap: 8px;
   overflow: hidden;
   padding: 8px 0;
@@ -957,9 +957,9 @@ pre {
   display: grid;
   gap: 8px;
   margin: 0 10px;
-  border: 1px solid #383838;
-  border-radius: 7px;
+  border-radius: 10px;
   background: #202020;
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.08);
   padding: 10px;
 }
 
@@ -990,10 +990,27 @@ pre {
   flex-wrap: wrap;
 }
 
+.access-action-row[hidden] {
+  display: none;
+}
+
 .access-action-row button {
-  min-height: 28px;
-  border-radius: 5px;
-  padding: 4px 9px;
+  min-height: 32px;
+  border-radius: 7px;
+  padding: 5px 10px;
+  transition-property: background-color, border-color, color, transform;
+  transition-duration: 140ms;
+  transition-timing-function: ease-out;
+}
+
+.access-action-row button:not(:disabled):active {
+  transform: scale(0.96);
+}
+
+.access-action-row button.active {
+  border-color: rgba(123, 92, 255, 0.7);
+  background: rgba(123, 92, 255, 0.16);
+  color: #f3f0ff;
 }
 
 .access-action-row .danger-action {
@@ -1010,8 +1027,7 @@ pre {
 .access-flow-panel {
   display: grid;
   gap: 8px;
-  border-top: 1px solid #333333;
-  padding-top: 8px;
+  padding-top: 2px;
 }
 
 .access-flow-panel[hidden] {
@@ -1024,6 +1040,12 @@ pre {
   color: #a8a8a8;
   font-size: 11px;
   font-weight: 750;
+}
+
+.access-recipient-field {
+  border-radius: 8px;
+  background: #1a1a1a;
+  padding: 8px;
 }
 
 .access-field input {
@@ -1055,13 +1077,116 @@ pre {
   color: #888888;
   font-size: 11px;
   line-height: 1.35;
+  text-wrap: pretty;
+}
+
+.access-section {
+  display: block;
+  margin: 0 10px;
+  overflow: hidden;
+  border-radius: 10px;
+  background: #1f1f1f;
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.07);
+}
+
+.access-inspector .access-section {
+  margin: 0;
+  border-radius: 8px;
+  background: #1a1a1a;
+}
+
+.access-section summary {
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  min-height: 40px;
+  cursor: pointer;
+  list-style: none;
+  padding: 8px 10px 8px 28px;
+  color: #e2e2e2;
+  font-size: 12px;
+  font-weight: 780;
+  text-wrap: balance;
+}
+
+.access-section summary::-webkit-details-marker {
+  display: none;
+}
+
+.access-section summary::before {
+  position: absolute;
+  top: 50%;
+  left: 11px;
+  color: #9d9d9d;
+  content: "›";
+  font-size: 15px;
+  line-height: 1;
+  transform: translateY(-50%);
+  transition-property: transform, color;
+  transition-duration: 140ms;
+  transition-timing-function: ease-out;
+}
+
+.access-section[open] summary::before {
+  color: var(--green);
+  transform: translateY(-50%) rotate(90deg);
+}
+
+.access-section summary small {
+  min-width: 0;
+  overflow: hidden;
+  color: #929292;
+  font-size: 10px;
+  font-weight: 650;
+  line-height: 1.2;
+  text-align: right;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.access-section[open] summary {
+  box-shadow: inset 0 -1px 0 rgba(255, 255, 255, 0.07);
+}
+
+.access-section-body,
+.access-section > label,
+.access-section > .access-action-row {
+  margin: 8px;
+}
+
+.access-section > label + label,
+.access-section > label + .access-action-row,
+.access-section > .access-action-row + label,
+.access-section-body > label + label,
+.access-section-body > label + .access-action-row,
+.access-section-body > .access-action-row + label {
+  margin-top: 8px;
+}
+
+.access-vault-section {
+  flex-shrink: 0;
+}
+
+.access-folder-browser {
+  min-height: 0;
+}
+
+.access-folder-browser[open] {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+}
+
+.access-folder-browser .access-list {
+  min-height: 0;
 }
 
 .access-result {
   overflow-wrap: anywhere;
-  border: 1px solid #3a3a3a;
-  border-radius: 6px;
+  border-radius: 8px;
   background: #181818;
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.08);
   color: #cfcfcf;
   font-size: 11px;
   line-height: 1.4;
@@ -1069,15 +1194,15 @@ pre {
 }
 
 .access-result.ready {
-  border-color: rgba(69, 212, 131, 0.45);
+  box-shadow: 0 0 0 1px rgba(69, 212, 131, 0.45);
 }
 
 .access-result.warn {
-  border-color: rgba(242, 189, 92, 0.52);
+  box-shadow: 0 0 0 1px rgba(242, 189, 92, 0.52);
 }
 
 .access-result.error {
-  border-color: rgba(244, 109, 117, 0.55);
+  box-shadow: 0 0 0 1px rgba(244, 109, 117, 0.55);
   color: #ffb4b8;
 }
 

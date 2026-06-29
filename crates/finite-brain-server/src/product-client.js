@@ -202,7 +202,8 @@ const FiniteBrainProductClient = (() => {
       };
     }
     const pageDetail = readerFolderDetail(row);
-    if (intent === "share") {
+    const restricted = row.access === "restricted";
+    if (intent === "share" && restricted) {
       return {
         detail: `${pageDetail}. Choose who can see this Folder.`,
         primaryLabel: "Share",
@@ -212,7 +213,7 @@ const FiniteBrainProductClient = (() => {
         tone: "ready",
       };
     }
-    if (intent === "manage") {
+    if (intent === "manage" && restricted) {
       return {
         detail: `${pageDetail}. Review who can open this Folder.`,
         primaryLabel: "Manage",
@@ -3242,19 +3243,19 @@ const FiniteBrainProductClient = (() => {
 
   function renderAccessFlowPanel(activeRow) {
     const intent = state.activeAccessIntent;
-    const flowVisible = Boolean(activeRow && (intent === "manage" || intent === "share"));
     const restricted = activeRow?.access === "restricted";
+    const flowVisible = Boolean(activeRow && restricted && (intent === "manage" || intent === "share"));
     const keyOpen = hasOpenedAccessFolderKey(activeRow);
     const busy = state.accessBusy;
     $("accessFlowPanel").hidden = !flowVisible;
-    $("shareExpiryField").hidden = intent !== "share";
-    $("shareMountField").hidden = intent !== "share";
-    $("shareAcceptField").hidden = intent !== "share";
-    $("grantFolderAccessButton").hidden = intent !== "manage";
-    $("removeFolderAccessButton").hidden = intent !== "manage";
-    $("createShareLinkButton").hidden = intent !== "share";
-    $("acceptShareLinkButton").hidden = intent !== "share";
-    $("revokeShareLinkButton").hidden = intent !== "share";
+    const manageSection = $("accessManageSection");
+    const shareSection = $("accessShareSection");
+    const acceptSection = $("accessAcceptSection");
+    if (manageSection) manageSection.open = flowVisible && intent !== "share";
+    if (shareSection) shareSection.open = flowVisible && intent === "share";
+    if (acceptSection) {
+      acceptSection.open = flowVisible && intent === "share" && Boolean(state.lastShareLinkId || $("accessShareLinkInput").value);
+    }
     if (!$("accessShareExpiresAtInput").value) {
       $("accessShareExpiresAtInput").value = defaultShareExpiryDateTimeLocal();
     }
@@ -3265,18 +3266,16 @@ const FiniteBrainProductClient = (() => {
     $("grantFolderAccessButton").disabled = !canUseFolderFlow;
     $("removeFolderAccessButton").disabled = !canUseFolderFlow;
     $("createShareLinkButton").disabled = !canUseFolderFlow;
-    $("acceptShareLinkButton").disabled = !flowVisible || intent !== "share" || busy || state.signerStatus !== "connected";
-    $("revokeShareLinkButton").disabled = !flowVisible || intent !== "share" || busy || state.signerStatus !== "connected";
+    $("acceptShareLinkButton").disabled = !flowVisible || busy || state.signerStatus !== "connected";
+    $("revokeShareLinkButton").disabled = !flowVisible || busy || state.signerStatus !== "connected";
     if (!flowVisible) {
-      setText("accessFlowHint", "Select a Folder to manage access.");
-    } else if (!restricted) {
-      setText("accessFlowHint", "Sharing is for restricted Folders. Use all-members folders for broad org access.");
+      setText("accessFlowHint", restricted ? "Choose Manage or Share." : "Restricted folders only.");
     } else if (!keyOpen) {
       setText("accessFlowHint", "Open this Folder key before sharing.");
     } else if (intent === "manage") {
-      setText("accessFlowHint", "Grant access to an existing vault member.");
+      setText("accessFlowHint", "Direct access rotates encrypted folder grants.");
     } else {
-      setText("accessFlowHint", "Create a single-use npub-bound link, or accept one while signed in as the recipient.");
+      setText("accessFlowHint", "Links are single-use and bound to the recipient npub.");
     }
     renderAccessResultPanel();
   }
@@ -3320,8 +3319,14 @@ const FiniteBrainProductClient = (() => {
     setText("accessFolderDetail", panel.detail);
     setText("accessManageButton", "Manage");
     setText("accessShareButton", "Share");
-    $("accessManageButton").disabled = !activeRow || state.accessBusy;
-    $("accessShareButton").disabled = !activeRow || state.accessBusy;
+    const restricted = activeRow?.access === "restricted";
+    $("accessIntentActions").hidden = !restricted;
+    $("accessManageButton").disabled = !activeRow || !restricted || state.accessBusy;
+    $("accessShareButton").disabled = !activeRow || !restricted || state.accessBusy;
+    $("accessManageButton").className = state.activeAccessIntent === "manage" ? "active" : "";
+    $("accessShareButton").className = state.activeAccessIntent === "share" ? "active" : "";
+    setPressed("accessManageButton", state.activeAccessIntent === "manage");
+    setPressed("accessShareButton", state.activeAccessIntent === "share");
     renderAccessBadgeRow("accessBadgeRow", accessBadgesForFolder(activeRow, openedFolders));
     renderAccessFlowPanel(activeRow);
     renderVaultInvitationPanel();

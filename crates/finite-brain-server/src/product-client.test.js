@@ -150,6 +150,8 @@ assert.equal(client.accessActionRoute("delete-folder", { folderId: "restricted" 
 assert.equal(client.accessPanelState("share", folderRows[1]).status, "share");
 assert.match(client.accessPanelState("share", folderRows[1]).detail, /Choose who can see/);
 assert.equal(client.accessPanelState("manage", folderRows[1]).title, "Manage Restricted");
+assert.equal(client.accessPanelState("manage", folderRows[0]).title, "General");
+assert.equal(client.accessPanelState("share", folderRows[0]).status, "all members");
 
 const projection = client.createClientProjection();
 projection.localDrafts.set("general/obj_draft", {

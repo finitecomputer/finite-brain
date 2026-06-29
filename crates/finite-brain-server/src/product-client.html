@@ -143,12 +143,12 @@
             </div>
             <div id="accessBadgeRow" class="access-badge-row" aria-label="Folder access badges"></div>
             <p id="accessFolderDetail" class="muted-copy">Load a Vault and select a Folder to inspect access.</p>
-            <div class="access-action-row">
+            <div id="accessIntentActions" class="access-action-row">
               <button id="accessManageButton" type="button">Manage</button>
               <button id="accessShareButton" type="button">Share</button>
             </div>
             <div id="accessFlowPanel" class="access-flow-panel" hidden>
-              <label class="access-field">
+              <label class="access-field access-recipient-field">
                 <span>Target npub</span>
                 <input
                   id="accessTargetNpubInput"
@@ -157,39 +157,66 @@
                   spellcheck="false"
                 />
               </label>
-              <label id="shareExpiryField" class="access-field">
-                <span>Expires</span>
-                <input
-                  id="accessShareExpiresAtInput"
-                  type="datetime-local"
-                  autocomplete="off"
-                />
-              </label>
-              <label id="shareMountField" class="access-checkbox">
-                <input id="accessShareMountInput" type="checkbox" />
-                <span>Create personal mount on accept</span>
-              </label>
-              <div class="access-action-row">
-                <button id="grantFolderAccessButton" type="button">Grant access</button>
-                <button id="removeFolderAccessButton" class="danger-action" type="button">Remove access</button>
-                <button id="createShareLinkButton" type="button">Create link</button>
-              </div>
-              <label id="shareAcceptField" class="access-field">
-                <span>Accept share link</span>
-                <input
-                  id="accessShareLinkInput"
-                  placeholder="share-link-..."
-                  autocomplete="off"
-                  spellcheck="false"
-                />
-              </label>
-              <div class="access-action-row">
-                <button id="acceptShareLinkButton" type="button">Accept link</button>
-                <button id="revokeShareLinkButton" type="button">Revoke link</button>
-              </div>
+              <details id="accessManageSection" class="access-section">
+                <summary>
+                  <span>Direct access</span>
+                  <small>Grant or remove one npub</small>
+                </summary>
+                <div class="access-action-row">
+                  <button id="grantFolderAccessButton" type="button">Grant</button>
+                  <button id="removeFolderAccessButton" class="danger-action" type="button">Remove</button>
+                </div>
+              </details>
+              <details id="accessShareSection" class="access-section">
+                <summary>
+                  <span>Share link</span>
+                  <small>Single-use folder access</small>
+                </summary>
+                <label id="shareExpiryField" class="access-field">
+                  <span>Expires</span>
+                  <input
+                    id="accessShareExpiresAtInput"
+                    type="datetime-local"
+                    autocomplete="off"
+                  />
+                </label>
+                <label id="shareMountField" class="access-checkbox">
+                  <input id="accessShareMountInput" type="checkbox" />
+                  <span>Create personal mount</span>
+                </label>
+                <div class="access-action-row">
+                  <button id="createShareLinkButton" type="button">Create</button>
+                </div>
+              </details>
+              <details id="accessAcceptSection" class="access-section">
+                <summary>
+                  <span>Existing link</span>
+                  <small>Accept or revoke</small>
+                </summary>
+                <label id="shareAcceptField" class="access-field">
+                  <span>Share link</span>
+                  <input
+                    id="accessShareLinkInput"
+                    placeholder="share-link-..."
+                    autocomplete="off"
+                    spellcheck="false"
+                  />
+                </label>
+                <div class="access-action-row">
+                  <button id="acceptShareLinkButton" type="button">Accept</button>
+                  <button id="revokeShareLinkButton" type="button">Revoke</button>
+                </div>
+              </details>
               <p id="accessFlowHint" class="access-hint">Open this Folder key before sharing.</p>
             </div>
-            <div id="vaultInvitationPanel" class="access-flow-panel invitation-flow-panel">
+            <div id="accessResultPanel" class="access-result" hidden></div>
+          </div>
+          <details id="vaultInvitationPanel" class="access-section access-vault-section">
+            <summary>
+              <span>Vault invites</span>
+              <small id="vaultInvitationHint">Use the active Vault for admin invites.</small>
+            </summary>
+            <div class="access-section-body">
               <label class="access-field">
                 <span>Invite npub</span>
                 <input
@@ -233,11 +260,15 @@
                 <button id="getVaultInvitationButton" type="button">Inspect invite</button>
                 <button id="acceptVaultInvitationButton" type="button">Accept invite</button>
               </div>
-              <p id="vaultInvitationHint" class="access-hint">Use the active Vault for admin invites.</p>
             </div>
-            <div id="accessResultPanel" class="access-result" hidden></div>
-          </div>
-          <ol id="accessFolderList" class="obsidian-file-tree access-list"></ol>
+          </details>
+          <details class="access-section access-folder-browser" open>
+            <summary>
+              <span>Folders</span>
+              <small>Choose what to inspect</small>
+            </summary>
+            <ol id="accessFolderList" class="obsidian-file-tree access-list"></ol>
+          </details>
         </section>
 
       </aside>
