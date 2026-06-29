@@ -928,6 +928,18 @@ assert.equal(client.readerPageRows("general", draftPages)[0].label, "Draft Page"
   assert.equal(paletteRows.some((row) => row.id === "new-page"), true);
   assert.equal(paletteRows.some((row) => row.kind === "page" && row.label === "Folder Keys"), true);
   assert.equal(client.commandPaletteRows("", []).length, 6);
+  assert.equal(
+    JSON.stringify(client.editorSlashCommandRows("").slice(0, 4).map((row) => row.id)),
+    JSON.stringify(["paragraph", "heading1", "heading2", "bullet"])
+  );
+  assert.equal(
+    JSON.stringify(client.editorSlashCommandRows("h1").map((row) => row.id)),
+    JSON.stringify(["heading1"])
+  );
+  assert.equal(
+    JSON.stringify(client.editorSlashCommandRows("code").map((row) => row.id)),
+    JSON.stringify(["codeblock", "code"])
+  );
   const folderMenu = client.contextMenuItemsForTarget({ type: "folder", folderId: "crypto" });
   assert.equal(folderMenu.some((item) => item.action === "new-page"), true);
   assert.equal(folderMenu.some((item) => item.action === "share-folder"), true);

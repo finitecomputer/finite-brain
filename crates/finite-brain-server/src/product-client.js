@@ -29,6 +29,10 @@ const FiniteBrainProductClient = (() => {
     expandedFolderIds: new Set(),
     contextMenuTarget: null,
     commandPaletteOpen: false,
+    editorSlashOpen: false,
+    editorSlashQuery: "",
+    editorSlashRange: null,
+    editorSlashSelectedIndex: 0,
   };
 
   const $ = (id) => document.getElementById(id);
@@ -49,6 +53,19 @@ const FiniteBrainProductClient = (() => {
   const MAX_OBJECT_ID_ATTEMPTS = 1000;
   const BECH32_CHARSET = "qpzry9x8gf2tvdw0s3jn54khce6mua7l";
   const graphViewport = { height: 560, width: 900 };
+  const EDITOR_SLASH_COMMANDS = [
+    { id: "paragraph", label: "Paragraph", detail: "Normal text", aliases: ["p", "text"] },
+    { id: "heading1", label: "Heading 1", detail: "Large section title", aliases: ["h1", "title"] },
+    { id: "heading2", label: "Heading 2", detail: "Section heading", aliases: ["h2", "subtitle"] },
+    { id: "bullet", label: "Bulleted list", detail: "Start a list", aliases: ["ul", "list"] },
+    { id: "quote", label: "Quote", detail: "Callout or excerpt", aliases: ["blockquote", "callout"] },
+    { id: "codeblock", label: "Code block", detail: "Fenced code", aliases: ["pre", "code block", "fence"] },
+    { id: "code", label: "Inline code", detail: "Code text", aliases: ["backtick", "mono"] },
+    { id: "bold", label: "Bold", detail: "Strong emphasis", aliases: ["b", "strong"] },
+    { id: "italic", label: "Italic", detail: "Soft emphasis", aliases: ["i", "em"] },
+    { id: "link", label: "Link", detail: "Add a URL", aliases: ["url", "href"] },
+    { id: "rule", label: "Divider", detail: "Horizontal rule", aliases: ["hr", "line"] },
+  ];
 
   function shortKey(value) {
     if (!value) return "-";
@@ -2823,6 +2840,17 @@ const FiniteBrainProductClient = (() => {
     return String(window.getSelection?.()?.toString?.() || "");
   }
 
+  function editorSlashCommandRows(query) {
+    const needle = String(query || "").trim().toLowerCase();
+    return EDITOR_SLASH_COMMANDS.filter((command) => {
+      if (!needle) return true;
+      const haystack = [command.id, command.label, command.detail, ...(command.aliases || [])]
+        .join(" ")
+        .toLowerCase();
+      return haystack.includes(needle);
+    });
+  }
+
   function escapeHtml(value) {
     return String(value || "")
       .replaceAll("&", "&amp;")
@@ -2831,7 +2859,199 @@ const FiniteBrainProductClient = (() => {
       .replaceAll('"', "&quot;");
   }
 
+  function editorBlockForNode(node) {
+    const editor = visualEditorElement();
+    let current = node?.nodeType === 1 ? node : node?.parentElement;
+    while (current && current !== editor) {
+      const tag = String(current.tagName || "").toLowerCase();
+      if (/^(p|h[1-6]|li|blockquote|pre|td|th)$/.test(tag)) return current;
+      current = current.parentElement;
+    }
+    return editor;
+  }
+
+  function textOffsetRange(root, startOffset, endOffset) {
+    const range = document.createRange?.();
+    if (!range || !root) return null;
+    let cursor = 0;
+    let startSet = false;
+    let endSet = false;
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+    while (walker.nextNode()) {
+      const node = walker.currentNode;
+      const next = cursor + String(node.nodeValue || "").length;
+      if (!startSet && startOffset <= next) {
+        range.setStart(node, Math.max(0, startOffset - cursor));
+        startSet = true;
+      }
+      if (!endSet && endOffset <= next) {
+        range.setEnd(node, Math.max(0, endOffset - cursor));
+        endSet = true;
+        break;
+      }
+      cursor = next;
+    }
+    if (!startSet) range.setStart(root, root.childNodes.length);
+    if (!endSet) range.setEnd(root, root.childNodes.length);
+    return range;
+  }
+
+  function slashMenuRectForRange(range) {
+    const editorRect = visualEditorElement()?.getBoundingClientRect?.();
+    const collapsed = range?.cloneRange?.();
+    if (collapsed) {
+      collapsed.collapse(false);
+      const caretRect = collapsed.getBoundingClientRect?.();
+      if (caretRect && (caretRect.width || caretRect.height)) return caretRect;
+      const tokenRect = range.getBoundingClientRect?.();
+      if (tokenRect && (tokenRect.width || tokenRect.height)) return tokenRect;
+    }
+    return editorRect || { bottom: 96, left: 96 };
+  }
+
+  function currentEditorSlashContext() {
+    const editor = visualEditorElement();
+    if (!editor || editor.getAttribute?.("contenteditable") !== "true") return null;
+    const selection = window.getSelection?.();
+    if (!selection || !selection.rangeCount || !selection.isCollapsed) return null;
+    if (!editor.contains(selection.anchorNode)) return null;
+    const block = editorBlockForNode(selection.anchorNode);
+    if (!block) return null;
+    const beforeRange = document.createRange?.();
+    if (!beforeRange) return null;
+    beforeRange.selectNodeContents(block);
+    try {
+      beforeRange.setEnd(selection.anchorNode, selection.anchorOffset);
+    } catch (_error) {
+      return null;
+    }
+    const beforeText = beforeRange.toString();
+    const match = beforeText.match(/(^|[\s\u00a0])\/([A-Za-z0-9_-]*)$/);
+    if (!match) return null;
+    const query = match[2] || "";
+    const startOffset = beforeText.length - query.length - 1;
+    const tokenRange = textOffsetRange(block, startOffset, beforeText.length);
+    if (!tokenRange) return null;
+    return {
+      query,
+      range: tokenRange,
+      rect: slashMenuRectForRange(tokenRange),
+      rows: editorSlashCommandRows(query),
+    };
+  }
+
+  function closeEditorSlashMenu() {
+    state.editorSlashOpen = false;
+    state.editorSlashQuery = "";
+    state.editorSlashRange = null;
+    state.editorSlashSelectedIndex = 0;
+    const menu = $("editorSlashMenu");
+    if (menu) {
+      menu.hidden = true;
+      menu.replaceChildren();
+    }
+  }
+
+  function renderEditorSlashMenu(context) {
+    const menu = $("editorSlashMenu");
+    if (!menu || !context || !context.rows.length) {
+      closeEditorSlashMenu();
+      return;
+    }
+    state.editorSlashOpen = true;
+    state.editorSlashQuery = context.query;
+    state.editorSlashRange = context.range.cloneRange?.() || context.range;
+    state.editorSlashSelectedIndex = Math.min(
+      Math.max(0, state.editorSlashSelectedIndex),
+      Math.max(0, context.rows.length - 1)
+    );
+    menu.hidden = false;
+    menu.replaceChildren();
+    menu.setAttribute("aria-activedescendant", `editorSlashCommand-${context.rows[state.editorSlashSelectedIndex].id}`);
+    for (const [index, command] of context.rows.entries()) {
+      const button = document.createElement("button");
+      button.id = `editorSlashCommand-${command.id}`;
+      button.type = "button";
+      button.className = `editor-slash-row${index === state.editorSlashSelectedIndex ? " active" : ""}`;
+      button.setAttribute("role", "option");
+      button.setAttribute("aria-selected", String(index === state.editorSlashSelectedIndex));
+      button.dataset.editorSlashCommand = command.id;
+      const label = document.createElement("strong");
+      label.textContent = command.label;
+      const detail = document.createElement("span");
+      detail.textContent = command.detail;
+      button.append(label, detail);
+      button.addEventListener("mousedown", (event) => event.preventDefault());
+      button.addEventListener("click", () => applyEditorSlashCommand(command.id));
+      menu.appendChild(button);
+    }
+    menu.querySelector(".editor-slash-row.active")?.scrollIntoView?.({ block: "nearest" });
+    const menuWidth = Math.min(280, Math.max(220, menu.offsetWidth || 260));
+    const left = Math.max(8, Math.min(context.rect.left, window.innerWidth - menuWidth - 8));
+    const top = Math.max(8, Math.min(context.rect.bottom + 8, window.innerHeight - 280));
+    menu.style.left = `${left}px`;
+    menu.style.top = `${top}px`;
+  }
+
+  function refreshEditorSlashMenu() {
+    const context = currentEditorSlashContext();
+    if (!context) {
+      closeEditorSlashMenu();
+      return;
+    }
+    if (context.query !== state.editorSlashQuery) state.editorSlashSelectedIndex = 0;
+    renderEditorSlashMenu(context);
+  }
+
+  function applyEditorSlashCommand(command) {
+    const range = state.editorSlashRange?.cloneRange?.();
+    closeEditorSlashMenu();
+    const editor = visualEditorElement();
+    editor?.focus?.();
+    if (range) {
+      const selection = window.getSelection?.();
+      selection?.removeAllRanges?.();
+      range.deleteContents();
+      range.collapse(true);
+      selection?.addRange?.(range);
+    }
+    runEditorCommand(command);
+  }
+
+  function handleEditorSlashKeydown(event) {
+    if (!state.editorSlashOpen) return false;
+    const rows = editorSlashCommandRows(state.editorSlashQuery);
+    if (!rows.length) {
+      closeEditorSlashMenu();
+      return false;
+    }
+    if (event.key === "ArrowDown") {
+      event.preventDefault();
+      state.editorSlashSelectedIndex = (state.editorSlashSelectedIndex + 1) % rows.length;
+      renderEditorSlashMenu({ query: state.editorSlashQuery, range: state.editorSlashRange, rect: slashMenuRectForRange(state.editorSlashRange), rows });
+      return true;
+    }
+    if (event.key === "ArrowUp") {
+      event.preventDefault();
+      state.editorSlashSelectedIndex = (state.editorSlashSelectedIndex - 1 + rows.length) % rows.length;
+      renderEditorSlashMenu({ query: state.editorSlashQuery, range: state.editorSlashRange, rect: slashMenuRectForRange(state.editorSlashRange), rows });
+      return true;
+    }
+    if (event.key === "Enter" || event.key === "Tab") {
+      event.preventDefault();
+      applyEditorSlashCommand(rows[state.editorSlashSelectedIndex]?.id);
+      return true;
+    }
+    if (event.key === "Escape") {
+      event.preventDefault();
+      closeEditorSlashMenu();
+      return true;
+    }
+    return false;
+  }
+
   function runEditorCommand(command) {
+    if (!command) return;
     if (state.editorMode !== "visual") setEditorMode("visual");
     const editor = visualEditorElement();
     editor.focus?.();
@@ -4851,7 +5071,11 @@ const FiniteBrainProductClient = (() => {
     $("readerPageContent").addEventListener("input", () => {
       if (visualEditorElement()?.getAttribute?.("contenteditable") === "true") {
         syncDraftFromVisualEditor({ remember: true });
+        refreshEditorSlashMenu();
       }
+    });
+    $("readerPageContent").addEventListener("keydown", (event) => {
+      handleEditorSlashKeydown(event);
     });
     $("pageDraftInput").addEventListener("input", () => {
       rememberActiveDraft($("pageDraftInput").value);
@@ -4939,6 +5163,13 @@ const FiniteBrainProductClient = (() => {
     document.addEventListener("click", (event) => {
       const menu = $("contextMenu");
       if (!menu.hidden && !menu.contains(event.target)) closeContextMenu();
+      const slashMenu = $("editorSlashMenu");
+      if (state.editorSlashOpen && slashMenu && !slashMenu.contains(event.target) && !visualEditorElement()?.contains(event.target)) {
+        closeEditorSlashMenu();
+      }
+    });
+    document.addEventListener("selectionchange", () => {
+      if (state.editorSlashOpen) refreshEditorSlashMenu();
     });
     document.addEventListener("keydown", (event) => {
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "p") {
@@ -4949,6 +5180,7 @@ const FiniteBrainProductClient = (() => {
       if (event.key === "Escape") {
         closeContextMenu();
         closeCommandPalette();
+        closeEditorSlashMenu();
       }
     });
   }
@@ -4982,6 +5214,7 @@ const FiniteBrainProductClient = (() => {
     createSessionKeyring,
     deriveSignerState,
     encryptFolderObject,
+    editorSlashCommandRows,
     extractPageLinks,
     graphEmptyStateCopy,
     graphLayout,
