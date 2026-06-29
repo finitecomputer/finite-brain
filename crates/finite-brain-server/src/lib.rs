@@ -1188,7 +1188,7 @@ mod tests {
         assert!(client_body.contains("Connect signer"));
         assert!(client_body.contains("Open accessible vault"));
         assert!(client_body.contains("vaultControlDetails"));
-        assert!(client_body.contains("header-icon-button"));
+        assert!(client_body.contains("vault-connect-button"));
         assert!(client_body.contains("readerFolderList"));
         assert!(client_body.contains("searchSidebarPanel"));
         assert!(client_body.contains("commandPalette"));

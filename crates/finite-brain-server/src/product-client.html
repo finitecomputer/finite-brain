@@ -55,13 +55,6 @@
             <p class="eyebrow">FiniteBrain</p>
             <h1 id="sidebarModeTitle">Files</h1>
           </div>
-          <button id="connectSignerButton" class="header-icon-button" type="button" title="Connect signer" aria-label="Connect signer">
-            <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
-              <path d="M7 11V8a5 5 0 0 1 9.6-2" />
-              <rect x="5" y="11" width="14" height="10" rx="2" />
-              <path d="M12 15v3" />
-            </svg>
-          </button>
         </header>
 
         <details id="vaultControlDetails" class="vault-control-strip" aria-label="Vault controls" open>
@@ -80,6 +73,13 @@
                 </svg>
               </button>
             </div>
+            <button id="connectSignerButton" class="vault-connect-button secondary-action" type="button">
+              <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+                <circle cx="7.5" cy="12.5" r="3.5" />
+                <path d="M11 12.5h9M16 12.5v3M19 12.5v2" />
+              </svg>
+              <span>Connect signer</span>
+            </button>
             <button id="openAccessibleVaultButton" class="compact-icon-button primary-action" type="button" title="Open accessible vault" aria-label="Open accessible vault">
               <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
                 <path d="M7 11V8a5 5 0 0 1 9.6-2" />

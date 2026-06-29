@@ -177,7 +177,7 @@ function checkStaticShell() {
     "compact-icon-button",
     "vaultControlDetails",
     "vaultControlSummary",
-    "header-icon-button",
+    "vault-connect-button",
     "app-ribbon",
     "file-sidebar",
     "ribbonFilesButton",
@@ -220,7 +220,7 @@ function checkStaticShell() {
     ".obsidian-shell[data-workspace-view=\"graph\"]",
     ".compact-icon-button",
     ".vault-control-body",
-    ".header-icon-button",
+    ".vault-connect-button",
     ".app-ribbon",
     ".obsidian-folder-button",
     ".obsidian-file-title",
@@ -288,6 +288,7 @@ function checkStaticShell() {
     "activityLog",
     "Advanced client tools",
     "Smoke UI",
+    "header-icon-button",
   ]) {
     assertNotIncludes(html, marker, "Product Client HTML");
   }
@@ -309,6 +310,7 @@ function checkStaticShell() {
     ".link-context-panel",
     ".activity-panel",
     ".dev-console",
+    ".header-icon-button",
   ]) {
     assertNotIncludes(css, marker, "Product Client CSS");
   }

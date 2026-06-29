@@ -780,8 +780,7 @@ pre {
   color: #d7d7d7;
 }
 
-.vault-control-body button,
-.header-icon-button {
+.vault-control-body button {
   min-height: 32px;
   border-color: #3a3a3a;
   border-radius: 5px;
@@ -791,24 +790,35 @@ pre {
   padding: 4px 8px;
 }
 
-.header-icon-button {
+.vault-connect-button {
   display: inline-flex;
   align-items: center;
-  justify-content: center;
-  width: 34px;
-  min-width: 34px;
-  height: 34px;
-  padding: 0;
+  justify-content: flex-start;
+  grid-column: 1 / 2;
+  grid-row: 2;
+  gap: 6px;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--green);
+  font-weight: 750;
+  text-align: left;
 }
 
-.header-icon-button:hover {
+.vault-connect-button:hover {
   background: #333333;
   color: #eeeeee;
 }
 
-.header-icon-button .icon {
+.vault-connect-button .icon {
   width: 16px;
   height: 16px;
+}
+
+.vault-connect-button span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .compact-icon-button {
