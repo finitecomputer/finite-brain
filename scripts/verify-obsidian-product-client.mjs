@@ -208,8 +208,8 @@ function checkStaticShell() {
     "accessResultPanel",
     "readerModeButton",
     "editorToolbar",
-    "pageVisualEditor",
-    "editorModeToggleButton",
+    "inline-editor-toolbar",
+    "readerPageContent",
     "pageSourceEditorLabel",
     "readerPagePath",
     "commandPalette",
@@ -243,7 +243,8 @@ function checkStaticShell() {
     ".note-content-empty",
     ".note-markdown",
     ".editor-toolbar",
-    ".page-visual-editor",
+    ".inline-editor-toolbar",
+    ".inline-page-editor",
     ".page-source-editor",
     ".note-source",
     ".internal-link",
@@ -264,6 +265,8 @@ function checkStaticShell() {
     "accessBadgesForFolder",
     "accessActionRoute",
     "markdownFromEditorElement",
+    "saveActivePage",
+    "visualEditorElement",
     "markdownPreviewBlocks",
     "pageLinkContext",
     "readerFolderRows",
@@ -297,6 +300,8 @@ function checkStaticShell() {
     "Advanced client tools",
     "Smoke UI",
     "header-icon-button",
+    "pageVisualEditor",
+    "editorModeToggleButton",
   ]) {
     assertNotIncludes(html, marker, "Product Client HTML");
   }
@@ -319,6 +324,8 @@ function checkStaticShell() {
     ".activity-panel",
     ".dev-console",
     ".header-icon-button",
+    ".page-visual-editor",
+    ".editor-mode-toggle",
   ]) {
     assertNotIncludes(css, marker, "Product Client CSS");
   }

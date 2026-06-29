@@ -1983,7 +1983,6 @@ const FiniteBrainProductClient = (() => {
     if (target.type === "page") {
       return [
         { action: "open-page", label: "Open Page" },
-        { action: "edit-page", label: "Edit Page" },
         { action: "new-page", label: "New Page in Folder" },
         { action: "open-graph", label: "Show in Graph View" },
         { separator: true },
@@ -2059,16 +2058,18 @@ const FiniteBrainProductClient = (() => {
     return `obj_${Date.now().toString(36)}`.padEnd(16, "0").slice(0, 128);
   }
 
-  function openEditorDrawerAndFocus() {
-    const drawer = $("editorDrawer");
-    if (drawer) drawer.open = true;
+  function visualEditorElement() {
+    return $("readerPageContent");
+  }
+
+  function focusInlineEditor() {
     const focusDraft = () => {
       if (state.editorMode === "source") {
         const draft = $("pageDraftInput");
         draft.focus?.();
         draft.setSelectionRange?.(draft.value.length, draft.value.length);
       } else {
-        $("pageVisualEditor")?.focus?.();
+        visualEditorElement()?.focus?.();
       }
     };
     if (typeof requestAnimationFrame === "function") requestAnimationFrame(focusDraft);
@@ -2098,7 +2099,7 @@ const FiniteBrainProductClient = (() => {
     });
     log("Started a new Page draft.", { folderId, objectId });
     render();
-    openEditorDrawerAndFocus();
+    focusInlineEditor();
   }
 
   function pageFromContextTarget(target) {
@@ -2518,9 +2519,8 @@ const FiniteBrainProductClient = (() => {
   function setEditorDraftText(markdown, options = {}) {
     const draft = $("pageDraftInput");
     if (draft) draft.value = markdown;
-    if (options.syncVisual !== false) {
-      const editor = $("pageVisualEditor");
-      if (editor) renderMarkdownEditor(editor, markdown);
+    if (options.syncVisual && state.readerMode !== "source") {
+      renderMarkdownEditor(visualEditorElement(), markdown);
     }
     updateEditorChrome();
   }
@@ -2528,14 +2528,30 @@ const FiniteBrainProductClient = (() => {
   function invalidatePreparedWrite() {
     state.preparedWrite = null;
     state.preparedWriteTarget = null;
-    setOptionalDisabled("savePageButton", true);
+    updateSaveControls();
+  }
+
+  function activePageKeyFromInputs() {
+    const folderId = $("pageFolderIdInput")?.value.trim() || state.selectedFolderId || "general";
+    const objectId = $("pageObjectIdInput")?.value.trim() || selectedReaderPage()?.objectId || nextDraftObjectId();
+    return { folderId, objectId, key: pageKey(folderId, objectId) };
+  }
+
+  function activeLocalDraft() {
+    return state.projection.localDrafts.get(activePageKeyFromInputs().key) || null;
+  }
+
+  function canSaveActiveDraft() {
+    return Boolean(state.signerStatus === "connected" && state.keyring && activeLocalDraft());
+  }
+
+  function updateSaveControls() {
+    setOptionalDisabled("savePageButton", !canSaveActiveDraft());
   }
 
   function rememberActiveDraft(markdown) {
-    const folderId = $("pageFolderIdInput")?.value.trim() || state.selectedFolderId || "general";
-    const objectId = $("pageObjectIdInput")?.value.trim() || nextDraftObjectId();
+    const { folderId, objectId, key } = activePageKeyFromInputs();
     const baseRevision = Number($("pageBaseRevisionInput")?.value.trim() || 0) || 0;
-    const key = pageKey(folderId, objectId);
     const existingDraft = state.projection.localDrafts.get(key);
     const existingPage = state.projection.pages.get(key);
     state.projection.localDrafts.set(key, {
@@ -2543,11 +2559,14 @@ const FiniteBrainProductClient = (() => {
       path: existingDraft?.path || existingPage?.path || `${objectId}.md`,
       text: markdown,
     });
+    const draft = $("pageDraftInput");
+    if (draft) draft.value = markdown;
     invalidatePreparedWrite();
+    updateEditorChrome();
   }
 
   function syncDraftFromVisualEditor(options = {}) {
-    const editor = $("pageVisualEditor");
+    const editor = visualEditorElement();
     const markdown = markdownFromEditorElement(editor);
     const draft = $("pageDraftInput");
     if (draft) draft.value = markdown;
@@ -2560,21 +2579,25 @@ const FiniteBrainProductClient = (() => {
     state.editorMode = mode === "source" ? "source" : "visual";
     if (state.editorMode === "source") {
       syncDraftFromVisualEditor();
+      setPageContentEditable(visualEditorElement(), false);
     } else {
-      renderMarkdownEditor($("pageVisualEditor"), $("pageDraftInput").value);
+      renderMarkdownEditor(visualEditorElement(), $("pageDraftInput").value);
+      if (isReadablePage(selectedReaderPage()) && state.readerMode !== "source") {
+        setPageContentEditable(visualEditorElement(), true);
+      }
     }
     updateEditorChrome();
   }
 
   function updateEditorChrome() {
-    const visual = $("pageVisualEditor");
+    const toolbar = $("editorToolbar");
     const source = $("pageSourceEditorLabel");
-    if (visual) visual.hidden = state.editorMode !== "visual";
+    const page = selectedReaderPage();
+    const canEditInline = isReadablePage(page) && state.readerMode !== "source" && state.editorMode !== "source";
+    if (toolbar) toolbar.hidden = !canEditInline;
     if (source) source.hidden = state.editorMode !== "source";
-    const visualMode = state.editorMode === "visual";
-    setText("editorStatusText", visualMode ? "Visual editor" : "Markdown source");
-    setText("editorModeToggleButton", visualMode ? "Markdown" : "Visual");
-    setPressed("editorModeToggleButton", !visualMode);
+    setText("editorStatusText", canEditInline ? "Inline editor active" : "Markdown source");
+    updateSaveControls();
   }
 
   function selectedTextForEditor() {
@@ -2591,7 +2614,7 @@ const FiniteBrainProductClient = (() => {
 
   function runEditorCommand(command) {
     if (state.editorMode !== "visual") setEditorMode("visual");
-    const editor = $("pageVisualEditor");
+    const editor = visualEditorElement();
     editor.focus?.();
     const exec = (name, value = null) => document.execCommand?.(name, false, value);
     if (command === "paragraph") exec("formatBlock", "p");
@@ -2617,9 +2640,27 @@ const FiniteBrainProductClient = (() => {
     $("readerPageContent").className = isEmpty ? "note-content note-content-empty" : "note-content";
   }
 
+  function setPageContentEditable(content, enabled) {
+    if (!content) return;
+    if (enabled) {
+      content.setAttribute("contenteditable", "true");
+      content.setAttribute("spellcheck", "true");
+      content.setAttribute("role", "textbox");
+      content.setAttribute("aria-label", "Page editor");
+      content.setAttribute("aria-multiline", "true");
+      return;
+    }
+    content.removeAttribute("contenteditable");
+    content.removeAttribute("spellcheck");
+    content.removeAttribute("role");
+    content.removeAttribute("aria-label");
+    content.removeAttribute("aria-multiline");
+  }
+
   function renderPageContent(page) {
     const content = $("readerPageContent");
     content.replaceChildren();
+    setPageContentEditable(content, false);
     if (!page) {
       content.className = "note-content note-content-empty";
       content.textContent = "Open a vault to read pages.";
@@ -2635,8 +2676,9 @@ const FiniteBrainProductClient = (() => {
       content.textContent = page.text || "";
       return;
     }
-    content.className = "note-content note-markdown";
-    renderMarkdownPreview(content, page.text || "");
+    content.className = `note-content note-markdown inline-page-editor${page.localDraft ? " inline-page-editor-dirty" : ""}`;
+    setPageContentEditable(content, state.editorMode !== "source");
+    renderMarkdownEditor(content, page.text || "");
   }
 
   function renderPageStatus(page) {
@@ -2805,11 +2847,6 @@ const FiniteBrainProductClient = (() => {
     }
     if (item.action === "open-page") {
       selectReaderPage(target.pageKey);
-      return;
-    }
-    if (item.action === "edit-page") {
-      selectReaderPage(target.pageKey);
-      openEditorDrawerAndFocus();
       return;
     }
     if (item.action === "new-page") {
@@ -3172,7 +3209,6 @@ const FiniteBrainProductClient = (() => {
     setOptionalDisabled("loadVaultButton", state.signerStatus !== "connected" || !state.config);
     setOptionalDisabled("openFolderKeyButton", !state.metadata);
     setOptionalDisabled("encryptDraftButton", !state.keyring);
-    setOptionalDisabled("savePageButton", !state.preparedWrite || state.signerStatus !== "connected");
     setOptionalDisabled("syncBootstrapButton", state.signerStatus !== "connected" || !state.config);
     setOptionalDisabled("openAccessibleVaultButton", state.readerBusy || !state.config);
     setOptionalDisabled("refreshReaderButton", state.readerBusy || state.signerStatus !== "connected" || !state.metadata);
@@ -3184,9 +3220,9 @@ const FiniteBrainProductClient = (() => {
     $("vaultIdInput").value = state.activeVaultId;
 
     renderVaultControlChrome();
-    updateEditorChrome();
     renderSidebarMode();
     renderReader();
+    updateEditorChrome();
     renderSearchPanel();
     renderAccessPanel();
     renderCommandPalette();
@@ -3344,7 +3380,11 @@ const FiniteBrainProductClient = (() => {
   }
 
   function activePageInput() {
-    if (state.editorMode === "visual") syncDraftFromVisualEditor();
+    if (state.editorMode === "source") {
+      rememberActiveDraft($("pageDraftInput").value);
+    } else if (visualEditorElement()?.getAttribute?.("contenteditable") === "true") {
+      syncDraftFromVisualEditor();
+    }
     const folderId = $("pageFolderIdInput").value.trim() || "general";
     const objectId = $("pageObjectIdInput").value.trim() || "obj_000000000001";
     const key = pageKey(folderId, objectId);
@@ -4213,7 +4253,7 @@ const FiniteBrainProductClient = (() => {
     render();
   }
 
-  async function prepareDraftWrite() {
+  async function prepareDraftWrite(options = {}) {
     if (!state.keyring) throw new Error("Open a Folder Key before encrypting a Page draft");
     if (!state.pubkeyHex) throw new Error("Connect a signer before preparing a signed Page write");
     const input = activePageInput();
@@ -4245,7 +4285,8 @@ const FiniteBrainProductClient = (() => {
       baseRevision: state.preparedWrite.baseRevision,
       keyVersion,
     });
-    render();
+    if (options.renderAfter !== false) render();
+    return state.preparedWrite;
   }
 
   async function savePreparedPage() {
@@ -4277,6 +4318,11 @@ const FiniteBrainProductClient = (() => {
     setEditorDraftText(savedText);
     log("Saved encrypted Page revision.", result);
     render();
+  }
+
+  async function saveActivePage() {
+    await prepareDraftWrite({ renderAfter: false });
+    await savePreparedPage();
   }
 
   async function pullSyncBootstrap() {
@@ -4579,14 +4625,16 @@ const FiniteBrainProductClient = (() => {
         render();
       });
     });
-    $("pageVisualEditor").addEventListener("input", () => {
-      syncDraftFromVisualEditor({ remember: true });
+    $("readerPageContent").addEventListener("input", () => {
+      if (visualEditorElement()?.getAttribute?.("contenteditable") === "true") {
+        syncDraftFromVisualEditor({ remember: true });
+      }
     });
     $("pageDraftInput").addEventListener("input", () => {
       rememberActiveDraft($("pageDraftInput").value);
     });
-    $("editorModeToggleButton").addEventListener("click", () => {
-      setEditorMode(state.editorMode === "visual" ? "source" : "visual");
+    $("editorDrawer").addEventListener("toggle", () => {
+      setEditorMode($("editorDrawer").open ? "source" : "visual");
     });
     document.querySelectorAll?.("[data-editor-command]").forEach((button) => {
       button.addEventListener("mousedown", (event) => event.preventDefault());
@@ -4601,7 +4649,7 @@ const FiniteBrainProductClient = (() => {
         render();
       });
     });
-    $("encryptDraftButton").addEventListener("click", () => {
+    onOptionalClick("encryptDraftButton", () => {
       prepareDraftWrite().catch((error) => {
         state.lastError = error.message;
         log("Failed to encrypt Page draft.", { error: error.message });
@@ -4609,7 +4657,7 @@ const FiniteBrainProductClient = (() => {
       });
     });
     $("savePageButton").addEventListener("click", () => {
-      savePreparedPage().catch((error) => {
+      saveActivePage().catch((error) => {
         state.lastError = error.message;
         log("Failed to save Page.", { error: error.message });
         render();

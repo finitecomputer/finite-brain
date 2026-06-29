@@ -933,7 +933,7 @@ assert.equal(client.readerPageRows("general", draftPages)[0].label, "Draft Page"
     objectId: "page-a",
   });
   assert.equal(pageMenu.some((item) => item.action === "open-graph"), true);
-  assert.equal(pageMenu.some((item) => item.action === "edit-page"), true);
+  assert.equal(pageMenu.some((item) => item.action === "edit-page"), false);
   assert.equal(pageMenu.find((item) => item.action === "delete-page").disabled, false);
   const readerPages = client.readerPageRows("general", openedSync.objects);
   assert.equal(readerPages[0].label, "Hello");
