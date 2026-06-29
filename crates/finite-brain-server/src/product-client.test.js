@@ -124,6 +124,19 @@ assert.equal(client.accessPanelState("share", folderRows[1]).status, "share");
 assert.match(client.accessPanelState("share", folderRows[1]).detail, /Choose who can see/);
 assert.equal(client.accessPanelState("manage", folderRows[1]).title, "Manage Restricted");
 
+const projection = client.createClientProjection();
+projection.localDrafts.set("general/obj_draft", {
+  baseRevision: 0,
+  path: "obj_draft.md",
+  text: "# Draft Page\n\nUnsaved but visible.",
+});
+const draftPages = client.projectionPagesFromProjection(projection);
+assert.equal(draftPages.length, 1);
+assert.equal(draftPages[0].folderId, "general");
+assert.equal(draftPages[0].localDraft, true);
+assert.equal(draftPages[0].status, "ready");
+assert.equal(client.readerPageRows("general", draftPages)[0].label, "Draft Page");
+
 (async () => {
   const event = await client.buildAuthEventTemplate(
     "post",

@@ -1621,12 +1621,37 @@ const FiniteBrainProductClient = (() => {
     return pages;
   }
 
+  function projectionPagesFromProjection(projection) {
+    const pages = new Map(
+      [...projection.pages.entries()].map(([key, page]) => [
+        key,
+        {
+          ...page,
+          key,
+          title: page.title || pageTitleFromText(page.text ?? "", page.objectId),
+        },
+      ])
+    );
+    for (const [key, draft] of projection.localDrafts.entries()) {
+      const [folderId, objectId] = key.split("/");
+      pages.set(key, {
+        baseRevision: draft.baseRevision || 0,
+        folderId,
+        key,
+        localDraft: true,
+        objectId,
+        path: draft.path || `${objectId}.md`,
+        revision: draft.baseRevision || 0,
+        status: "ready",
+        text: draft.text,
+        title: pageTitleFromText(draft.text, objectId),
+      });
+    }
+    return [...pages.values()];
+  }
+
   function projectionPages() {
-    return [...state.projection.pages.entries()].map(([key, page]) => ({
-      ...page,
-      key,
-      title: page.title || pageTitleFromText(page.text ?? "", page.objectId),
-    }));
+    return projectionPagesFromProjection(state.projection);
   }
 
   function pageTextIsPresent(page) {
@@ -1921,11 +1946,25 @@ const FiniteBrainProductClient = (() => {
     return `obj_${Date.now().toString(36)}`.padEnd(16, "0").slice(0, 128);
   }
 
+  function openEditorDrawerAndFocus() {
+    const drawer = $("editorDrawer");
+    if (drawer) drawer.open = true;
+    const focusDraft = () => {
+      const draft = $("pageDraftInput");
+      draft.focus?.();
+      draft.setSelectionRange?.(draft.value.length, draft.value.length);
+    };
+    if (typeof requestAnimationFrame === "function") requestAnimationFrame(focusDraft);
+    else focusDraft();
+  }
+
   function startNewPageDraft(folderIdOverride = null) {
     const folderId = folderIdOverride || state.selectedFolderId || "general";
     const objectId = nextDraftObjectId();
+    const draftKey = pageKey(folderId, objectId);
+    const draftText = "# New Page\n\nStart writing here.";
     state.selectedFolderId = folderId;
-    state.selectedPageKey = null;
+    state.selectedPageKey = draftKey;
     state.preparedWrite = null;
     state.preparedWriteTarget = null;
     state.activeWorkspaceView = "page";
@@ -1934,9 +1973,15 @@ const FiniteBrainProductClient = (() => {
     $("okfDestinationFolderInput").value = folderId;
     $("pageObjectIdInput").value = objectId;
     $("pageBaseRevisionInput").value = "";
-    $("pageDraftInput").value = "# New Page\n\nStart writing here.";
+    $("pageDraftInput").value = draftText;
+    state.projection.localDrafts.set(draftKey, {
+      baseRevision: 0,
+      path: `${objectId}.md`,
+      text: draftText,
+    });
     log("Started a new Page draft.", { folderId, objectId });
     render();
+    openEditorDrawerAndFocus();
   }
 
   function selectReaderFolder(folderId, options = {}) {
@@ -2404,8 +2449,11 @@ const FiniteBrainProductClient = (() => {
       return;
     }
     if (item.action === "new-folder") {
-      log("New child Folder is queued for the Folder creation slice.", {
-        parentFolderId: target.folderId,
+      createFolderFromToolbar().catch((error) => {
+        state.lastError = error.message;
+        window.alert?.(error.message);
+        log("Failed to create Folder from context menu.", { error: error.message });
+        render();
       });
       return;
     }
@@ -2733,7 +2781,7 @@ const FiniteBrainProductClient = (() => {
     setText("readerPagePath", pagePathLabel(page));
     setPill(
       "readerPageMeta",
-      `rev ${page.revision || 0}`,
+      page.localDraft ? "draft" : `rev ${page.revision || 0}`,
       page.status === "ready" ? "ready" : "warn"
     );
     renderPageContent(page);
@@ -2979,6 +3027,112 @@ const FiniteBrainProductClient = (() => {
     const date = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
     date.setSeconds(0, 0);
     return date.toISOString().slice(0, 16);
+  }
+
+  function slugFromFolderName(name) {
+    return String(name || "")
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9_-]+/g, "-")
+      .replace(/^-+|-+$/g, "")
+      .slice(0, 96);
+  }
+
+  function uniqueFolderId(baseId) {
+    const existing = new Set((state.metadata?.folders || []).map((folder) => folder.id));
+    let candidate = baseId || "folder";
+    let suffix = 2;
+    while (existing.has(candidate)) {
+      candidate = `${baseId || "folder"}-${suffix}`;
+      suffix += 1;
+    }
+    return candidate;
+  }
+
+  function folderRecipientsForAccess(access, accessUserIds = []) {
+    const recipients = new Set();
+    if (access === "owner") {
+      if (state.metadata?.ownerUserId) recipients.add(state.metadata.ownerUserId);
+      else recipients.add(currentActorNpub());
+      return [...recipients];
+    }
+    if (access === "admin_only" || access === "all_members" || access === "restricted") {
+      for (const admin of state.metadata?.admins || []) recipients.add(admin);
+    }
+    if (access === "all_members") {
+      for (const member of state.metadata?.members || []) recipients.add(member);
+    }
+    if (access === "restricted") {
+      for (const user of accessUserIds) recipients.add(user);
+    }
+    if (!recipients.size) recipients.add(currentActorNpub());
+    return [...recipients];
+  }
+
+  async function createFolderFromToolbar() {
+    if (!state.metadata) throw new Error("Open a Vault before creating a Folder");
+    if (state.signerStatus !== "connected") await connectSigner();
+    if (state.signerStatus !== "connected") throw new Error("Connect a NIP-07 signer first");
+
+    const name = window.prompt("Folder name", "Notes")?.trim();
+    if (!name) return;
+    const folderId = uniqueFolderId(slugFromFolderName(name));
+    const access = state.metadata.kind === "personal" ? "owner" : "all_members";
+    const accessUserIds = [];
+    const rawKey = randomFolderKeyBytes();
+    const recipients = folderRecipientsForAccess(access, accessUserIds);
+    const createdAtUnix = Math.floor(Date.now() / 1000);
+    const grants = [];
+    for (const recipientNpub of recipients) {
+      grants.push(
+        await buildFolderKeyGrantRequest({
+          createdAtUnix,
+          folderId,
+          keyVersion: 1,
+          rawKey,
+          recipientNpub,
+          vaultId: state.activeVaultId,
+        })
+      );
+    }
+    if (!state.keyring) state.keyring = createSessionKeyring();
+    await importFolderKey(state.keyring, {
+      vaultId: state.activeVaultId,
+      folderId,
+      keyVersion: 1,
+      folderKey: bytesToBase64(rawKey),
+    });
+    const accessChangeEvent = await buildAdminAccessChangeEvent({
+      action: "set-folder-access-mode",
+      createdAtUnix,
+      folderId,
+      keyVersion: 1,
+    });
+    const metadata = await protectedRequest(
+      `/_admin/vaults/${encodeURIComponent(state.activeVaultId)}/folders`,
+      {
+        method: "POST",
+        body: JSON.stringify({
+          access,
+          accessChangeEvent,
+          accessUserIds,
+          folderId,
+          grants,
+          name,
+          parentFolderId: null,
+          path: folderId,
+          role: "folder",
+          sharedFolderSource: false,
+        }),
+      }
+    );
+    state.metadata = metadata;
+    state.selectedFolderId = folderId;
+    state.expandedFolderIds.add(folderId);
+    $("pageFolderIdInput").value = folderId;
+    $("okfDestinationFolderInput").value = folderId;
+    log("Created Folder from toolbar.", { folderId, recipients: recipients.length });
+    render();
   }
 
   function shareExpiryIso() {
@@ -3696,6 +3850,7 @@ const FiniteBrainProductClient = (() => {
     };
     state.projection.localDrafts.set(pageKey(input.folderId, input.objectId), {
       baseRevision: state.preparedWrite.baseRevision || 0,
+      path: `${input.objectId}.md`,
       text: input.text,
     });
     log("Encrypted Page draft and prepared signed revision request.", {
@@ -4026,8 +4181,11 @@ const FiniteBrainProductClient = (() => {
       startNewPageDraft();
     });
     $("obsidianNewFolderButton").addEventListener("click", () => {
-      log("New Folder will be wired through the Folder creation flow in the access/share slice.", {
-        parentFolderId: state.selectedFolderId || null,
+      createFolderFromToolbar().catch((error) => {
+        state.lastError = error.message;
+        window.alert?.(error.message);
+        log("Failed to create Folder from toolbar.", { error: error.message });
+        render();
       });
     });
     onOptionalClick("openFolderKeyButton", () => {
@@ -4172,6 +4330,7 @@ const FiniteBrainProductClient = (() => {
     plaintextGrantFromGiftWrappedExportGrant,
     planOkfImport,
     prepareOkfImportWrites,
+    projectionPagesFromProjection,
     readerFolderDetail,
     readerFolderRows,
     readerPageDetail,
