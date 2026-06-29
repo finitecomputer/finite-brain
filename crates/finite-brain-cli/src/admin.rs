@@ -134,7 +134,12 @@ pub(crate) fn opened_folder_key(
     let local_key = state
         .local_folder_keys
         .iter()
-        .find(|key| key.folder_id == folder_id && key.key_version == key_version)
+        .find(|key| {
+            key.vault_id.as_deref().unwrap_or(state.vault_id.as_str())
+                == state.vault_id.as_str()
+                && key.folder_id == folder_id
+                && key.key_version == key_version
+        })
         .ok_or_else(|| {
             CliError::InvalidInput(format!(
                 "Folder Key for {folder_id} v{key_version} is not opened locally; run fbrain open/sync as an admin first"
@@ -239,6 +244,7 @@ pub(crate) fn update_local_folder_after_create(
     {
         tree.folder_roots.push(WorkingTreeFolderRoot {
             folder_id: folder_id.to_owned(),
+            source_vault_id: None,
             path: path.to_owned(),
             can_read: true,
             metadata_only: false,
@@ -257,6 +263,7 @@ pub(crate) fn update_local_folder_after_create(
             .any(|key| key.folder_id == folder_id && key.key_version == 1)
         {
             state.local_folder_keys.push(LocalFolderKey {
+                vault_id: Some(state.vault_id.clone()),
                 folder_id: folder_id.to_owned(),
                 key_version: 1,
                 key_base64: folder_key.to_base64(),
@@ -270,6 +277,7 @@ pub(crate) fn update_local_folder_after_create(
             .any(|folder| folder.folder_id == folder_id)
         {
             state.unlocked_folders.push(UnlockedFolder {
+                vault_id: Some(state.vault_id.clone()),
                 folder_id: folder_id.to_owned(),
                 key_version: 1,
                 opened_at: now.clone(),

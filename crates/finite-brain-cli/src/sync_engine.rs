@@ -39,10 +39,23 @@ pub(crate) fn run_working_tree_sync(
     let server_url = server_url_for_command(env, args)?;
     let auth = read_auth_required(env)?;
     let export = fetch_encrypted_export(env, &server_url, &agent_state.vault_id)?;
-    let opened_grants = open_export_folder_key_grants(env, &root, &auth, &export)?;
-    let local_result =
-        push_local_working_tree_changes(env, &root, &server_url, &agent_state, &export)?;
+    let mounted_exports =
+        fetch_mounted_folder_sync_contexts(env, &server_url, &agent_state.vault_id, &export)?;
+    let mut opened_grants = open_export_folder_key_grants(env, &root, &auth, &export)?;
+    for mounted in &mounted_exports {
+        opened_grants += open_export_folder_key_grants(env, &root, &auth, &mounted.export)?;
+    }
+    let local_result = push_local_working_tree_changes(
+        env,
+        &root,
+        &server_url,
+        &agent_state,
+        &export,
+        &mounted_exports,
+    )?;
     let bootstrap = fetch_sync_bootstrap(env, &server_url, &agent_state.vault_id)?;
+    let mounted_materializations =
+        fetch_mounted_folder_materializations(env, &server_url, mounted_exports)?;
     write_sync_evidence(&root, &export, &bootstrap)?;
 
     materialize_remote_projection(
@@ -51,6 +64,7 @@ pub(crate) fn run_working_tree_sync(
         &auth.npub,
         &export,
         &bootstrap,
+        &mounted_materializations,
         &local_result.path_overrides,
     )?;
     restore_conflicted_markdown(&root, &local_result.conflicted_markdown)?;
@@ -111,6 +125,101 @@ fn fetch_sync_bootstrap(
     serde_json::from_value(response).map_err(CliError::from)
 }
 
+fn fetch_vault_metadata_for_sync(
+    env: &CliEnvironment,
+    server_url: &str,
+    vault_id: &str,
+) -> Result<CliVaultMetadata, CliError> {
+    let path = format!("/_admin/vaults/{vault_id}/metadata");
+    let response = signed_json_request_to_server(env, server_url, "GET", &path, None)?;
+    serde_json::from_value(response).map_err(CliError::from)
+}
+
+fn fetch_mounted_folder_sync_contexts(
+    env: &CliEnvironment,
+    server_url: &str,
+    vault_id: &str,
+    export: &CliEncryptedVaultExport,
+) -> Result<Vec<MountedFolderSyncContext>, CliError> {
+    if export.vault.kind != "organization" {
+        return Ok(Vec::new());
+    }
+    let metadata = match fetch_vault_metadata_for_sync(env, server_url, vault_id) {
+        Ok(metadata) => metadata,
+        Err(CliError::Http(_)) => return Ok(Vec::new()),
+        Err(error) => return Err(error),
+    };
+    let mut used_paths = export
+        .folders
+        .iter()
+        .map(|folder| folder.path.clone())
+        .collect::<BTreeSet<_>>();
+    let mut contexts = Vec::new();
+    for mount in metadata
+        .mounted_folders
+        .into_iter()
+        .filter(|mount| mount.state == "available")
+    {
+        let source_export = fetch_encrypted_export(env, server_url, &mount.source_vault_id)?;
+        let display_path = mounted_folder_display_path(&mut used_paths, &mount, &source_export)?;
+        contexts.push(MountedFolderSyncContext {
+            mount,
+            export: source_export,
+            display_path,
+        });
+    }
+    Ok(contexts)
+}
+
+fn fetch_mounted_folder_materializations(
+    env: &CliEnvironment,
+    server_url: &str,
+    mounted_exports: Vec<MountedFolderSyncContext>,
+) -> Result<Vec<MountedFolderMaterializeContext>, CliError> {
+    mounted_exports
+        .into_iter()
+        .map(|mounted| {
+            let bootstrap = fetch_sync_bootstrap(env, server_url, &mounted.export.vault.id)?;
+            Ok(MountedFolderMaterializeContext {
+                mount: mounted.mount,
+                export: mounted.export,
+                display_path: mounted.display_path,
+                bootstrap,
+            })
+        })
+        .collect()
+}
+
+fn mounted_folder_display_path(
+    used_paths: &mut BTreeSet<String>,
+    mount: &CliMountedFolder,
+    source_export: &CliEncryptedVaultExport,
+) -> Result<String, CliError> {
+    let source_folder = source_export
+        .folders
+        .iter()
+        .find(|folder| folder.id == mount.source_folder_id)
+        .ok_or_else(|| CliError::NotFound(format!("folder {}", mount.source_folder_id)))?;
+    let candidates = [
+        source_folder.path.clone(),
+        mount.display_name.clone(),
+        format!("{}/{}", mount.source_vault_id, source_folder.path),
+        format!("{}/{}", mount.source_vault_id, mount.source_folder_id),
+    ];
+    for candidate in candidates {
+        if SafeRelativePath::new("mounted_folder_path", candidate.clone()).is_ok()
+            && !used_paths.contains(&candidate)
+        {
+            used_paths.insert(candidate.clone());
+            return Ok(candidate);
+        }
+    }
+    Err(CliError::InvalidInput(format!(
+        "mounted folder path collides for {}",
+        mount.mount_id
+    )))
+}
+
 fn write_sync_evidence(
     root: &Path,
     export: &CliEncryptedVaultExport,
@@ -143,6 +252,7 @@ fn open_export_folder_key_grants(
     auth: &crate::PrototypeAuth,
     export: &CliEncryptedVaultExport,
 ) -> Result<usize, CliError> {
+    let opened_vault_id = read_agent_state(root)?.vault_id;
     let keys = Keys::parse(&auth.secret_key)
         .map_err(|error| CliError::InvalidSigner(error.to_string()))?;
     let recipient = NostrPublicKey::parse(&auth.npub)
@@ -187,12 +297,17 @@ fn open_export_folder_key_grants(
         for grant in opened {
             let folder_id = grant.folder_id.clone();
             let key_version = grant.key_version;
-            if !state
-                .local_folder_keys
-                .iter()
-                .any(|key| key.folder_id == folder_id && key.key_version == key_version)
-            {
+            if !state.local_folder_keys.iter().any(|key| {
+                local_folder_key_matches(
+                    key,
+                    &opened_vault_id,
+                    &grant.vault_id,
+                    &folder_id,
+                    key_version,
+                )
+            }) {
                 state.local_folder_keys.push(LocalFolderKey {
+                    vault_id: Some(grant.vault_id.clone()),
                     folder_id: folder_id.clone(),
                     key_version,
                     key_base64: grant.folder_key.clone(),
@@ -202,16 +317,21 @@ fn open_export_folder_key_grants(
                 persisted_count += 1;
                 changed = true;
             }
-            if let Some(folder) = state
-                .unlocked_folders
-                .iter()
-                .find(|folder| folder.folder_id == folder_id)
-            {
+            if let Some(folder) = state.unlocked_folders.iter().find(|folder| {
+                unlocked_folder_matches(folder, &opened_vault_id, &grant.vault_id, &folder_id)
+            }) {
                 if key_version > folder.key_version {
                     let folder = state
                         .unlocked_folders
                         .iter_mut()
-                        .find(|folder| folder.folder_id == folder_id)
+                        .find(|folder| {
+                            unlocked_folder_matches(
+                                folder,
+                                &opened_vault_id,
+                                &grant.vault_id,
+                                &folder_id,
+                            )
+                        })
                         .expect("folder found above");
                     folder.key_version = key_version;
                     folder.opened_at = now.clone();
@@ -220,6 +340,7 @@ fn open_export_folder_key_grants(
                 }
             } else {
                 state.unlocked_folders.push(UnlockedFolder {
+                    vault_id: Some(grant.vault_id.clone()),
                     folder_id,
                     key_version,
                     opened_at: now.clone(),
@@ -235,12 +356,35 @@ fn open_export_folder_key_grants(
     Ok(persisted_count)
 }
 
+fn local_folder_key_matches(
+    key: &LocalFolderKey,
+    opened_vault_id: &str,
+    vault_id: &str,
+    folder_id: &str,
+    key_version: u32,
+) -> bool {
+    key.vault_id.as_deref().unwrap_or(opened_vault_id) == vault_id
+        && key.folder_id == folder_id
+        && key.key_version == key_version
+}
+
+fn unlocked_folder_matches(
+    folder: &UnlockedFolder,
+    opened_vault_id: &str,
+    vault_id: &str,
+    folder_id: &str,
+) -> bool {
+    folder.vault_id.as_deref().unwrap_or(opened_vault_id) == vault_id
+        && folder.folder_id == folder_id
+}
+
 fn push_local_working_tree_changes(
     env: &CliEnvironment,
     root: &Path,
     server_url: &str,
     agent_state: &AgentState,
     export: &CliEncryptedVaultExport,
+    mounted_exports: &[MountedFolderSyncContext],
 ) -> Result<LocalSyncResult, CliError> {
     let tree_state = read_working_tree_state(root)?;
     let changes = scan_working_tree_changes(root, &tree_state)?;
@@ -249,16 +393,25 @@ fn push_local_working_tree_changes(
     }
 
     let intents = plan_working_tree_change_intents(&tree_state, &changes);
-    let keys_by_folder = read_agent_state(root)?
-        .local_folder_keys
-        .into_iter()
-        .map(|key| ((key.folder_id.clone(), key.key_version), key))
-        .collect::<BTreeMap<_, _>>();
-    let current_key_version_by_folder = export
+    let keys_by_folder = local_folder_keys_by_route(root, &agent_state.vault_id)?;
+    let mut current_key_version_by_folder = export
         .folders
         .iter()
-        .map(|folder| (folder.id.clone(), folder.current_key_version))
+        .map(|folder| {
+            (
+                (export.vault.id.clone(), folder.id.clone()),
+                folder.current_key_version,
+            )
+        })
         .collect::<BTreeMap<_, _>>();
+    for mounted in mounted_exports {
+        if let Some(folder) = mounted.source_folder() {
+            current_key_version_by_folder.insert(
+                (mounted.export.vault.id.clone(), folder.id.clone()),
+                folder.current_key_version,
+            );
+        }
+    }
     let signing_keys = Keys::parse(&read_auth_required(env)?.secret_key)
         .map_err(|error| CliError::InvalidSigner(error.to_string()))?;
     let actor_npub = NostrPublicKey::from_protocol(signing_keys.public_key())
@@ -285,8 +438,17 @@ fn push_local_working_tree_changes(
                     intent.object_id.as_ref(),
                     intent.target_path.as_ref(),
                 ) {
+                    let route_vault_id = intent
+                        .source_vault_id
+                        .as_ref()
+                        .map(ToString::to_string)
+                        .unwrap_or_else(|| agent_state.vault_id.clone());
                     result.path_overrides.insert(
-                        (folder_id.to_string(), object_id.as_str().to_owned()),
+                        (
+                            route_vault_id,
+                            folder_id.to_string(),
+                            object_id.as_str().to_owned(),
+                        ),
                         target_path.to_string(),
                     );
                 }
@@ -326,14 +488,31 @@ fn push_local_working_tree_changes(
     Ok(result)
 }
 
+fn local_folder_keys_by_route(
+    root: &Path,
+    opened_vault_id: &str,
+) -> Result<BTreeMap<(String, String, u32), LocalFolderKey>, CliError> {
+    Ok(read_agent_state(root)?
+        .local_folder_keys
+        .into_iter()
+        .map(|key| {
+            let vault_id = key
+                .vault_id
+                .clone()
+                .unwrap_or_else(|| opened_vault_id.to_owned());
+            ((vault_id, key.folder_id.clone(), key.key_version), key)
+        })
+        .collect())
+}
+
 struct SubmitIntentContext<'a> {
     env: &'a CliEnvironment,
     server_url: &'a str,
     agent_state: &'a AgentState,
     signing_keys: &'a Keys,
     actor_npub: &'a str,
-    keys_by_folder: &'a BTreeMap<(String, u32), LocalFolderKey>,
-    current_key_version_by_folder: &'a BTreeMap<String, u32>,
+    keys_by_folder: &'a BTreeMap<(String, String, u32), LocalFolderKey>,
+    current_key_version_by_folder: &'a BTreeMap<(String, String), u32>,
 }
 
 fn submit_change_intent(
@@ -359,22 +538,31 @@ fn submit_change_intent(
         .object_id
         .as_ref()
         .ok_or_else(|| CliError::InvalidInput("missing intent object id".to_owned()))?;
+    let route_vault_id = intent
+        .source_vault_id
+        .as_ref()
+        .map(ToString::to_string)
+        .unwrap_or_else(|| context.agent_state.vault_id.clone());
     let Some(current_key_version) = context
         .current_key_version_by_folder
-        .get(folder_id.as_str())
+        .get(&(route_vault_id.clone(), folder_id.to_string()))
         .copied()
     else {
         return Ok(SubmitIntentOutcome::Conflict(format!(
-            "folder {folder_id} is missing from encrypted export"
+            "folder {folder_id} is missing from encrypted export for vault {route_vault_id}"
         )));
     };
     let current_local_key = context
         .keys_by_folder
-        .get(&(folder_id.to_string(), current_key_version))
+        .get(&(
+            route_vault_id.clone(),
+            folder_id.to_string(),
+            current_key_version,
+        ))
         .cloned();
     if current_local_key.is_none() {
         return Ok(SubmitIntentOutcome::Conflict(format!(
-            "current Folder Key v{current_key_version} unavailable for {folder_id}"
+            "current Folder Key v{current_key_version} unavailable for {route_vault_id}/{folder_id}"
         )));
     }
 
@@ -392,7 +580,7 @@ fn submit_change_intent(
             let key = FolderKey::from_base64(&local_key.key_base64)
                 .map_err(|error| CliError::InvalidInput(error.to_string()))?;
             let aad = FolderObjectAad {
-                vault_id: VaultId::new(context.agent_state.vault_id.clone())
+                vault_id: VaultId::new(route_vault_id.clone())
                     .map_err(|error| CliError::InvalidInput(error.to_string()))?,
                 folder_id: folder_id.clone(),
                 object_id: object_id.clone(),
@@ -412,7 +600,7 @@ fn submit_change_intent(
                 context.signing_keys,
                 RevisionEventInput {
                     actor_npub: context.actor_npub,
-                    vault_id: &context.agent_state.vault_id,
+                    vault_id: &route_vault_id,
                     folder_id,
                     object_id,
                     operation,
@@ -431,13 +619,13 @@ fn submit_change_intent(
             let route = match intent.action {
                 WorkingTreeIntentAction::Move => format!(
                     "/_admin/vaults/{}/folders/{}/objects/{}/move",
-                    context.agent_state.vault_id,
+                    route_vault_id,
                     folder_id,
                     object_id.as_str()
                 ),
                 _ => format!(
                     "/_admin/vaults/{}/folders/{}/objects/{}",
-                    context.agent_state.vault_id,
+                    route_vault_id,
                     folder_id,
                     object_id.as_str()
                 ),
@@ -462,7 +650,7 @@ fn submit_change_intent(
             let event = signed_tombstone_event(
                 context.signing_keys,
                 context.actor_npub,
-                &context.agent_state.vault_id,
+                &route_vault_id,
                 folder_id,
                 object_id,
                 base_revision,
@@ -473,7 +661,7 @@ fn submit_change_intent(
             });
             let route = format!(
                 "/_admin/vaults/{}/folders/{}/objects/{}",
-                context.agent_state.vault_id,
+                route_vault_id,
                 folder_id,
                 object_id.as_str()
             );
@@ -612,21 +800,25 @@ fn materialize_remote_projection(
     actor_npub: &str,
     export: &CliEncryptedVaultExport,
     bootstrap: &CliSyncBootstrap,
-    path_overrides: &BTreeMap<(String, String), String>,
+    mounted_folders: &[MountedFolderMaterializeContext],
+    path_overrides: &BTreeMap<(String, String, String), String>,
 ) -> Result<(), CliError> {
     let prior_state = read_working_tree_state(root)?;
     let vault = vault_from_export(export)?;
-    let local_keys = read_agent_state(root)?
-        .local_folder_keys
-        .into_iter()
-        .map(|key| ((key.folder_id.clone(), key.key_version), key))
-        .collect::<BTreeMap<_, _>>();
+    let local_keys = local_folder_keys_by_route(root, &export.vault.id)?;
     let mut prior_paths = prior_state
         .objects
         .iter()
         .map(|entry| {
             (
-                (entry.folder_id.clone(), entry.object_id.clone()),
+                (
+                    entry
+                        .source_vault_id
+                        .clone()
+                        .unwrap_or_else(|| export.vault.id.clone()),
+                    entry.folder_id.clone(),
+                    entry.object_id.clone(),
+                ),
                 entry.path.clone(),
             )
         })
@@ -635,70 +827,59 @@ fn materialize_remote_projection(
         prior_paths.insert(key.clone(), path.clone());
     }
     let mut opened_pages = Vec::new();
-    let mut readable_folder_ids = BTreeSet::new();
+    let mut readable_folder_routes = BTreeSet::new();
+    {
+        let mut append_context = OpenedPagesAppendContext {
+            local_keys: &local_keys,
+            prior_paths: &prior_paths,
+            opened_pages: &mut opened_pages,
+            readable_folder_routes: &mut readable_folder_routes,
+        };
 
-    for object in bootstrap.objects.iter().filter(|object| !object.deleted) {
-        let envelope = EncryptedFolderObjectEnvelope::from_json(&object.ciphertext)
-            .map_err(|error| CliError::InvalidInput(error.to_string()))?;
-        let Some(local_key) = local_keys.get(&(object.folder_id.clone(), envelope.key_version))
-        else {
-            continue;
-        };
-        let key = FolderKey::from_base64(&local_key.key_base64)
-            .map_err(|error| CliError::InvalidInput(error.to_string()))?;
-        let aad = FolderObjectAad {
-            vault_id: VaultId::new(export.vault.id.clone())
-                .map_err(|error| CliError::InvalidInput(error.to_string()))?,
-            folder_id: FolderId::new(object.folder_id.clone())
-                .map_err(|error| CliError::InvalidInput(error.to_string()))?,
-            object_id: ObjectId::new(object.object_id.clone())
-                .map_err(|error| CliError::InvalidInput(error.to_string()))?,
-            key_version: envelope.key_version,
-        };
-        let plaintext = open_folder_object(&key, &aad, &envelope)
-            .map_err(|error| CliError::InvalidInput(error.to_string()))?;
-        let folder = export
-            .folders
-            .iter()
-            .find(|folder| folder.id == object.folder_id)
-            .ok_or_else(|| CliError::NotFound(format!("folder {}", object.folder_id)))?;
-        let fallback_page_path = prior_paths
-            .get(&(object.folder_id.clone(), object.object_id.clone()))
-            .cloned()
-            .unwrap_or_else(|| format!("{}.md", object.object_id));
-        let (page_path, markdown) =
-            decode_folder_object_page_plaintext(plaintext, fallback_page_path)?;
-        readable_folder_ids.insert(object.folder_id.clone());
-        opened_pages.push(OpenedPage {
-            folder_id: FolderId::new(object.folder_id.clone())
-                .map_err(|error| CliError::InvalidInput(error.to_string()))?,
-            object_id: ObjectId::new(object.object_id.clone())
-                .map_err(|error| CliError::InvalidInput(error.to_string()))?,
-            folder_display_path: SafeRelativePath::new("folder_path", folder.path.clone())
-                .map_err(|error| CliError::InvalidInput(error.to_string()))?,
-            page_path: SafeRelativePath::new("page_path", page_path)
-                .map_err(|error| CliError::InvalidInput(error.to_string()))?,
-            markdown,
-            revision: object.revision,
-            key_version: envelope.key_version,
-            content_type: "text/markdown".to_owned(),
-        });
+        append_opened_pages_from_bootstrap(export, bootstrap, None, None, &mut append_context)?;
+        for mounted in mounted_folders {
+            append_opened_pages_from_bootstrap(
+                &mounted.export,
+                &mounted.bootstrap,
+                Some(&mounted.mount.source_folder_id),
+                Some(&mounted.display_path),
+                &mut append_context,
+            )?;
+        }
     }
 
     for folder in &export.folders {
-        if local_keys.contains_key(&(folder.id.clone(), folder.current_key_version)) {
-            readable_folder_ids.insert(folder.id.clone());
+        if local_keys.contains_key(&(
+            export.vault.id.clone(),
+            folder.id.clone(),
+            folder.current_key_version,
+        )) {
+            readable_folder_routes.insert((export.vault.id.clone(), folder.id.clone()));
+        }
+    }
+    for mounted in mounted_folders {
+        if let Some(folder) = mounted.source_folder()
+            && local_keys.contains_key(&(
+                mounted.export.vault.id.clone(),
+                folder.id.clone(),
+                folder.current_key_version,
+            ))
+        {
+            readable_folder_routes.insert((mounted.export.vault.id.clone(), folder.id.clone()));
         }
     }
 
     let locked_folders = export
         .folders
         .iter()
-        .filter(|folder| !readable_folder_ids.contains(&folder.id))
+        .filter(|folder| {
+            !readable_folder_routes.contains(&(export.vault.id.clone(), folder.id.clone()))
+        })
         .map(|folder| {
             Ok(OkfOmittedFolder {
                 folder_id: FolderId::new(folder.id.clone())
                     .map_err(|error| CliError::InvalidInput(error.to_string()))?,
+                source_vault_id: None,
                 display_path: SafeRelativePath::new("folder_path", folder.path.clone())
                     .map_err(|error| CliError::InvalidInput(error.to_string()))?,
                 reason: if folder.accessible {
@@ -720,55 +901,151 @@ fn materialize_remote_projection(
         latest_sequence: bootstrap.latest_sequence,
     })
     .map_err(|error| CliError::InvalidInput(error.to_string()))?;
-    add_empty_readable_folders(&mut projection, export, &readable_folder_ids)?;
+    add_empty_readable_folders(&mut projection, export, None, &readable_folder_routes, None)?;
+    for mounted in mounted_folders {
+        add_empty_readable_folders(
+            &mut projection,
+            &mounted.export,
+            Some(&mounted.export.vault.id),
+            &readable_folder_routes,
+            Some((&mounted.mount.source_folder_id, &mounted.display_path)),
+        )?;
+    }
     remove_stale_object_files(root, &prior_state.objects, &projection.state.objects)?;
     write_projection_files(root, &projection.files)?;
+    Ok(())
+}
+
+struct OpenedPagesAppendContext<'a> {
+    local_keys: &'a BTreeMap<(String, String, u32), LocalFolderKey>,
+    prior_paths: &'a BTreeMap<(String, String, String), String>,
+    opened_pages: &'a mut Vec<OpenedPage>,
+    readable_folder_routes: &'a mut BTreeSet<(String, String)>,
+}
+
+fn append_opened_pages_from_bootstrap(
+    export: &CliEncryptedVaultExport,
+    bootstrap: &CliSyncBootstrap,
+    only_folder_id: Option<&str>,
+    display_path_override: Option<&str>,
+    context: &mut OpenedPagesAppendContext<'_>,
+) -> Result<(), CliError> {
+    let source_vault_id = VaultId::new(export.vault.id.clone())
+        .map_err(|error| CliError::InvalidInput(error.to_string()))?;
+    for object in bootstrap.objects.iter().filter(|object| {
+        !object.deleted && only_folder_id.is_none_or(|folder_id| folder_id == object.folder_id)
+    }) {
+        let envelope = EncryptedFolderObjectEnvelope::from_json(&object.ciphertext)
+            .map_err(|error| CliError::InvalidInput(error.to_string()))?;
+        let Some(local_key) = context.local_keys.get(&(
+            export.vault.id.clone(),
+            object.folder_id.clone(),
+            envelope.key_version,
+        )) else {
+            continue;
+        };
+        let key = FolderKey::from_base64(&local_key.key_base64)
+            .map_err(|error| CliError::InvalidInput(error.to_string()))?;
+        let aad = FolderObjectAad {
+            vault_id: source_vault_id.clone(),
+            folder_id: FolderId::new(object.folder_id.clone())
+                .map_err(|error| CliError::InvalidInput(error.to_string()))?,
+            object_id: ObjectId::new(object.object_id.clone())
+                .map_err(|error| CliError::InvalidInput(error.to_string()))?,
+            key_version: envelope.key_version,
+        };
+        let plaintext = open_folder_object(&key, &aad, &envelope)
+            .map_err(|error| CliError::InvalidInput(error.to_string()))?;
+        let folder = export
+            .folders
+            .iter()
+            .find(|folder| folder.id == object.folder_id)
+            .ok_or_else(|| CliError::NotFound(format!("folder {}", object.folder_id)))?;
+        let fallback_page_path = context
+            .prior_paths
+            .get(&(
+                export.vault.id.clone(),
+                object.folder_id.clone(),
+                object.object_id.clone(),
+            ))
+            .cloned()
+            .unwrap_or_else(|| format!("{}.md", object.object_id));
+        let (page_path, markdown) =
+            decode_folder_object_page_plaintext(plaintext, fallback_page_path)?;
+        context
+            .readable_folder_routes
+            .insert((export.vault.id.clone(), object.folder_id.clone()));
+        context.opened_pages.push(OpenedPage {
+            folder_id: FolderId::new(object.folder_id.clone())
+                .map_err(|error| CliError::InvalidInput(error.to_string()))?,
+            source_vault_id: display_path_override.map(|_| source_vault_id.clone()),
+            object_id: ObjectId::new(object.object_id.clone())
+                .map_err(|error| CliError::InvalidInput(error.to_string()))?,
+            folder_display_path: SafeRelativePath::new(
+                "folder_path",
+                display_path_override.unwrap_or(&folder.path).to_owned(),
+            )
+            .map_err(|error| CliError::InvalidInput(error.to_string()))?,
+            page_path: SafeRelativePath::new("page_path", page_path)
+                .map_err(|error| CliError::InvalidInput(error.to_string()))?,
+            markdown,
+            revision: object.revision,
+            key_version: envelope.key_version,
+            content_type: "text/markdown".to_owned(),
+        });
+    }
     Ok(())
 }
 
 fn add_empty_readable_folders(
     projection: &mut WorkingTreeProjection,
     export: &CliEncryptedVaultExport,
-    readable_folder_ids: &BTreeSet<String>,
+    source_vault_id: Option<&str>,
+    readable_folder_routes: &BTreeSet<(String, String)>,
+    only_folder_and_path: Option<(&str, &str)>,
 ) -> Result<(), CliError> {
     let existing = projection
         .state
         .folder_roots
         .iter()
-        .map(|root| root.folder_id.clone())
+        .map(|root| (root.source_vault_id.clone(), root.folder_id.clone()))
         .collect::<BTreeSet<_>>();
-    for folder in export
-        .folders
-        .iter()
-        .filter(|folder| readable_folder_ids.contains(&folder.id) && !existing.contains(&folder.id))
-    {
+    for folder in export.folders.iter().filter(|folder| {
+        only_folder_and_path.is_none_or(|(folder_id, _)| folder_id == folder.id)
+            && readable_folder_routes.contains(&(export.vault.id.clone(), folder.id.clone()))
+            && !existing.contains(&(source_vault_id.map(ToOwned::to_owned), folder.id.clone()))
+    }) {
+        let folder_path = only_folder_and_path
+            .map(|(_, display_path)| display_path.to_owned())
+            .unwrap_or_else(|| folder.path.clone());
         projection.state.folder_roots.push(WorkingTreeFolderRoot {
             folder_id: folder.id.clone(),
-            path: folder.path.clone(),
+            source_vault_id: source_vault_id.map(ToOwned::to_owned),
+            path: folder_path.clone(),
             can_read: true,
             metadata_only: false,
         });
         projection.files.insert(
-            format!("{}/AGENTS.md", folder.path),
+            format!("{}/AGENTS.md", folder_path),
             format!(
                 "# Folder Agent Instructions\n\nFolder id: `{}`\n\nUse `raw/` for source captures, `compiled/` for curated wiki pages, and `output/` for generated artifacts.\n",
                 folder.id
             ),
         );
         projection.files.insert(
-            format!("{}/_index.md", folder.path),
-            format!("# {}\n\n", folder.path),
+            format!("{}/_index.md", folder_path),
+            format!("# {}\n\n", folder_path),
         );
         projection.files.insert(
-            format!("{}/_wiki/index.md", folder.path),
+            format!("{}/_wiki/index.md", folder_path),
             format!(
                 "# Folder Wiki\n\nFolder: {}\nReadable Pages: 0\n",
-                folder.path
+                folder_path
             ),
         );
         for convention in ["raw", "compiled", "output"] {
             projection.files.insert(
-                format!("{}/{convention}/.keep", folder.path),
+                format!("{}/{convention}/.keep", folder_path),
                 format!(
                     "# {convention}\n\nAgent convention directory for Folder `{}`.\n",
                     folder.id
@@ -943,7 +1220,9 @@ fn folder_path_for_object(
     state
         .folder_roots
         .iter()
-        .find(|folder| folder.folder_id == object.folder_id)
+        .find(|folder| {
+            folder.folder_id == object.folder_id && folder.source_vault_id == object.source_vault_id
+        })
         .map(|folder| folder.path.clone())
 }
 
@@ -1002,13 +1281,21 @@ fn remove_stale_object_files(
         .iter()
         .map(|object| {
             (
-                (object.folder_id.clone(), object.object_id.clone()),
+                (
+                    object.source_vault_id.clone(),
+                    object.folder_id.clone(),
+                    object.object_id.clone(),
+                ),
                 object.path.clone(),
             )
         })
         .collect::<BTreeMap<_, _>>();
     for old in old_objects {
-        let key = (old.folder_id.clone(), old.object_id.clone());
+        let key = (
+            old.source_vault_id.clone(),
+            old.folder_id.clone(),
+            old.object_id.clone(),
+        );
         let should_remove = match new_paths.get(&key) {
             Some(new_path) => new_path != &old.path,
             None => true,
@@ -1035,7 +1322,9 @@ fn folder_path_for_removed_object(
     Ok(state
         .folder_roots
         .iter()
-        .find(|folder| folder.folder_id == object.folder_id)
+        .find(|folder| {
+            folder.folder_id == object.folder_id && folder.source_vault_id == object.source_vault_id
+        })
         .map(|folder| PathBuf::from(&folder.path)))
 }
 
@@ -1101,8 +1390,41 @@ where
 struct LocalSyncResult {
     pushed_count: usize,
     conflict_count: usize,
-    path_overrides: BTreeMap<(String, String), String>,
+    path_overrides: BTreeMap<(String, String, String), String>,
     conflicted_markdown: BTreeMap<String, String>,
+}
+
+#[derive(Debug)]
+struct MountedFolderSyncContext {
+    mount: CliMountedFolder,
+    export: CliEncryptedVaultExport,
+    display_path: String,
+}
+
+impl MountedFolderSyncContext {
+    fn source_folder(&self) -> Option<&CliExportFolder> {
+        self.export
+            .folders
+            .iter()
+            .find(|folder| folder.id == self.mount.source_folder_id)
+    }
+}
+
+#[derive(Debug)]
+struct MountedFolderMaterializeContext {
+    mount: CliMountedFolder,
+    export: CliEncryptedVaultExport,
+    display_path: String,
+    bootstrap: CliSyncBootstrap,
+}
+
+impl MountedFolderMaterializeContext {
+    fn source_folder(&self) -> Option<&CliExportFolder> {
+        self.export
+            .folders
+            .iter()
+            .find(|folder| folder.id == self.mount.source_folder_id)
+    }
 }
 
 enum SubmitIntentOutcome {
@@ -1164,7 +1486,7 @@ struct CliFolderObjectPagePlaintext {
     markdown: String,
 }
 
-#[derive(Debug, Deserialize, serde::Serialize)]
+#[derive(Debug, Clone, Deserialize, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 struct CliEncryptedVaultExport {
     vault: CliExportVault,
@@ -1173,7 +1495,7 @@ struct CliEncryptedVaultExport {
     access_state: CliExportAccessState,
 }
 
-#[derive(Debug, Deserialize, serde::Serialize)]
+#[derive(Debug, Clone, Deserialize, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 struct CliExportVault {
     id: String,
@@ -1182,7 +1504,7 @@ struct CliExportVault {
     owner_user_id: Option<String>,
 }
 
-#[derive(Debug, Deserialize, serde::Serialize)]
+#[derive(Debug, Clone, Deserialize, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 struct CliExportFolder {
     id: String,
@@ -1193,7 +1515,7 @@ struct CliExportFolder {
     accessible: bool,
 }
 
-#[derive(Debug, Deserialize, serde::Serialize)]
+#[derive(Debug, Clone, Deserialize, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 struct CliFolderKeyGrant {
     folder_id: String,
@@ -1203,21 +1525,21 @@ struct CliFolderKeyGrant {
     wrapped_event_json: String,
 }
 
-#[derive(Debug, Deserialize, serde::Serialize)]
+#[derive(Debug, Clone, Deserialize, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 struct CliExportAccessState {
     members: Vec<String>,
     admins: Vec<String>,
 }
 
-#[derive(Debug, Deserialize, serde::Serialize)]
+#[derive(Debug, Clone, Deserialize, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 struct CliSyncBootstrap {
     latest_sequence: u64,
     objects: Vec<CliSyncObject>,
 }
 
-#[derive(Debug, Deserialize, serde::Serialize)]
+#[derive(Debug, Clone, Deserialize, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 struct CliSyncObject {
     folder_id: String,
@@ -1225,6 +1547,23 @@ struct CliSyncObject {
     revision: u64,
     ciphertext: String,
     deleted: bool,
+}
+
+#[derive(Debug, Clone, Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CliVaultMetadata {
+    #[serde(default)]
+    mounted_folders: Vec<CliMountedFolder>,
+}
+
+#[derive(Debug, Clone, Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CliMountedFolder {
+    mount_id: String,
+    source_vault_id: String,
+    source_folder_id: String,
+    display_name: String,
+    state: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1262,6 +1601,7 @@ mod tests {
             version: "finite-vault-working-tree-state-v1".to_owned(),
             folder_roots: vec![WorkingTreeFolderRoot {
                 folder_id: "general".to_owned(),
+                source_vault_id: None,
                 path: "General".to_owned(),
                 can_read: true,
                 metadata_only: false,
@@ -1269,6 +1609,7 @@ mod tests {
             objects: vec![
                 WorkingTreeObjectManifestEntry {
                     folder_id: "general".to_owned(),
+                    source_vault_id: None,
                     path: "existing.md".to_owned(),
                     object_id: "obj_existing00000".to_owned(),
                     revision: 1,
@@ -1278,6 +1619,7 @@ mod tests {
                 },
                 WorkingTreeObjectManifestEntry {
                     folder_id: "general".to_owned(),
+                    source_vault_id: None,
                     path: "deleted.md".to_owned(),
                     object_id: "obj_deleted000000".to_owned(),
                     revision: 1,
@@ -1370,8 +1712,9 @@ mod tests {
             .unwrap();
         let agent_state = AgentState::new("vault", "2026-06-26T23:30:00Z");
         let keys_by_folder = BTreeMap::from([(
-            ("general".to_owned(), 1),
+            ("vault".to_owned(), "general".to_owned(), 1),
             LocalFolderKey {
+                vault_id: Some("vault".to_owned()),
                 folder_id: "general".to_owned(),
                 key_version: 1,
                 key_base64: FolderKey::from_bytes([1; 32]).to_base64(),
@@ -1379,7 +1722,8 @@ mod tests {
                 opened_at: "2026-06-26T23:30:00Z".to_owned(),
             },
         )]);
-        let current_key_version_by_folder = BTreeMap::from([("general".to_owned(), 2)]);
+        let current_key_version_by_folder =
+            BTreeMap::from([(("vault".to_owned(), "general".to_owned()), 2)]);
         let context = SubmitIntentContext {
             env: &env,
             server_url: "http://127.0.0.1:9",
@@ -1393,6 +1737,7 @@ mod tests {
             action: WorkingTreeIntentAction::Create,
             route: WorkingTreeIntentRoute::EncryptedObjectWrite,
             folder_id: Some(FolderId::new("general").unwrap()),
+            source_vault_id: None,
             object_id: Some(ObjectId::new("obj_currentkey01").unwrap()),
             target_path: Some(SafeRelativePath::new("page_path", "page.md").unwrap()),
             from_path: None,
@@ -1472,9 +1817,9 @@ mod tests {
                 admins: Vec::new(),
             },
         };
-        let readable = BTreeSet::from(["home".to_owned()]);
+        let readable = BTreeSet::from([("vault".to_owned(), "home".to_owned())]);
 
-        add_empty_readable_folders(&mut projection, &export, &readable).unwrap();
+        add_empty_readable_folders(&mut projection, &export, None, &readable, None).unwrap();
 
         assert_eq!(projection.state.folder_roots.len(), 1);
         assert_eq!(projection.state.folder_roots[0].folder_id, "home");
@@ -1493,12 +1838,14 @@ mod tests {
             version: "finite-vault-working-tree-state-v1".to_owned(),
             folder_roots: vec![WorkingTreeFolderRoot {
                 folder_id: "general".to_owned(),
+                source_vault_id: None,
                 path: "General".to_owned(),
                 can_read: true,
                 metadata_only: false,
             }],
             objects: vec![WorkingTreeObjectManifestEntry {
                 folder_id: "general".to_owned(),
+                source_vault_id: None,
                 path: "old.md".to_owned(),
                 object_id: "obj_same0000000".to_owned(),
                 revision: 1,
@@ -1511,6 +1858,7 @@ mod tests {
         write_json_file(&root.join(".finitebrain/working-tree-state.json"), &state).unwrap();
         let new_objects = vec![WorkingTreeObjectManifestEntry {
             folder_id: "general".to_owned(),
+            source_vault_id: None,
             path: "new.md".to_owned(),
             object_id: "obj_same0000000".to_owned(),
             revision: 2,
@@ -1542,6 +1890,7 @@ mod tests {
         let folder_key = FolderKey::from_bytes([3; 32]);
         let mut agent_state = AgentState::new("vault", "2026-06-26T23:30:00Z");
         agent_state.local_folder_keys.push(LocalFolderKey {
+            vault_id: Some("vault".to_owned()),
             folder_id: "home".to_owned(),
             key_version: 1,
             key_base64: folder_key.to_base64(),
@@ -1602,6 +1951,7 @@ mod tests {
             "npub-owner",
             &export,
             &bootstrap,
+            &[],
             &BTreeMap::new(),
         )
         .unwrap();
@@ -1614,6 +1964,163 @@ mod tests {
         assert_eq!(state.objects.len(), 1);
         assert_eq!(state.objects[0].path, "docs/from-envelope.md");
         assert_eq!(state.sync.latest_sequence, 7);
+    }
+
+    #[test]
+    fn materialize_remote_projection_mounts_source_folder_into_destination_tree() {
+        let temp = TempDir::new().unwrap();
+        let root = temp.path();
+        fs::create_dir_all(root.join(".finitebrain")).unwrap();
+        write_json_file(
+            &root.join(".finitebrain/working-tree-state.json"),
+            &VaultWorkingTreeStateManifest {
+                version: "finite-vault-working-tree-state-v1".to_owned(),
+                folder_roots: Vec::new(),
+                objects: Vec::new(),
+                sync: WorkingTreeSyncState { latest_sequence: 0 },
+            },
+        )
+        .unwrap();
+        let folder_key = FolderKey::from_bytes([8; 32]);
+        let mut agent_state = AgentState::new("dest", "2026-06-26T23:30:00Z");
+        agent_state.local_folder_keys.push(LocalFolderKey {
+            vault_id: Some("source".to_owned()),
+            folder_id: "shared-lab".to_owned(),
+            key_version: 1,
+            key_base64: folder_key.to_base64(),
+            source: "test".to_owned(),
+            opened_at: "2026-06-26T23:30:00Z".to_owned(),
+        });
+        write_agent_state(root, &agent_state).unwrap();
+        let env = CliEnvironment {
+            cwd: root.to_path_buf(),
+            config_dir: root.join("config"),
+            now: Some("2026-06-26T23:30:00Z".to_owned()),
+        };
+        let object_id = ObjectId::new("obj_mounted00001").unwrap();
+        let page_path = SafeRelativePath::new("page_path", "compiled/share-brief.md").unwrap();
+        let plaintext = encode_folder_object_page_plaintext(&page_path, "# Share Brief\n").unwrap();
+        let aad = FolderObjectAad {
+            vault_id: VaultId::new("source").unwrap(),
+            folder_id: FolderId::new("shared-lab").unwrap(),
+            object_id: object_id.clone(),
+            key_version: 1,
+        };
+        let envelope = encrypt_folder_object(&folder_key, &aad, &plaintext).unwrap();
+        let destination_export = CliEncryptedVaultExport {
+            vault: CliExportVault {
+                id: "dest".to_owned(),
+                kind: "organization".to_owned(),
+                name: "Destination".to_owned(),
+                owner_user_id: None,
+            },
+            folders: vec![CliExportFolder {
+                id: "general".to_owned(),
+                path: "general".to_owned(),
+                access: "all_members".to_owned(),
+                current_key_version: 1,
+                shared_folder_source: false,
+                accessible: true,
+            }],
+            key_grants: Vec::new(),
+            access_state: CliExportAccessState {
+                members: Vec::new(),
+                admins: Vec::new(),
+            },
+        };
+        let source_export = CliEncryptedVaultExport {
+            vault: CliExportVault {
+                id: "source".to_owned(),
+                kind: "organization".to_owned(),
+                name: "Source".to_owned(),
+                owner_user_id: None,
+            },
+            folders: vec![CliExportFolder {
+                id: "shared-lab".to_owned(),
+                path: "shared-lab".to_owned(),
+                access: "restricted".to_owned(),
+                current_key_version: 1,
+                shared_folder_source: true,
+                accessible: true,
+            }],
+            key_grants: Vec::new(),
+            access_state: CliExportAccessState {
+                members: Vec::new(),
+                admins: Vec::new(),
+            },
+        };
+        let mounted = MountedFolderMaterializeContext {
+            mount: CliMountedFolder {
+                mount_id: "mount-source-shared-lab".to_owned(),
+                source_vault_id: "source".to_owned(),
+                source_folder_id: "shared-lab".to_owned(),
+                display_name: "Shared Lab".to_owned(),
+                state: "available".to_owned(),
+            },
+            export: source_export,
+            display_path: "shared-lab".to_owned(),
+            bootstrap: CliSyncBootstrap {
+                latest_sequence: 11,
+                objects: vec![CliSyncObject {
+                    folder_id: "shared-lab".to_owned(),
+                    object_id: object_id.as_str().to_owned(),
+                    revision: 3,
+                    ciphertext: envelope.canonical_json(),
+                    deleted: false,
+                }],
+            },
+        };
+
+        materialize_remote_projection(
+            &env,
+            root,
+            "npub-dest",
+            &destination_export,
+            &CliSyncBootstrap {
+                latest_sequence: 2,
+                objects: Vec::new(),
+            },
+            &[mounted],
+            &BTreeMap::new(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            fs::read_to_string(root.join("shared-lab/compiled/share-brief.md")).unwrap(),
+            "# Share Brief\n"
+        );
+        let state = read_working_tree_state(root).unwrap();
+        let root_entry = state
+            .folder_roots
+            .iter()
+            .find(|root| root.path == "shared-lab")
+            .unwrap();
+        assert_eq!(root_entry.folder_id, "shared-lab");
+        assert_eq!(root_entry.source_vault_id.as_deref(), Some("source"));
+        let object_entry = state
+            .objects
+            .iter()
+            .find(|object| object.path == "compiled/share-brief.md")
+            .unwrap();
+        assert_eq!(object_entry.source_vault_id.as_deref(), Some("source"));
+
+        let intents = plan_working_tree_change_intents(
+            &state,
+            &[WorkingTreeChange::Upsert {
+                path: SafeRelativePath::new("change_path", "shared-lab/compiled/share-brief.md")
+                    .unwrap(),
+                markdown: "# Updated\n".to_owned(),
+            }],
+        );
+        assert_eq!(
+            intents[0].source_vault_id.as_ref().map(ToString::to_string),
+            Some("source".to_owned())
+        );
+        assert_eq!(
+            intents[0].folder_id,
+            Some(FolderId::new("shared-lab").unwrap())
+        );
+        assert_eq!(intents[0].base_revision, Some(3));
     }
 
     #[test]
@@ -1633,6 +2140,7 @@ mod tests {
         .unwrap();
         let mut agent_state = AgentState::new("vault", "2026-06-26T23:30:00Z");
         agent_state.local_folder_keys.push(LocalFolderKey {
+            vault_id: Some("vault".to_owned()),
             folder_id: "home".to_owned(),
             key_version: 1,
             key_base64: FolderKey::from_bytes([1; 32]).to_base64(),
@@ -1677,6 +2185,7 @@ mod tests {
             "npub-owner",
             &export,
             &bootstrap,
+            &[],
             &BTreeMap::new(),
         )
         .unwrap();

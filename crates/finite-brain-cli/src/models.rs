@@ -147,6 +147,8 @@ pub(crate) struct AgentSyncState {
 #[derive(Debug, Clone, Eq, PartialEq, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UnlockedFolder {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vault_id: Option<String>,
     pub folder_id: String,
     pub key_version: u32,
     pub opened_at: String,
@@ -156,6 +158,8 @@ pub struct UnlockedFolder {
 #[derive(Debug, Clone, Eq, PartialEq, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct LocalFolderKey {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) vault_id: Option<String>,
     pub(crate) folder_id: String,
     pub(crate) key_version: u32,
     pub(crate) key_base64: String,

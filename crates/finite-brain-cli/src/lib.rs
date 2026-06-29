@@ -685,6 +685,7 @@ fn unlock<W: Write>(
         for folder_id in candidates {
             if known.insert(folder_id.clone()) {
                 state.unlocked_folders.push(UnlockedFolder {
+                    vault_id: Some(state.vault_id.clone()),
                     folder_id: folder_id.clone(),
                     key_version: 1,
                     opened_at: now.clone(),
@@ -1507,6 +1508,7 @@ mod tests {
         fs::create_dir_all(tree.join(".finitebrain")).unwrap();
         let mut state = AgentState::new("acme", "2026-06-24T20:46:36Z");
         state.local_folder_keys.push(LocalFolderKey {
+            vault_id: Some("acme".to_owned()),
             folder_id: folder_id.to_owned(),
             key_version: 1,
             key_base64: folder_key.to_base64(),
@@ -1905,12 +1907,14 @@ mod tests {
             folder_roots: vec![
                 WorkingTreeFolderRoot {
                     folder_id: "general".to_owned(),
+                    source_vault_id: None,
                     path: "General".to_owned(),
                     can_read: true,
                     metadata_only: false,
                 },
                 WorkingTreeFolderRoot {
                     folder_id: "locked".to_owned(),
+                    source_vault_id: None,
                     path: "Locked".to_owned(),
                     can_read: false,
                     metadata_only: true,
@@ -2104,6 +2108,7 @@ mod tests {
         state.server_url = Some("http://127.0.0.1:9".to_owned());
         state.daemon.state = DaemonRunState::Running;
         state.local_folder_keys.push(LocalFolderKey {
+            vault_id: Some("vault".to_owned()),
             folder_id: "general".to_owned(),
             key_version: 1,
             key_base64: FolderKey::from_bytes([9; 32]).to_base64(),
@@ -2117,6 +2122,7 @@ mod tests {
                 version: WORKING_TREE_STATE_VERSION.to_owned(),
                 folder_roots: vec![WorkingTreeFolderRoot {
                     folder_id: "general".to_owned(),
+                    source_vault_id: None,
                     path: "General".to_owned(),
                     can_read: true,
                     metadata_only: false,
@@ -2184,6 +2190,7 @@ mod tests {
         state.server_url = Some("http://127.0.0.1:9".to_owned());
         state.daemon.state = DaemonRunState::Running;
         state.local_folder_keys.push(LocalFolderKey {
+            vault_id: Some("vault".to_owned()),
             folder_id: "general".to_owned(),
             key_version: 1,
             key_base64: FolderKey::from_bytes([9; 32]).to_base64(),
@@ -2197,6 +2204,7 @@ mod tests {
                 version: WORKING_TREE_STATE_VERSION.to_owned(),
                 folder_roots: vec![WorkingTreeFolderRoot {
                     folder_id: "general".to_owned(),
+                    source_vault_id: None,
                     path: "General".to_owned(),
                     can_read: true,
                     metadata_only: false,

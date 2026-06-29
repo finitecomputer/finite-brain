@@ -7,7 +7,9 @@ use std::fmt;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::{CoreError, FolderAccessMode, FolderId, ObjectId, SafeRelativePath, UserId, Vault};
+use crate::{
+    CoreError, FolderAccessMode, FolderId, ObjectId, SafeRelativePath, UserId, Vault, VaultId,
+};
 
 /// Portability-layer errors.
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -55,6 +57,8 @@ impl From<CoreError> for PortabilityError {
 pub struct OpenedPage {
     /// Folder containing the page.
     pub folder_id: FolderId,
+    /// Source Vault for mounted Folders. `None` means the opened Vault.
+    pub source_vault_id: Option<VaultId>,
     /// Current encrypted object id.
     pub object_id: ObjectId,
     /// Display path of the containing Folder in a readable bundle.
@@ -76,6 +80,8 @@ pub struct OpenedPage {
 pub struct OkfOmittedFolder {
     /// Folder id.
     pub folder_id: FolderId,
+    /// Source Vault for mounted Folders. `None` means the opened Vault.
+    pub source_vault_id: Option<VaultId>,
     /// User-visible Folder path. Page-level details remain omitted.
     pub display_path: SafeRelativePath,
     /// Omission reason.
@@ -362,6 +368,9 @@ pub struct VaultWorkingTreeStateManifest {
 pub struct WorkingTreeFolderRoot {
     /// Folder id.
     pub folder_id: String,
+    /// Source Vault for mounted Folders. Missing means the opened Vault.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_vault_id: Option<String>,
     /// Materialized Folder path.
     pub path: String,
     /// Whether plaintext files may be read.
@@ -376,6 +385,9 @@ pub struct WorkingTreeFolderRoot {
 pub struct WorkingTreeObjectManifestEntry {
     /// Folder id.
     pub folder_id: String,
+    /// Source Vault for mounted Folder Objects. Missing means the opened Vault.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_vault_id: Option<String>,
     /// Plaintext path inside the Folder root.
     pub path: String,
     /// Folder Object id.
@@ -459,6 +471,8 @@ pub struct WorkingTreeChangeIntent {
     pub route: WorkingTreeIntentRoute,
     /// Destination/source Folder id when known.
     pub folder_id: Option<FolderId>,
+    /// Source Vault for mounted Folders. `None` means the opened Vault.
+    pub source_vault_id: Option<VaultId>,
     /// Existing or generated Object id when known.
     pub object_id: Option<ObjectId>,
     /// Path inside the Folder root when known.
@@ -565,6 +579,7 @@ mod tests {
             ],
             omissions: vec![OkfOmittedFolder {
                 folder_id: FolderId::new("board").unwrap(),
+                source_vault_id: None,
                 display_path: SafeRelativePath::new("folder_path", "Board").unwrap(),
                 reason: "missing key for Board/secret-plan.md".to_owned(),
             }],
@@ -662,6 +677,7 @@ mod tests {
             opened_pages: vec![opened],
             locked_folders: vec![OkfOmittedFolder {
                 folder_id: FolderId::new("board").unwrap(),
+                source_vault_id: None,
                 display_path: SafeRelativePath::new("folder_path", "Board").unwrap(),
                 reason: "inaccessible secret-plan".to_owned(),
             }],
@@ -744,6 +760,7 @@ mod tests {
             opened_pages: vec![opened],
             locked_folders: vec![OkfOmittedFolder {
                 folder_id: FolderId::new("board").unwrap(),
+                source_vault_id: None,
                 display_path: SafeRelativePath::new("folder_path", "Board").unwrap(),
                 reason: "inaccessible".to_owned(),
             }],
@@ -882,6 +899,7 @@ mod tests {
     ) -> OpenedPage {
         OpenedPage {
             folder_id: FolderId::new(folder_id).unwrap(),
+            source_vault_id: None,
             object_id: ObjectId::new(object_id).unwrap(),
             folder_display_path: SafeRelativePath::new("folder_path", folder_display_path).unwrap(),
             page_path: SafeRelativePath::new("page_path", page_path).unwrap(),
