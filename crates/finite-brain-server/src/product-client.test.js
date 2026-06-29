@@ -58,6 +58,30 @@ function objectIdCandidateBaseForTest(value) {
     .slice(0, 88) || "page"}`.padEnd(16, "0").slice(0, 112);
 }
 
+function textNode(value) {
+  return { nodeType: 3, nodeValue: value };
+}
+
+function nodeTextContent(node) {
+  if (node.nodeType === 3) return node.nodeValue || "";
+  return (node.childNodes || []).map(nodeTextContent).join("");
+}
+
+function elementNode(tagName, children = [], attributes = {}) {
+  return {
+    nodeType: 1,
+    tagName: tagName.toUpperCase(),
+    childNodes: children,
+    children: children.filter((child) => child.nodeType === 1),
+    className: attributes.className || "",
+    dataset: attributes.dataset || {},
+    textContent: attributes.textContent ?? children.map(nodeTextContent).join(""),
+    getAttribute(name) {
+      return attributes[name] || null;
+    },
+  };
+}
+
 assert.equal(client.deriveSignerState(null).status, "unavailable");
 assert.equal(client.deriveSignerState({ getPublicKey() {} }).status, "unsupported");
 assert.equal(
@@ -584,6 +608,54 @@ assert.equal(client.readerPageRows("general", draftPages)[0].label, "Draft Page"
   assert.equal(openedSync.objects[0].status, "ready");
   assert.equal(openedSync.objects[0].title, "Hello");
 
+  const cliPageWrite = await client.buildPageWriteRequest(keyring, {
+    authorNpub,
+    baseRevision: null,
+    createdAtUnix: 1780000000,
+    folderId: "general",
+    keyVersion: 1,
+    nonceBytes: new Uint8Array(12).fill(2),
+    objectId: "obj_cli_page0001",
+    plaintext: JSON.stringify({
+      version: "finite-folder-object-page-v1",
+      path: "compiled/hermes-agent-overview.md",
+      markdown: "# Hermes Agent Overview\n\nAgent-authored docs.",
+    }),
+    signEvent: async (template) => ({
+      ...template,
+      id: "cli-revision-event-id",
+      pubkey: "00".repeat(32),
+      sig: "revision-signature",
+    }),
+    vaultId: "smoke",
+  });
+  const openedCliPage = await client.openFolderObject(keyring, {
+    vaultId: "smoke",
+    folderId: "general",
+    objectId: "obj_cli_page0001",
+    revision: 1,
+    ciphertext: cliPageWrite.ciphertext,
+  });
+  assert.equal(openedCliPage.status, "ready");
+  assert.equal(openedCliPage.path, "compiled/hermes-agent-overview.md");
+  assert.equal(openedCliPage.text, "# Hermes Agent Overview\n\nAgent-authored docs.");
+
+  const openedCliSync = await client.openSyncObjects(keyring, {
+    objects: [
+      {
+        vaultId: "smoke",
+        folderId: "general",
+        objectId: "obj_cli_page0001",
+        revision: 1,
+        ciphertext: cliPageWrite.ciphertext,
+      },
+    ],
+  });
+  const openedCliRow = client.readerPageRows("general", openedCliSync.objects)[0];
+  assert.equal(openedCliRow.label, "Hermes Agent Overview");
+  assert.equal(openedCliRow.detail, "compiled/hermes-agent-overview.md");
+  assert.equal(client.pagePathLabel(openedCliRow), "general/compiled/hermes-agent-overview.md");
+
   const restrictedOldKey = Buffer.alloc(32, 8).toString("base64");
   await client.openFolderKeyGrantPlaintext(keyring, {
     version: "finite-folder-key-grant-v1",
@@ -943,6 +1015,42 @@ assert.equal(client.readerPageRows("general", draftPages)[0].label, "Draft Page"
       { text: "const ok = true;", type: "code" },
     ])
   );
+  assert.equal(
+    client.markdownFromEditorElement(
+      elementNode("div", [
+        elementNode("h1", [textNode("Draft Title")]),
+        elementNode("p", [
+          textNode("Write "),
+          elementNode("strong", [textNode("bold")]),
+          textNode(", "),
+          elementNode("em", [textNode("soft")]),
+          textNode(", "),
+          elementNode("code", [textNode("local")]),
+          textNode(", and "),
+          elementNode("span", [textNode("Roadmap")], {
+            className: "internal-link",
+            dataset: { target: "roadmap" },
+          }),
+          textNode("."),
+        ]),
+        elementNode("ul", [
+          elementNode("li", [textNode("First")]),
+          elementNode("li", [textNode("Second")]),
+        ]),
+        elementNode("blockquote", [textNode("Keep it simple")]),
+        elementNode("pre", [], { textContent: "const ok = true;" }),
+        elementNode("hr"),
+      ])
+    ),
+    [
+      "# Draft Title",
+      "Write **bold**, *soft*, `local`, and [[roadmap|Roadmap]].",
+      "- First\n- Second",
+      "> Keep it simple",
+      "```\nconst ok = true;\n```",
+      "---",
+    ].join("\n\n")
+  );
   assert.equal(JSON.stringify(client.pageStatsForText("# Title\n\nSee [[Roadmap]] and words.")), JSON.stringify({
     links: 1,
     words: 6,
@@ -1185,6 +1293,7 @@ assert.equal(client.readerPageRows("general", draftPages)[0].label, "Draft Page"
     ciphertext: preparedImport.writes[0].body.ciphertext,
   });
   assert.equal(openedImportedAlpha.status, "ready");
+  assert.equal(openedImportedAlpha.path, preparedImport.writes[0].targetPath);
   assert.match(openedImportedAlpha.text, /\[Beta\]\(beta imported\.md\)/);
 
   const graph = client.buildGraphProjection([

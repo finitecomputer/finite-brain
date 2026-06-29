@@ -277,6 +277,71 @@ label,
   margin-top: 12px;
 }
 
+.page-source-editor[hidden] {
+  display: none;
+}
+
+.editor-shell {
+  display: grid;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.editor-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  overflow-x: auto;
+  padding-bottom: 2px;
+}
+
+.editor-toolbar button {
+  flex: 0 0 auto;
+  min-width: 32px;
+  min-height: 30px;
+  border-radius: 5px;
+  background: transparent;
+  color: #b9b9b9;
+  font-size: 12px;
+  font-weight: 720;
+  padding: 4px 8px;
+}
+
+.editor-toolbar button:hover,
+.editor-toolbar button:focus-visible {
+  background: #333333;
+  color: #f1f1f1;
+}
+
+.editor-toolbar .editor-mode-toggle {
+  min-width: 78px;
+  border-color: rgba(110, 168, 255, 0.42);
+  color: #9fc2ff;
+}
+
+.page-visual-editor {
+  min-height: 210px;
+  max-height: min(48vh, 520px);
+  overflow: auto;
+  border: 1px solid #363636;
+  border-radius: 7px;
+  background: #1f1f1f;
+  color: #dedede;
+  padding: 20px min(6vw, 58px);
+  outline: none;
+}
+
+.page-visual-editor:focus-visible {
+  border-color: rgba(110, 168, 255, 0.72);
+  box-shadow: 0 0 0 2px rgba(110, 168, 255, 0.16);
+}
+
+.page-visual-editor:empty::before {
+  color: #747474;
+  content: "Start writing...";
+}
+
 .action-row {
   display: flex;
   flex-wrap: wrap;
@@ -1601,9 +1666,18 @@ pre {
 }
 
 .editor-drawer > summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
   cursor: pointer;
   color: #9f9f9f;
   font-size: 12px;
+  font-weight: 650;
+}
+
+#editorStatusText {
+  color: #787878;
   font-weight: 650;
 }
 

@@ -24,6 +24,7 @@ const FiniteBrainProductClient = (() => {
     lastVaultInvitationCode: null,
     lastVaultInvitationId: null,
     readerMode: "reading",
+    editorMode: "visual",
     vaultControlsCollapsedAfterLoad: false,
     expandedFolderIds: new Set(),
     contextMenuTarget: null,
@@ -41,6 +42,7 @@ const FiniteBrainProductClient = (() => {
   };
   const CIPHER = "AES-256-GCM";
   const FOLDER_OBJECT_VERSION = "finite-folder-object-v1";
+  const FOLDER_OBJECT_PAGE_VERSION = "finite-folder-object-page-v1";
   const REVISION_VERSION = "finite-folder-object-revision-v1";
   const APP_EVENT_KIND = 30078;
   const MAX_OBJECT_ID_ATTEMPTS = 1000;
@@ -715,13 +717,45 @@ const FiniteBrainProductClient = (() => {
       key.cryptoKey,
       base64ToBytes(envelope.ciphertext)
     );
+    const page = decodeFolderObjectPagePlaintext(
+      new TextDecoder().decode(plaintext),
+      input.path || `${input.objectId}.md`
+    );
     return {
       folderId: input.folderId,
       objectId: input.objectId,
+      path: page.path,
       revision: input.revision,
       status: "ready",
-      text: new TextDecoder().decode(plaintext),
+      text: page.markdown,
     };
+  }
+
+  function decodeFolderObjectPagePlaintext(plaintext, fallbackPath) {
+    const fallback = normalizeSafeRelativePath(fallbackPath || "page.md", "Page path");
+    try {
+      const page = JSON.parse(String(plaintext || ""));
+      if (page?.version === FOLDER_OBJECT_PAGE_VERSION) {
+        const path = normalizeSafeRelativePath(page.path, "Page path");
+        if (!path.toLowerCase().endsWith(".md")) throw new Error("Page path must end in .md");
+        if (typeof page.markdown !== "string") throw new Error("Page markdown must be a string");
+        return { path, markdown: page.markdown };
+      }
+    } catch (error) {
+      if (error instanceof SyntaxError) return { path: fallback, markdown: String(plaintext || "") };
+      throw error;
+    }
+    return { path: fallback, markdown: String(plaintext || "") };
+  }
+
+  function encodeFolderObjectPagePlaintext(path, markdown) {
+    const safePath = normalizeSafeRelativePath(path || "page.md", "Page path");
+    if (!safePath.toLowerCase().endsWith(".md")) throw new Error("Page path must end in .md");
+    return JSON.stringify({
+      version: FOLDER_OBJECT_PAGE_VERSION,
+      path: safePath,
+      markdown: String(markdown || ""),
+    });
   }
 
   async function ciphertextHash(envelopeJson) {
@@ -856,7 +890,9 @@ const FiniteBrainProductClient = (() => {
           return {
             ...object,
             ...opened,
-            title: opened.text ? pageTitleFromText(opened.text, object.objectId) : object.title,
+            title: opened.text
+              ? pageTitleFromText(opened.text, pageTitleFromPath(opened.path || object.path, object.objectId))
+              : object.title,
           };
         } catch (error) {
           return {
@@ -876,6 +912,18 @@ const FiniteBrainProductClient = (() => {
   function pageTitleFromText(text, fallback) {
     const heading = String(text || "").match(/^#\s+(.+)$/m);
     return heading ? heading[1].trim() : fallback;
+  }
+
+  function pageTitleFromPath(path, fallback) {
+    const filename = String(path || "")
+      .split("/")
+      .filter(Boolean)
+      .pop();
+    return filename ? filename.replace(/\.md$/i, "") : fallback;
+  }
+
+  function pageTitleForPage(page) {
+    return page.title || pageTitleFromText(page.text ?? "", pageTitleFromPath(page.path, page.objectId));
   }
 
   function normalizePageReference(value) {
@@ -1341,7 +1389,7 @@ const FiniteBrainProductClient = (() => {
         nonceBytes,
         objectId: entry.objectId,
         operation: entry.action === "overwrite" ? "update" : "create",
-        plaintext: entry.markdown,
+        plaintext: encodeFolderObjectPagePlaintext(entry.targetPath, entry.markdown),
         signEvent: options.signEvent,
         vaultId: options.vaultId,
       });
@@ -1365,7 +1413,7 @@ const FiniteBrainProductClient = (() => {
     const visiblePages = [...pages].filter((page) => page.status === "ready");
     const nodes = visiblePages.map((page) => {
       const id = pageKey(page.folderId, page.objectId);
-      const title = page.title || pageTitleFromText(page.text, page.objectId);
+      const title = pageTitleForPage(page);
       return {
         id,
         folderId: page.folderId,
@@ -1602,8 +1650,10 @@ const FiniteBrainProductClient = (() => {
       pages.push({
         folderId,
         objectId,
+        path: draft.path || `${objectId}.md`,
         status: "ready",
         text: draft.text,
+        title: pageTitleFromText(draft.text, pageTitleFromPath(draft.path, objectId)),
       });
     }
     for (const [key, page] of state.projection.pages.entries()) {
@@ -1612,9 +1662,10 @@ const FiniteBrainProductClient = (() => {
         pages.push({
           folderId,
           objectId,
+          path: page.path || `${objectId}.md`,
           status: "ready",
           text: page.text,
-          title: page.title,
+          title: pageTitleForPage({ ...page, objectId }),
         });
       }
     }
@@ -1628,7 +1679,7 @@ const FiniteBrainProductClient = (() => {
         {
           ...page,
           key,
-          title: page.title || pageTitleFromText(page.text ?? "", page.objectId),
+          title: pageTitleForPage(page),
         },
       ])
     );
@@ -1644,7 +1695,7 @@ const FiniteBrainProductClient = (() => {
         revision: draft.baseRevision || 0,
         status: "ready",
         text: draft.text,
-        title: pageTitleFromText(draft.text, objectId),
+        title: pageTitleFromText(draft.text, pageTitleFromPath(draft.path, objectId)),
       });
     }
     return [...pages.values()];
@@ -1686,7 +1737,7 @@ const FiniteBrainProductClient = (() => {
     return pages
       .filter((page) => !folderId || page.folderId === folderId)
       .map((page) => {
-        const title = page.title || pageTitleFromText(page.text ?? "", page.objectId);
+        const title = pageTitleForPage(page);
         return {
           ...page,
           title,
@@ -1703,7 +1754,7 @@ const FiniteBrainProductClient = (() => {
     const readable = [...pages].filter(isReadablePage);
     const referencesForPage = (candidate) =>
       [
-        candidate.title || pageTitleFromText(candidate.text ?? "", candidate.objectId),
+        pageTitleForPage(candidate),
         candidate.path || `${candidate.objectId}.md`,
         String(candidate.path || `${candidate.objectId}.md`).split("/").pop(),
       ]
@@ -1730,7 +1781,7 @@ const FiniteBrainProductClient = (() => {
       return {
         detail: target.folderId,
         key: keyForPage(target),
-        label: target.title || pageTitleFromText(target.text ?? "", target.objectId),
+        label: pageTitleForPage(target),
         status: "resolved",
       };
     });
@@ -1742,7 +1793,7 @@ const FiniteBrainProductClient = (() => {
       .map((candidate) => ({
         detail: candidate.folderId,
         key: keyForPage(candidate),
-        label: candidate.title || pageTitleFromText(candidate.text ?? "", candidate.objectId),
+        label: pageTitleForPage(candidate),
         status: "resolved",
       }))
       .sort((left, right) => left.label.localeCompare(right.label));
@@ -1836,7 +1887,7 @@ const FiniteBrainProductClient = (() => {
       detail: pagePathLabel(page),
       id: page.key || pageKey(page.folderId, page.objectId),
       kind: "page",
-      label: page.title || pageTitleFromText(page.text ?? "", page.objectId),
+      label: pageTitleForPage(page),
       pageKey: page.key || pageKey(page.folderId, page.objectId),
     }));
     const rows = [...commandPaletteCommands(), ...pageRows];
@@ -1857,11 +1908,11 @@ const FiniteBrainProductClient = (() => {
         return haystack.includes(needle);
       })
       .sort((left, right) =>
-        (left.title || left.objectId).localeCompare(right.title || right.objectId)
+        pageTitleForPage(left).localeCompare(pageTitleForPage(right))
       )
       .map((page) => ({
         ...page,
-        label: page.title || page.objectId,
+        label: pageTitleForPage(page),
         detail: `${page.folderId}/${page.path || `${page.objectId}.md`}`,
       }));
   }
@@ -1950,9 +2001,13 @@ const FiniteBrainProductClient = (() => {
     const drawer = $("editorDrawer");
     if (drawer) drawer.open = true;
     const focusDraft = () => {
-      const draft = $("pageDraftInput");
-      draft.focus?.();
-      draft.setSelectionRange?.(draft.value.length, draft.value.length);
+      if (state.editorMode === "source") {
+        const draft = $("pageDraftInput");
+        draft.focus?.();
+        draft.setSelectionRange?.(draft.value.length, draft.value.length);
+      } else {
+        $("pageVisualEditor")?.focus?.();
+      }
     };
     if (typeof requestAnimationFrame === "function") requestAnimationFrame(focusDraft);
     else focusDraft();
@@ -1973,7 +2028,7 @@ const FiniteBrainProductClient = (() => {
     $("okfDestinationFolderInput").value = folderId;
     $("pageObjectIdInput").value = objectId;
     $("pageBaseRevisionInput").value = "";
-    $("pageDraftInput").value = draftText;
+    setEditorDraftText(draftText);
     state.projection.localDrafts.set(draftKey, {
       baseRevision: 0,
       path: `${objectId}.md`,
@@ -2034,7 +2089,7 @@ const FiniteBrainProductClient = (() => {
       $("pageFolderIdInput").value = page.folderId;
       $("pageObjectIdInput").value = page.objectId;
       $("pageBaseRevisionInput").value = String(page.revision || "");
-      if (pageTextIsPresent(page)) $("pageDraftInput").value = page.text;
+      if (pageTextIsPresent(page)) setEditorDraftText(page.text);
     }
     render();
   }
@@ -2048,7 +2103,7 @@ const FiniteBrainProductClient = (() => {
         objectId,
         revision: draft.baseRevision || 0,
         path: draft.path || `${objectId}.md`,
-        title: pageTitleFromText(draft.text, objectId),
+        title: pageTitleFromText(draft.text, pageTitleFromPath(draft.path, objectId)),
       });
     }
     for (const [key, page] of state.projection.pages.entries()) {
@@ -2058,7 +2113,7 @@ const FiniteBrainProductClient = (() => {
         objectId,
         revision: page.revision || 0,
         path: page.path || `${objectId}.md`,
-        title: page.title || pageTitleFromText(page.text || "", objectId),
+        title: pageTitleForPage({ ...page, objectId }),
       });
     }
     return pages;
@@ -2193,15 +2248,41 @@ const FiniteBrainProductClient = (() => {
     if (element) element.setAttribute("aria-pressed", String(Boolean(pressed)));
   }
 
+  function appendFormattedText(parent, text) {
+    const source = String(text || "");
+    const pattern = /`([^`]+)`|\*\*([^*]+)\*\*|__([^_]+)__|\*([^*]+)\*|_([^_]+)_/g;
+    let cursor = 0;
+    for (const match of source.matchAll(pattern)) {
+      if (match.index > cursor) {
+        parent.appendChild(document.createTextNode(source.slice(cursor, match.index)));
+      }
+      if (match[1]) {
+        const code = document.createElement("code");
+        code.textContent = match[1];
+        parent.appendChild(code);
+      } else if (match[2] || match[3]) {
+        const strong = document.createElement("strong");
+        strong.textContent = match[2] || match[3];
+        parent.appendChild(strong);
+      } else if (match[4] || match[5]) {
+        const emphasis = document.createElement("em");
+        emphasis.textContent = match[4] || match[5];
+        parent.appendChild(emphasis);
+      }
+      cursor = match.index + match[0].length;
+    }
+    if (cursor < source.length) parent.appendChild(document.createTextNode(source.slice(cursor)));
+  }
+
   function appendInlineSegments(parent, text) {
     for (const segment of inlineLinkSegments(text)) {
       if (segment.kind === "text") {
-        parent.appendChild(document.createTextNode(segment.text));
+        appendFormattedText(parent, segment.text);
         continue;
       }
       const link = document.createElement("span");
       link.className = segment.kind === "external" ? "external-link" : "internal-link";
-      link.textContent = segment.text || segment.target;
+      appendFormattedText(link, segment.text || segment.target);
       if (segment.target) link.dataset.target = segment.target;
       parent.appendChild(link);
     }
@@ -2248,6 +2329,184 @@ const FiniteBrainProductClient = (() => {
       appendInlineSegments(paragraph, block.text);
       container.appendChild(paragraph);
     }
+  }
+
+  function renderMarkdownEditor(container, markdown) {
+    renderMarkdownPreview(container, markdown);
+    if (!container.childNodes.length) {
+      const paragraph = document.createElement("p");
+      paragraph.appendChild(document.createElement("br"));
+      container.appendChild(paragraph);
+    }
+  }
+
+  function escapeMarkdownCode(value) {
+    return String(value || "").replaceAll("`", "\\`");
+  }
+
+  function inlineMarkdownFromEditorNode(node) {
+    if (!node) return "";
+    if (node.nodeType === 3) return String(node.nodeValue || "").replace(/\u00a0/g, " ");
+    if (node.nodeType !== 1) return "";
+    const tag = String(node.tagName || "").toLowerCase();
+    if (tag === "br") return "\n";
+    const text = Array.from(node.childNodes || []).map(inlineMarkdownFromEditorNode).join("");
+    if (!text && tag !== "img") return "";
+    if (tag === "strong" || tag === "b") return `**${text}**`;
+    if (tag === "em" || tag === "i") return `*${text}*`;
+    if (tag === "code") return `\`${escapeMarkdownCode(text)}\``;
+    if (tag === "a") {
+      const target = node.getAttribute?.("href") || node.dataset?.target || "";
+      return target ? `[${text || target}](${target})` : text;
+    }
+    const className = String(node.className || "");
+    if (className.includes("internal-link") && node.dataset?.target) {
+      return text && text !== node.dataset.target
+        ? `[[${node.dataset.target}|${text}]]`
+        : `[[${node.dataset.target}]]`;
+    }
+    if (className.includes("external-link") && node.dataset?.target) {
+      return `[${text || node.dataset.target}](${node.dataset.target})`;
+    }
+    return text;
+  }
+
+  function editorBlockMarkdown(node) {
+    if (!node) return "";
+    if (node.nodeType === 3) return String(node.nodeValue || "").trim();
+    if (node.nodeType !== 1) return "";
+    const tag = String(node.tagName || "").toLowerCase();
+    if (/^h[1-6]$/.test(tag)) {
+      return `${"#".repeat(Number(tag.slice(1)))} ${inlineMarkdownFromEditorNode(node).trim()}`;
+    }
+    if (tag === "ul" || tag === "ol") {
+      return Array.from(node.children || [])
+        .filter((child) => String(child.tagName || "").toLowerCase() === "li")
+        .map((child) => `- ${inlineMarkdownFromEditorNode(child).trim()}`)
+        .filter((line) => line.trim() !== "-")
+        .join("\n");
+    }
+    if (tag === "blockquote") {
+      const quote = inlineMarkdownFromEditorNode(node).trim();
+      return quote
+        .split("\n")
+        .filter(Boolean)
+        .map((line) => `> ${line}`)
+        .join("\n");
+    }
+    if (tag === "pre") {
+      const code = String(node.textContent || "").replace(/\n$/g, "");
+      return `\`\`\`\n${code}\n\`\`\``;
+    }
+    if (tag === "hr") return "---";
+    return inlineMarkdownFromEditorNode(node).trim();
+  }
+
+  function markdownFromEditorElement(editor) {
+    const blocks = Array.from(editor?.childNodes || [])
+      .map(editorBlockMarkdown)
+      .map((block) => block.trim())
+      .filter(Boolean);
+    if (blocks.length) return blocks.join("\n\n");
+    return String(editor?.textContent || "").trim();
+  }
+
+  function setEditorDraftText(markdown, options = {}) {
+    const draft = $("pageDraftInput");
+    if (draft) draft.value = markdown;
+    if (options.syncVisual !== false) {
+      const editor = $("pageVisualEditor");
+      if (editor) renderMarkdownEditor(editor, markdown);
+    }
+    updateEditorChrome();
+  }
+
+  function invalidatePreparedWrite() {
+    state.preparedWrite = null;
+    state.preparedWriteTarget = null;
+    setOptionalDisabled("savePageButton", true);
+  }
+
+  function rememberActiveDraft(markdown) {
+    const folderId = $("pageFolderIdInput")?.value.trim() || state.selectedFolderId || "general";
+    const objectId = $("pageObjectIdInput")?.value.trim() || nextDraftObjectId();
+    const baseRevision = Number($("pageBaseRevisionInput")?.value.trim() || 0) || 0;
+    const key = pageKey(folderId, objectId);
+    const existingDraft = state.projection.localDrafts.get(key);
+    const existingPage = state.projection.pages.get(key);
+    state.projection.localDrafts.set(key, {
+      baseRevision,
+      path: existingDraft?.path || existingPage?.path || `${objectId}.md`,
+      text: markdown,
+    });
+    invalidatePreparedWrite();
+  }
+
+  function syncDraftFromVisualEditor(options = {}) {
+    const editor = $("pageVisualEditor");
+    const markdown = markdownFromEditorElement(editor);
+    const draft = $("pageDraftInput");
+    if (draft) draft.value = markdown;
+    if (options.remember) rememberActiveDraft(markdown);
+    updateEditorChrome();
+    return markdown;
+  }
+
+  function setEditorMode(mode) {
+    state.editorMode = mode === "source" ? "source" : "visual";
+    if (state.editorMode === "source") {
+      syncDraftFromVisualEditor();
+    } else {
+      renderMarkdownEditor($("pageVisualEditor"), $("pageDraftInput").value);
+    }
+    updateEditorChrome();
+  }
+
+  function updateEditorChrome() {
+    const visual = $("pageVisualEditor");
+    const source = $("pageSourceEditorLabel");
+    if (visual) visual.hidden = state.editorMode !== "visual";
+    if (source) source.hidden = state.editorMode !== "source";
+    const visualMode = state.editorMode === "visual";
+    setText("editorStatusText", visualMode ? "Visual editor" : "Markdown source");
+    setText("editorModeToggleButton", visualMode ? "Markdown" : "Visual");
+    setPressed("editorModeToggleButton", !visualMode);
+  }
+
+  function selectedTextForEditor() {
+    return String(window.getSelection?.()?.toString?.() || "");
+  }
+
+  function escapeHtml(value) {
+    return String(value || "")
+      .replaceAll("&", "&amp;")
+      .replaceAll("<", "&lt;")
+      .replaceAll(">", "&gt;")
+      .replaceAll('"', "&quot;");
+  }
+
+  function runEditorCommand(command) {
+    if (state.editorMode !== "visual") setEditorMode("visual");
+    const editor = $("pageVisualEditor");
+    editor.focus?.();
+    const exec = (name, value = null) => document.execCommand?.(name, false, value);
+    if (command === "paragraph") exec("formatBlock", "p");
+    if (command === "heading1") exec("formatBlock", "h1");
+    if (command === "heading2") exec("formatBlock", "h2");
+    if (command === "bold") exec("bold");
+    if (command === "italic") exec("italic");
+    if (command === "bullet") exec("insertUnorderedList");
+    if (command === "quote") exec("formatBlock", "blockquote");
+    if (command === "codeblock") exec("formatBlock", "pre");
+    if (command === "rule") exec("insertHorizontalRule");
+    if (command === "code") {
+      exec("insertHTML", `<code>${escapeHtml(selectedTextForEditor() || "code")}</code>`);
+    }
+    if (command === "link") {
+      const target = window.prompt?.("Link target")?.trim();
+      if (target) exec("createLink", target);
+    }
+    syncDraftFromVisualEditor({ remember: true });
   }
 
   function setNoteEmptyState(isEmpty) {
@@ -2807,6 +3066,7 @@ const FiniteBrainProductClient = (() => {
     $("vaultIdInput").value = state.activeVaultId;
 
     renderVaultControlChrome();
+    updateEditorChrome();
     renderSidebarMode();
     renderReader();
     renderSearchPanel();
@@ -2966,10 +3226,17 @@ const FiniteBrainProductClient = (() => {
   }
 
   function activePageInput() {
+    if (state.editorMode === "visual") syncDraftFromVisualEditor();
+    const folderId = $("pageFolderIdInput").value.trim() || "general";
+    const objectId = $("pageObjectIdInput").value.trim() || "obj_000000000001";
+    const key = pageKey(folderId, objectId);
+    const page = state.projection.pages.get(key);
+    const draft = state.projection.localDrafts.get(key);
     return {
       baseRevision: $("pageBaseRevisionInput").value.trim(),
-      folderId: $("pageFolderIdInput").value.trim() || "general",
-      objectId: $("pageObjectIdInput").value.trim() || "obj_000000000001",
+      folderId,
+      objectId,
+      path: draft?.path || page?.path || `${objectId}.md`,
       text: $("pageDraftInput").value,
     };
   }
@@ -3455,7 +3722,7 @@ const FiniteBrainProductClient = (() => {
         keyVersion: newKeyVersion,
         objectId: object.objectId,
         operation: "update",
-        plaintext: object.text,
+        plaintext: encodeFolderObjectPagePlaintext(object.path || `${object.objectId}.md`, object.text),
         signEvent,
         vaultId,
       });
@@ -3840,17 +4107,18 @@ const FiniteBrainProductClient = (() => {
       folderId: input.folderId,
       keyVersion,
       objectId: input.objectId,
-      plaintext: input.text,
+      plaintext: encodeFolderObjectPagePlaintext(input.path, input.text),
       signEvent: (event) => window.nostr.signEvent(event),
       vaultId: state.activeVaultId,
     });
     state.preparedWriteTarget = {
       folderId: input.folderId,
       objectId: input.objectId,
+      path: input.path,
     };
     state.projection.localDrafts.set(pageKey(input.folderId, input.objectId), {
       baseRevision: state.preparedWrite.baseRevision || 0,
-      path: `${input.objectId}.md`,
+      path: input.path,
       text: input.text,
     });
     log("Encrypted Page draft and prepared signed revision request.", {
@@ -3864,7 +4132,10 @@ const FiniteBrainProductClient = (() => {
 
   async function savePreparedPage() {
     if (!state.preparedWrite) throw new Error("Prepare a Page write before saving");
-    const target = state.preparedWriteTarget || activePageInput();
+    const savedInput = activePageInput();
+    const target = state.preparedWriteTarget || savedInput;
+    const savedText = savedInput.text;
+    const savedPath = target.path || savedInput.path || `${target.objectId}.md`;
     const path = `/_admin/vaults/${encodeURIComponent(state.activeVaultId)}/folders/${encodeURIComponent(
       target.folderId
     )}/objects/${encodeURIComponent(target.objectId)}`;
@@ -3876,14 +4147,16 @@ const FiniteBrainProductClient = (() => {
       folderId: target.folderId,
       objectId: target.objectId,
       revision: result.revision,
-      path: `${target.objectId}.md`,
+      path: savedPath,
       status: "ready",
-      text: $("pageDraftInput").value,
+      text: savedText,
+      title: pageTitleFromText(savedText, pageTitleFromPath(savedPath, target.objectId)),
     });
     state.projection.localDrafts.delete(pageKey(target.folderId, target.objectId));
     state.preparedWrite = null;
     state.preparedWriteTarget = null;
     $("pageBaseRevisionInput").value = String(result.revision);
+    setEditorDraftText(savedText);
     log("Saved encrypted Page revision.", result);
     render();
   }
@@ -4188,6 +4461,21 @@ const FiniteBrainProductClient = (() => {
         render();
       });
     });
+    $("pageVisualEditor").addEventListener("input", () => {
+      syncDraftFromVisualEditor({ remember: true });
+    });
+    $("pageDraftInput").addEventListener("input", () => {
+      rememberActiveDraft($("pageDraftInput").value);
+    });
+    $("editorModeToggleButton").addEventListener("click", () => {
+      setEditorMode(state.editorMode === "visual" ? "source" : "visual");
+    });
+    document.querySelectorAll?.("[data-editor-command]").forEach((button) => {
+      button.addEventListener("mousedown", (event) => event.preventDefault());
+      button.addEventListener("click", () => {
+        runEditorCommand(button.dataset.editorCommand);
+      });
+    });
     onOptionalClick("openFolderKeyButton", () => {
       openEnteredFolderKey().catch((error) => {
         state.lastError = error.message;
@@ -4278,6 +4566,7 @@ const FiniteBrainProductClient = (() => {
 
   async function start() {
     bind();
+    setEditorDraftText($("pageDraftInput").value);
     await loadConfig();
     await detectSigner();
   }
@@ -4309,6 +4598,7 @@ const FiniteBrainProductClient = (() => {
     graphStats,
     inlineLinkSegments,
     initialVaultInvitationFolders,
+    markdownFromEditorElement,
     markdownPreviewBlocks,
     mergeSyncProjection,
     metadataFolderRows,

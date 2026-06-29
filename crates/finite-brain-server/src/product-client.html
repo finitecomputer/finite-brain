@@ -266,13 +266,44 @@
               Open a vault to read pages.
             </div>
             <details id="editorDrawer" class="editor-drawer">
-              <summary>Edit</summary>
-              <label class="page-editor-label">
-                Page content
-                <textarea id="pageDraftInput" rows="8" spellcheck="true"># New Page
+              <summary>
+                <span>Edit</span>
+                <span id="editorStatusText">Visual editor</span>
+              </summary>
+              <div class="editor-shell">
+                <div id="editorToolbar" class="editor-toolbar" role="toolbar" aria-label="Page formatting">
+                  <button type="button" data-editor-command="paragraph" title="Paragraph" aria-label="Paragraph">P</button>
+                  <button type="button" data-editor-command="heading1" title="Heading 1" aria-label="Heading 1">H1</button>
+                  <button type="button" data-editor-command="heading2" title="Heading 2" aria-label="Heading 2">H2</button>
+                  <button type="button" data-editor-command="bold" title="Bold" aria-label="Bold"><strong>B</strong></button>
+                  <button type="button" data-editor-command="italic" title="Italic" aria-label="Italic"><em>I</em></button>
+                  <button type="button" data-editor-command="code" title="Inline code" aria-label="Inline code">`</button>
+                  <button type="button" data-editor-command="bullet" title="Bulleted list" aria-label="Bulleted list">List</button>
+                  <button type="button" data-editor-command="quote" title="Quote" aria-label="Quote">Quote</button>
+                  <button type="button" data-editor-command="codeblock" title="Code block" aria-label="Code block">{ }</button>
+                  <button type="button" data-editor-command="link" title="Link" aria-label="Link">Link</button>
+                  <button type="button" data-editor-command="rule" title="Divider" aria-label="Divider">Rule</button>
+                  <span class="toolbar-spacer"></span>
+                  <button id="editorModeToggleButton" class="editor-mode-toggle" type="button" aria-pressed="false">
+                    Markdown
+                  </button>
+                </div>
+                <div
+                  id="pageVisualEditor"
+                  class="page-visual-editor note-markdown"
+                  contenteditable="true"
+                  spellcheck="true"
+                  role="textbox"
+                  aria-label="Page visual editor"
+                  aria-multiline="true"
+                ></div>
+                <label id="pageSourceEditorLabel" class="page-editor-label page-source-editor" hidden>
+                  Markdown source
+                  <textarea id="pageDraftInput" rows="8" spellcheck="true"># New Page
 
 Start writing here.</textarea>
-              </label>
+                </label>
+              </div>
               <div class="action-row">
                 <button id="encryptDraftButton" type="button">Encrypt draft</button>
                 <button id="savePageButton" class="primary-action" type="button">Save Page</button>

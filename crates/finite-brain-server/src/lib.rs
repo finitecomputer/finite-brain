@@ -1195,6 +1195,9 @@ mod tests {
         assert!(client_body.contains("Quick switcher"));
         assert!(client_body.contains("graph-icon-button"));
         assert!(client_body.contains("ribbonGraphButton"));
+        assert!(client_body.contains("editorToolbar"));
+        assert!(client_body.contains("pageVisualEditor"));
+        assert!(client_body.contains("editorModeToggleButton"));
         assert!(client_body.contains("aria-label=\"Page reader\""));
         assert!(client_body.contains("aria-label=\"Graph View\""));
         assert!(client_body.contains("aria-label=\"Search pages\""));
