@@ -23,12 +23,14 @@ pub(crate) fn auth_status(env: &CliEnvironment) -> Result<AuthStatus, CliError> 
                 "nip44.encrypt".to_owned(),
                 "nip44.decrypt".to_owned(),
             ],
+            config_dir: env.config_dir.display().to_string(),
         },
         None => AuthStatus {
             state: "missing".to_owned(),
             npub: None,
             signer: "none".to_owned(),
             capabilities: Vec::new(),
+            config_dir: env.config_dir.display().to_string(),
         },
     })
 }

@@ -202,6 +202,7 @@ pub(crate) struct AuthStatus {
     pub(crate) npub: Option<String>,
     pub(crate) signer: String,
     pub(crate) capabilities: Vec<String>,
+    pub(crate) config_dir: String,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, Serialize)]
@@ -227,6 +228,23 @@ pub(crate) struct SyncOnceReport {
     pub(crate) latest_sequence: u64,
     pub(crate) record_count: usize,
     pub(crate) server_url: String,
+    pub(crate) local_changes: Vec<SyncChangeReport>,
+    pub(crate) remote_changes: Vec<SyncChangeReport>,
+    pub(crate) conflicts: Vec<SyncChangeReport>,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct SyncChangeReport {
+    pub(crate) status: String,
+    pub(crate) action: String,
+    pub(crate) path: Option<String>,
+    pub(crate) from_path: Option<String>,
+    pub(crate) folder_id: Option<String>,
+    pub(crate) source_vault_id: Option<String>,
+    pub(crate) object_id: Option<String>,
+    pub(crate) route: String,
+    pub(crate) reason: Option<String>,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, Serialize)]

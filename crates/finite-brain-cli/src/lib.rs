@@ -63,6 +63,10 @@ where
     W: Write,
 {
     let mut args = args.into_iter().map(Into::into).collect::<Vec<_>>();
+    let mut env = env;
+    if let Some(config_dir) = take_option_value(&mut args, "--config-dir")? {
+        env.config_dir = expand_cli_path(&config_dir);
+    }
     let json = take_flag(&mut args, "--json");
     let command = args.first().cloned().unwrap_or_else(|| "help".to_owned());
     match command.as_str() {
@@ -91,9 +95,16 @@ where
 fn help<W: Write>(output: &mut W) -> Result<(), CliError> {
     writeln!(
         output,
-        "fbrain doctor\nauth status|login|logout\nsigner status|public-key|sign|encrypt|decrypt\ndaemon status|start|stop|logs|tick|watch\nsync status|now\nopen <vault-id> [path]\nstatus [--json]\nunlock [folder|--all]\nconflicts\nresolve <id>\nactivity\naccess explain <folder>\nvault create|metadata|export\nfolder create\npermissions add-member|remove-member|add-admin|remove-admin|grant-folder\ninvites create|show|accept|revoke\nshare link|accept|revoke|source|folder-invite|folder-accept"
+        "fbrain [--config-dir <path>] doctor\nauth status|login|logout\nsigner status|public-key|sign|encrypt|decrypt\ndaemon status|start|stop|logs|tick|watch\nsync status|now [--summary]\nopen <vault-id> [path]\nstatus [--json]\nunlock [folder|--all]\nconflicts\nresolve <id>\nactivity\naccess explain <folder>\nvault create|metadata|export\nfolder create\npermissions add-member|remove-member|add-admin|remove-admin|grant-folder\ninvites create|show|accept|revoke\nshare link|accept|revoke|source|folder-invite|folder-accept"
     )?;
     Ok(())
+}
+
+fn expand_cli_path(value: &str) -> PathBuf {
+    value
+        .strip_prefix("~/")
+        .and_then(|suffix| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(suffix)))
+        .unwrap_or_else(|| PathBuf::from(value))
 }
 
 fn doctor<W: Write>(
@@ -516,11 +527,54 @@ fn sync<W: Write>(
                     "{} latestSequence={}",
                     report.status, report.latest_sequence
                 )?;
+                if args
+                    .iter()
+                    .any(|arg| arg == "--summary" || arg == "--verbose" || arg == "-v")
+                {
+                    write_sync_change_rows(output, &report)?;
+                }
                 Ok(())
             }
         }
         other => Err(CliError::InvalidCommand(format!("sync {other}"))),
     }
+}
+
+fn write_sync_change_rows<W: Write>(
+    output: &mut W,
+    report: &SyncOnceReport,
+) -> Result<(), CliError> {
+    write_sync_change_group(output, "local changes", &report.local_changes)?;
+    write_sync_change_group(output, "remote changes", &report.remote_changes)?;
+    write_sync_change_group(output, "conflicts", &report.conflicts)
+}
+
+fn write_sync_change_group<W: Write>(
+    output: &mut W,
+    label: &str,
+    changes: &[SyncChangeReport],
+) -> Result<(), CliError> {
+    if changes.is_empty() {
+        writeln!(output, "{label}: none")?;
+        return Ok(());
+    }
+    writeln!(output, "{label}:")?;
+    for change in changes {
+        let path = change.path.as_deref().unwrap_or("-");
+        if let Some(from_path) = change.from_path.as_deref() {
+            writeln!(
+                output,
+                "- {} {} {} -> {}",
+                change.status, change.action, from_path, path
+            )?;
+        } else {
+            writeln!(output, "- {} {} {}", change.status, change.action, path)?;
+        }
+        if let Some(reason) = change.reason.as_deref() {
+            writeln!(output, "  reason: {reason}")?;
+        }
+    }
+    Ok(())
 }
 
 fn open_vault<W: Write>(
@@ -1703,6 +1757,46 @@ mod tests {
     }
 
     #[test]
+    fn global_config_dir_redirects_auth_state() {
+        let tmp = TempDir::new().unwrap();
+        let config_dir = tmp.path().join("agent-config");
+        let mut output = Vec::new();
+        run_with_env(
+            [
+                "--config-dir",
+                config_dir.to_str().unwrap(),
+                "auth",
+                "login",
+                "--nsec",
+                "0000000000000000000000000000000000000000000000000000000000000001",
+            ],
+            env_for(&tmp),
+            &mut output,
+        )
+        .unwrap();
+
+        assert!(config_dir.join("auth.json").exists());
+        assert!(!tmp.path().join("config/auth.json").exists());
+
+        let mut output = Vec::new();
+        run_with_env(
+            [
+                "--config-dir",
+                config_dir.to_str().unwrap(),
+                "auth",
+                "status",
+                "--json",
+            ],
+            env_for(&tmp),
+            &mut output,
+        )
+        .unwrap();
+        let json: Value = serde_json::from_slice(&output).unwrap();
+        assert_eq!(json["state"], "authenticated");
+        assert_eq!(json["configDir"], config_dir.display().to_string());
+    }
+
+    #[test]
     fn open_creates_working_tree_and_status_json() {
         let tmp = TempDir::new().unwrap();
         run(
@@ -2147,6 +2241,12 @@ mod tests {
         let json: Value = serde_json::from_slice(&output).unwrap();
         assert_eq!(json["status"], "blocked-local-conflicts");
         assert_eq!(json["serverUrl"], server_url);
+        assert_eq!(json["localChanges"].as_array().unwrap().len(), 1);
+        assert_eq!(json["localChanges"][0]["status"], "conflicted");
+        assert_eq!(json["localChanges"][0]["action"], "create");
+        assert_eq!(json["localChanges"][0]["path"], "General/new.md");
+        assert_eq!(json["conflicts"].as_array().unwrap().len(), 1);
+        assert_eq!(json["remoteChanges"].as_array().unwrap().len(), 0);
 
         let requests = server.join().unwrap();
         assert!(requests[0].contains("/_admin/vaults/vault/export"));
@@ -2228,6 +2328,12 @@ mod tests {
 
         let json: Value = serde_json::from_slice(&output).unwrap();
         assert_eq!(json["status"], "blocked-local-conflicts");
+        assert_eq!(json["localChanges"].as_array().unwrap().len(), 2);
+        assert_eq!(json["localChanges"][0]["status"], "pushed");
+        assert_eq!(json["localChanges"][0]["path"], "General/a.md");
+        assert_eq!(json["localChanges"][1]["status"], "conflicted");
+        assert_eq!(json["localChanges"][1]["path"], "General/b.md");
+        assert_eq!(json["conflicts"].as_array().unwrap().len(), 1);
         let requests = server.join().unwrap();
         assert_eq!(
             requests
@@ -2251,6 +2357,46 @@ mod tests {
         let state = read_agent_state(&tree).unwrap();
         assert_eq!(state.conflicts.len(), 1);
         assert_eq!(state.conflicts[0].path.as_deref(), Some("General/b.md"));
+    }
+
+    #[test]
+    fn sync_now_summary_prints_change_groups() {
+        let tmp = TempDir::new().unwrap();
+        run(
+            &tmp,
+            &[
+                "auth",
+                "login",
+                "--nsec",
+                "0000000000000000000000000000000000000000000000000000000000000001",
+            ],
+        );
+        let tree = tmp.path().join("vault");
+        run(&tmp, &["open", "vault", tree.to_str().unwrap()]);
+        let (server_url, server) = start_empty_sync_server();
+
+        let mut env = env_for(&tmp);
+        env.cwd = tree;
+        let mut output = Vec::new();
+        run_with_env(
+            ["sync", "now", "--server", &server_url, "--summary"],
+            env,
+            &mut output,
+        )
+        .unwrap();
+
+        let text = String::from_utf8(output).unwrap();
+        assert!(text.contains("caught-up latestSequence=0"));
+        assert!(text.contains("local changes: none"));
+        assert!(text.contains("remote changes: none"));
+        assert!(text.contains("conflicts: none"));
+
+        let requests = server.join().unwrap();
+        assert!(
+            requests
+                .iter()
+                .any(|request| request.contains("/_admin/vaults/vault/sync/bootstrap"))
+        );
     }
 
     #[test]

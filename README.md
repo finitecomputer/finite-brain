@@ -65,6 +65,7 @@ cd ./my-vault
 fbrain status --json
 fbrain daemon status
 fbrain daemon watch --once --json
+fbrain sync now --summary
 fbrain sync now --json
 fbrain unlock --all
 fbrain conflicts
@@ -101,6 +102,21 @@ Background supervisor packaging and lower-latency native file-system event
 watching remain hardening work; command driven `open`, `daemon watch`,
 `daemon start`, `daemon tick`, and `sync now` run the real sync path.
 
+Use global `--config-dir <path>` when an agent needs a dedicated signer/config
+directory without relying on shell-level environment persistence:
+
+```sh
+fbrain --config-dir "$HOME/.config/fbrain-smoke-agent" auth status
+fbrain --config-dir "$HOME/.config/fbrain-smoke-agent" sync now --summary
+```
+
+`fbrain sync now` stays terse by default. Add `--summary` for a human-readable
+local change report after batch wiki gardening, or use `--json` for
+machine-readable `localChanges`, `remoteChanges`, and `conflicts` arrays. Sync
+reports include paths, actions, Folder ids, Object ids, routes, and conflict
+reasons only; they do not include plaintext contents, Folder Keys, grant
+contents, or signer secrets.
+
 Useful local environment variables:
 
 - `FINITE_BRAIN_ADDR`: bind address, default `127.0.0.1:3015`.
@@ -112,7 +128,9 @@ Useful local environment variables:
   as a legacy `fbrain` fallback when `FINITE_BRAIN_SERVER_URL` is unset.
 - `FINITE_BRAIN_DB`: SQLite database path, default `finite-brain.sqlite3`.
 - `FBRAIN_CONFIG_DIR`: local `fbrain` config directory for prototype signer
-  state. Defaults to `~/.finitebrain/fbrain`.
+  state. Defaults to `~/.finitebrain/fbrain`. Prefer global `--config-dir`
+  for scripts and agent runtimes that invoke `fbrain` across isolated shell
+  calls.
 
 For the full local/staging parity checklist, see
 [`docs/runbooks/product-client-parity-local-staging.md`](docs/runbooks/product-client-parity-local-staging.md).

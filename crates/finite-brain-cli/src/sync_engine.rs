@@ -20,10 +20,10 @@ use serde::Deserialize;
 
 use crate::{
     APP_SPECIFIC_KIND, AgentState, CliEnvironment, CliError, ConflictEntry, ConflictState,
-    LocalFolderKey, SyncOnceReport, UnlockedFolder, current_tree_root, deterministic_id,
-    read_agent_state, read_auth_required, read_working_tree_state, server_url_for_command,
-    sign_event, signed_json_request_to_server, tag_vec, timestamp, timestamp_from_unix,
-    unix_timestamp, write_agent_state, write_json_file,
+    LocalFolderKey, SyncChangeReport, SyncOnceReport, UnlockedFolder, current_tree_root,
+    deterministic_id, read_agent_state, read_auth_required, read_working_tree_state,
+    server_url_for_command, sign_event, signed_json_request_to_server, tag_vec, timestamp,
+    timestamp_from_unix, unix_timestamp, write_agent_state, write_json_file,
 };
 
 const CIPHER_AES_256_GCM: &str = "AES-256-GCM";
@@ -102,6 +102,14 @@ pub(crate) fn run_working_tree_sync(
         latest_sequence,
         record_count: remote_count + local_result.pushed_count,
         server_url,
+        conflicts: local_result
+            .changes
+            .iter()
+            .filter(|change| change.status == "conflicted")
+            .cloned()
+            .collect(),
+        local_changes: local_result.changes,
+        remote_changes: Vec::new(),
     })
 }
 
@@ -433,6 +441,9 @@ fn push_local_working_tree_changes(
         match submit_change_intent(&submit_context, intent) {
             Ok(SubmitIntentOutcome::Submitted) => {
                 result.pushed_count += 1;
+                result
+                    .changes
+                    .push(sync_change_report(change, intent, "pushed", None));
                 if let (Some(folder_id), Some(object_id), Some(target_path)) = (
                     intent.folder_id.as_ref(),
                     intent.object_id.as_ref(),
@@ -456,11 +467,23 @@ fn push_local_working_tree_changes(
             Ok(SubmitIntentOutcome::Conflict(reason)) => {
                 result.conflict_count += 1;
                 preserve_conflicted_markdown(&mut result, change);
+                result.changes.push(sync_change_report(
+                    change,
+                    intent,
+                    "conflicted",
+                    Some(reason.clone()),
+                ));
                 conflicts.push(conflict_for_change(change, intent, reason, timestamp(env)));
             }
             Err(error) if is_http_conflict(&error) => {
                 result.conflict_count += 1;
                 preserve_conflicted_markdown(&mut result, change);
+                result.changes.push(sync_change_report(
+                    change,
+                    intent,
+                    "conflicted",
+                    Some(error.to_string()),
+                ));
                 conflicts.push(conflict_for_change(
                     change,
                     intent,
@@ -486,6 +509,55 @@ fn push_local_working_tree_changes(
     }
 
     Ok(result)
+}
+
+fn sync_change_report(
+    change: &WorkingTreeChange,
+    intent: &WorkingTreeChangeIntent,
+    status: &str,
+    reason: Option<String>,
+) -> SyncChangeReport {
+    let (path, from_path) = match change {
+        WorkingTreeChange::Upsert { path, .. } | WorkingTreeChange::Delete { path } => {
+            (Some(path.to_string()), None)
+        }
+        WorkingTreeChange::Rename { from_path, to_path } => {
+            (Some(to_path.to_string()), Some(from_path.to_string()))
+        }
+    };
+    SyncChangeReport {
+        status: status.to_owned(),
+        action: sync_action_label(intent.action).to_owned(),
+        path,
+        from_path,
+        folder_id: intent.folder_id.as_ref().map(ToString::to_string),
+        source_vault_id: intent.source_vault_id.as_ref().map(ToString::to_string),
+        object_id: intent
+            .object_id
+            .as_ref()
+            .map(|object| object.as_str().to_owned()),
+        route: sync_route_label(intent.route).to_owned(),
+        reason,
+    }
+}
+
+fn sync_action_label(action: WorkingTreeIntentAction) -> &'static str {
+    match action {
+        WorkingTreeIntentAction::Create => "create",
+        WorkingTreeIntentAction::Update => "update",
+        WorkingTreeIntentAction::Move => "move",
+        WorkingTreeIntentAction::Delete => "delete",
+        WorkingTreeIntentAction::Unresolved => "unresolved",
+    }
+}
+
+fn sync_route_label(route: WorkingTreeIntentRoute) -> &'static str {
+    match route {
+        WorkingTreeIntentRoute::EncryptedObjectWrite => "encrypted-object-write",
+        WorkingTreeIntentRoute::EncryptedObjectMove => "encrypted-object-move",
+        WorkingTreeIntentRoute::EncryptedObjectDelete => "encrypted-object-delete",
+        WorkingTreeIntentRoute::Unresolved => "unresolved",
+    }
 }
 
 fn local_folder_keys_by_route(
@@ -1390,6 +1462,7 @@ where
 struct LocalSyncResult {
     pushed_count: usize,
     conflict_count: usize,
+    changes: Vec<SyncChangeReport>,
     path_overrides: BTreeMap<(String, String, String), String>,
     conflicted_markdown: BTreeMap<String, String>,
 }

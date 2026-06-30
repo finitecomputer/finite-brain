@@ -10,6 +10,32 @@ pub(crate) fn take_flag(args: &mut Vec<String>, flag: &str) -> bool {
     before != args.len()
 }
 
+pub(crate) fn take_option_value(
+    args: &mut Vec<String>,
+    flag: &'static str,
+) -> Result<Option<String>, CliError> {
+    let mut found = None;
+    let mut index = 0;
+    let prefix = format!("{flag}=");
+    while index < args.len() {
+        if args[index] == flag {
+            if index + 1 >= args.len() {
+                return Err(CliError::MissingArgument(flag));
+            }
+            found = Some(args.remove(index + 1));
+            args.remove(index);
+            continue;
+        }
+        if let Some(value) = args[index].strip_prefix(&prefix) {
+            found = Some(value.to_owned());
+            args.remove(index);
+            continue;
+        }
+        index += 1;
+    }
+    Ok(found)
+}
+
 pub(crate) fn option_value(args: &[String], flag: &str) -> Option<String> {
     args.windows(2)
         .find_map(|window| (window[0] == flag).then(|| window[1].clone()))
