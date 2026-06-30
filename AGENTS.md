@@ -14,6 +14,12 @@ Use the default Matt Pocock skill label vocabulary. See `docs/agents/triage-labe
 
 This is a single-context repo: read root `CONTEXT.md` and root `docs/adr/` when present. See `docs/agents/domain.md`.
 
+### Packaged FiniteBrain agent skill
+
+The repo-packaged FiniteBrain agent skill lives at `skills/finitebrain-agent/SKILL.md`.
+Keep it aligned with `fbrain` CLI ergonomics and Vault Working Tree conventions
+until it moves into the shared `finite-skills` packaging path.
+
 ## Engineering Style
 
 FiniteBrain Rust follows the Finite engineering style:

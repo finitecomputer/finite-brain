@@ -136,3 +136,12 @@ For the full local/staging parity checklist, see
 [`docs/runbooks/product-client-parity-local-staging.md`](docs/runbooks/product-client-parity-local-staging.md).
 For the internal smoke alpha backup, restore, and old-route cutover handoff, see
 [`docs/runbooks/smoke-alpha-backup-restore-cutover.md`](docs/runbooks/smoke-alpha-backup-restore-cutover.md).
+
+## Packaged Agent Skill
+
+This repository includes a minimal FiniteBrain agent skill at
+[`skills/finitebrain-agent/SKILL.md`](skills/finitebrain-agent/SKILL.md). Keep
+it in sync with `fbrain` CLI ergonomics, smoke-agent workflows, and Vault
+Working Tree conventions. It lives here while the agent flow is still changing;
+once stable, move or publish it through the shared `finite-skills` packaging
+path.
