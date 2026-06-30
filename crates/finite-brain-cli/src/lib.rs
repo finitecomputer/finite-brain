@@ -1354,9 +1354,9 @@ fn share<W: Write>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use base64::Engine;
-    use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
-    use finite_nostr::{GiftWrapValidation, NostrPublicKey, open_gift_wrap};
+    use finite_nostr::{
+        GiftWrapValidation, NostrPublicKey, decode_http_auth_header, open_gift_wrap,
+    };
     use nostr::{Event, Keys};
     use serde_json::Value;
     use std::io::{ErrorKind, Read};
@@ -2477,9 +2477,7 @@ mod tests {
         let body = br#"{"vaultId":"agent"}"#;
         let url = "http://127.0.0.1:3015/_admin/vaults";
         let header = signed_http_auth_header(&keys, "POST", url, Some(body)).unwrap();
-        let encoded = header.strip_prefix("Nostr ").unwrap();
-        let event_json = String::from_utf8(BASE64_STANDARD.decode(encoded).unwrap()).unwrap();
-        let event = nostr::Event::from_json(event_json).unwrap();
+        let event = decode_http_auth_header(&header).unwrap();
         let expected = finite_nostr::HttpAuthValidation::new("POST", url, unix_timestamp(), 60)
             .with_body(body.to_vec());
 

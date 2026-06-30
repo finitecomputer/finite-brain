@@ -980,12 +980,9 @@ mod tests {
     use axum::http::header::{
         ACCESS_CONTROL_ALLOW_METHODS, ACCESS_CONTROL_ALLOW_ORIGIN, AUTHORIZATION, ORIGIN,
     };
-    use base64::Engine;
-    use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
     use finite_brain_core::{FolderKey, FolderObjectAad, encrypt_folder_object_with_nonce};
+    use finite_nostr::{HttpAuthEventRequest, encode_http_auth_header, sign_http_auth_event};
     use nostr::event::FinalizeEvent;
-    use nostr::hashes::Hash;
-    use nostr::hashes::sha256::Hash as Sha256Hash;
     use nostr::{EventBuilder, Keys, Kind, Tag, Timestamp};
     use tower::ServiceExt;
 
@@ -3694,20 +3691,12 @@ mod tests {
         created_at: u64,
     ) -> String {
         let url = format!("{TEST_BASE_URL}{path}");
-        let mut tags = vec![tag(["u", url.as_str()]), tag(["method", method])];
+        let mut request = HttpAuthEventRequest::new(method, url, created_at);
         if let Some(body) = body {
-            tags.push(tag(["payload", &Sha256Hash::hash(body).to_string()]));
+            request = request.with_body(body.to_vec());
         }
-        let event = EventBuilder::new(Kind::HttpAuth, "")
-            .tags(tags)
-            .custom_created_at(Timestamp::from_secs(created_at))
-            .finalize(keys)
-            .unwrap();
-        format!("Nostr {}", BASE64_STANDARD.encode(event.as_json()))
-    }
-
-    fn tag<const N: usize>(parts: [&str; N]) -> Tag {
-        Tag::parse(parts.into_iter().map(ToOwned::to_owned).collect::<Vec<_>>()).unwrap()
+        let event = sign_http_auth_event(keys, &request).unwrap();
+        encode_http_auth_header(&event)
     }
 
     fn npub(keys: &Keys) -> String {

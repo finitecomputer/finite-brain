@@ -1,12 +1,9 @@
-use base64::Engine;
-use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
-use finite_brain_core::sha256_hex;
+use finite_nostr::{HttpAuthEventRequest, encode_http_auth_header, sign_http_auth_event};
 use nostr::event::FinalizeEvent;
 use nostr::{EventBuilder, Keys, Kind, Tag, Timestamp};
 
 use crate::{
-    CliEnvironment, CliError, PrototypeAuth, auth_nonce, read_auth_optional, tag_vec,
-    unix_timestamp,
+    CliEnvironment, CliError, PrototypeAuth, auth_nonce, read_auth_optional, unix_timestamp,
 };
 
 pub(crate) fn signed_http_auth_header(
@@ -15,18 +12,14 @@ pub(crate) fn signed_http_auth_header(
     url: &str,
     body: Option<&[u8]>,
 ) -> Result<String, CliError> {
-    let nonce = auth_nonce();
-    let mut tags = vec![
-        tag_vec(["u", url])?,
-        tag_vec(["method", method])?,
-        tag_vec(["nonce", &nonce])?,
-    ];
+    let mut request =
+        HttpAuthEventRequest::new(method, url, unix_timestamp()).with_nonce(auth_nonce());
     if let Some(body) = body {
-        let payload = sha256_hex(body);
-        tags.push(tag_vec(["payload", &payload])?);
+        request = request.with_body(body.to_vec());
     }
-    let event = sign_event(keys, Kind::HttpAuth, "", tags, unix_timestamp(), None)?;
-    Ok(format!("Nostr {}", BASE64_STANDARD.encode(event.as_json())))
+    let event = sign_http_auth_event(keys, &request)
+        .map_err(|error| CliError::InvalidSigner(error.to_string()))?;
+    Ok(encode_http_auth_header(&event))
 }
 
 pub(crate) fn sign_event(

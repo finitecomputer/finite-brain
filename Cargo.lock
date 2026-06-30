@@ -425,8 +425,9 @@ dependencies = [
 [[package]]
 name = "finite-nostr"
 version = "0.1.0"
-source = "git+https://github.com/finitecomputer/finite-nostr.git?branch=main#4663c6f189021340286d58d545f5119a75648bdb"
+source = "git+https://github.com/finitecomputer/finite-nostr.git?branch=main#bf59c0c4017b018d521684f81a351d412b335c35"
 dependencies = [
+ "base64",
  "nostr",
 ]
 

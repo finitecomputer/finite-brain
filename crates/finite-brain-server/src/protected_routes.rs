@@ -1,7 +1,6 @@
 //! Protected-route request handling.
 
 use std::collections::BTreeSet;
-use std::str;
 
 use axum::body::Bytes;
 use axum::extract::{Request, State};
@@ -12,9 +11,9 @@ use axum::http::header::{
 use axum::http::{HeaderMap, HeaderValue, Method, StatusCode, Uri};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
-use base64::Engine;
-use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
-use finite_nostr::{HttpAuthValidation, NostrPrimitiveError, NostrPublicKey};
+use finite_nostr::{
+    HttpAuthValidation, NostrPrimitiveError, NostrPublicKey, decode_http_auth_header,
+};
 use nostr::Event;
 
 use crate::{
@@ -79,15 +78,7 @@ pub(crate) fn validate_request_auth(
         .ok_or_else(|| auth_error_message("valid Nostr authorization is required"))?
         .to_str()
         .map_err(|_| auth_error_message("valid Nostr authorization is required"))?;
-    let encoded = authorization
-        .strip_prefix("Nostr ")
-        .ok_or_else(|| auth_error_message("valid Nostr authorization is required"))?;
-    let event_json = BASE64_STANDARD
-        .decode(encoded)
-        .map_err(|_| auth_error_message("valid Nostr authorization is required"))?;
-    let event_json = str::from_utf8(&event_json)
-        .map_err(|_| auth_error_message("valid Nostr authorization is required"))?;
-    let event = Event::from_json(event_json)
+    let event = decode_http_auth_header(authorization)
         .map_err(|_| auth_error_message("valid Nostr authorization is required"))?;
 
     let expected_url = absolute_url(&state.public_base_url, uri);
