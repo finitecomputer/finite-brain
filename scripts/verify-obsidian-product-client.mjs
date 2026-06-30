@@ -174,14 +174,6 @@ function checkStaticShell() {
 
   for (const marker of [
     "obsidian-shell",
-    "obsidian-titlebar",
-    "traffic-lights",
-    "titlebarTabLabel",
-    "titlebarVaultLabel",
-    "pageTabButton",
-    "graphTabButton",
-    "titlebarNewTabButton",
-    "role=\"tablist\"",
     "compact-icon-button",
     "vaultControlDetails",
     "vaultControlSummary",
@@ -235,9 +227,6 @@ function checkStaticShell() {
   for (const marker of [
     ".obsidian-shell",
     ".obsidian-shell[data-workspace-view=\"graph\"]",
-    ".obsidian-titlebar",
-    ".traffic-light",
-    ".titlebar-tab",
     ".compact-icon-button",
     ".vault-control-body",
     ".vault-connect-button",
@@ -309,6 +298,14 @@ function checkStaticShell() {
   }
 
   for (const marker of [
+    "obsidian-titlebar",
+    "traffic-lights",
+    "titlebarTabLabel",
+    "titlebarVaultLabel",
+    "pageTabButton",
+    "graphTabButton",
+    "titlebarNewTabButton",
+    "role=\"tablist\"",
     "workspace-status-cluster",
     "folderCount",
     "folderList",
@@ -331,6 +328,9 @@ function checkStaticShell() {
   }
 
   for (const marker of [
+    ".obsidian-titlebar",
+    ".traffic-light",
+    ".titlebar-tab",
     ".workspace-tab",
     ".tab-strip",
     ".workspace-status-cluster",

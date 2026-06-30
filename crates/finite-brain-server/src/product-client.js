@@ -2177,7 +2177,6 @@ const FiniteBrainProductClient = (() => {
   function renderWorkspaceChrome(page = selectedReaderPage()) {
     const chrome = workspaceChromeState(state.activeWorkspaceView);
     const workspaceTitle = workspaceTabTitle(state.metadata, page);
-    const graphActive = chrome.shellView === "graph";
     const shell = document.querySelector(".obsidian-shell");
     shell.dataset.workspaceView = chrome.shellView;
     shell.dataset.vaultLoaded = state.metadata ? "true" : "false";
@@ -2185,12 +2184,6 @@ const FiniteBrainProductClient = (() => {
     $("graphWorkspace").hidden = chrome.graphHidden;
     $("ribbonGraphButton").className = chrome.ribbonGraphClass;
     setPressed("ribbonGraphButton", !chrome.graphHidden);
-    $("pageTabButton").className = `titlebar-tab${graphActive ? "" : " active"}`;
-    $("graphTabButton").className = `titlebar-tab${graphActive ? " active" : ""}`;
-    $("pageTabButton").setAttribute("aria-selected", String(!graphActive));
-    $("graphTabButton").setAttribute("aria-selected", String(graphActive));
-    setText("titlebarTabLabel", workspaceTitle);
-    setText("titlebarVaultLabel", state.metadata?.name || state.activeVaultId || "FiniteBrain");
     document.title = chrome.shellView === "graph" ? "Graph View - FiniteBrain" : `${workspaceTitle} - FiniteBrain`;
   }
 
@@ -5007,22 +5000,9 @@ const FiniteBrainProductClient = (() => {
     $("ribbonGraphButton").addEventListener("click", () => {
       setWorkspaceView("graph");
     });
-    $("graphTabButton").addEventListener("click", () => {
-      setWorkspaceView("graph");
-    });
     $("ribbonFilesButton").addEventListener("click", () => {
       setWorkspaceView("page");
       setSidebarMode("files");
-    });
-    $("pageTabButton").addEventListener("click", () => {
-      setWorkspaceView("page");
-      setSidebarMode("files");
-    });
-    $("titlebarNewTabButton").addEventListener("click", () => {
-      startNewPageDraft();
-    });
-    $("titlebarMoreButton").addEventListener("click", () => {
-      openCommandPalette();
     });
     $("ribbonSearchButton").addEventListener("click", () => {
       setSidebarMode("search");
