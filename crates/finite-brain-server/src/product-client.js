@@ -2831,7 +2831,7 @@ const FiniteBrainProductClient = (() => {
   }
 
   function updateSaveControls() {
-    setOptionalDisabled("savePageButton", !canSaveActiveDraft());
+    return canSaveActiveDraft();
   }
 
   function rememberActiveDraft(markdown) {
@@ -2875,11 +2875,9 @@ const FiniteBrainProductClient = (() => {
   }
 
   function updateEditorChrome() {
-    const toolbar = $("editorToolbar");
     const source = $("pageSourceEditorLabel");
     const page = selectedReaderPage();
     const canEditInline = isReadablePage(page) && state.readerMode !== "source" && state.editorMode !== "source";
-    if (toolbar) toolbar.hidden = !canEditInline;
     if (source) source.hidden = state.editorMode !== "source";
     setText("editorStatusText", canEditInline ? "Inline editor active" : "Markdown source");
     updateSaveControls();
@@ -3701,7 +3699,6 @@ const FiniteBrainProductClient = (() => {
     setOptionalDisabled("loadVaultButton", state.signerStatus !== "connected" || !state.config);
     setOptionalDisabled("openFolderKeyButton", !state.metadata);
     setOptionalDisabled("encryptDraftButton", !state.keyring);
-    setOptionalDisabled("syncBootstrapButton", state.signerStatus !== "connected" || !state.config);
     setOptionalDisabled("openAccessibleVaultButton", state.readerBusy || !state.config);
     setOptionalDisabled("refreshReaderButton", state.readerBusy || state.signerStatus !== "connected" || !state.metadata);
     setOptionalDisabled("planOkfImportButton", !state.metadata);
@@ -5132,12 +5129,6 @@ const FiniteBrainProductClient = (() => {
     $("editorDrawer").addEventListener("toggle", () => {
       setEditorMode($("editorDrawer").open ? "source" : "visual");
     });
-    document.querySelectorAll?.("[data-editor-command]").forEach((button) => {
-      button.addEventListener("mousedown", (event) => event.preventDefault());
-      button.addEventListener("click", () => {
-        runEditorCommand(button.dataset.editorCommand);
-      });
-    });
     onOptionalClick("openFolderKeyButton", () => {
       openEnteredFolderKey().catch((error) => {
         state.lastError = error.message;
@@ -5149,20 +5140,6 @@ const FiniteBrainProductClient = (() => {
       prepareDraftWrite().catch((error) => {
         state.lastError = error.message;
         log("Failed to encrypt Page draft.", { error: error.message });
-        render();
-      });
-    });
-    $("savePageButton").addEventListener("click", () => {
-      saveActivePage().catch((error) => {
-        state.lastError = error.message;
-        log("Failed to save Page.", { error: error.message });
-        render();
-      });
-    });
-    $("syncBootstrapButton").addEventListener("click", () => {
-      pullSyncBootstrap().catch((error) => {
-        state.lastError = error.message;
-        log("Failed to pull sync.", { error: error.message });
         render();
       });
     });
@@ -5224,6 +5201,16 @@ const FiniteBrainProductClient = (() => {
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "p") {
         event.preventDefault();
         openCommandPalette();
+        return;
+      }
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "s") {
+        event.preventDefault();
+        if (!canSaveActiveDraft()) return;
+        saveActivePage().catch((error) => {
+          state.lastError = error.message;
+          log("Failed to save Page.", { error: error.message });
+          render();
+        });
         return;
       }
       if (event.key === "Escape") {

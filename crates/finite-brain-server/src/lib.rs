@@ -1203,8 +1203,9 @@ mod tests {
         assert!(client_body.contains("Quick switcher"));
         assert!(client_body.contains("graph-icon-button"));
         assert!(client_body.contains("ribbonGraphButton"));
-        assert!(client_body.contains("editorToolbar"));
-        assert!(client_body.contains("inline-editor-toolbar"));
+        assert!(!client_body.contains("editorToolbar"));
+        assert!(!client_body.contains("inline-editor-toolbar"));
+        assert!(!client_body.contains("data-editor-command"));
         assert!(client_body.contains("readerPageContent"));
         assert!(client_body.contains("aria-label=\"Page reader\""));
         assert!(client_body.contains("aria-label=\"Graph View\""));
@@ -1217,7 +1218,8 @@ mod tests {
         assert!(client_body.contains("createVaultInvitationButton"));
         assert!(client_body.contains("acceptVaultInvitationButton"));
         assert!(client_body.contains("revokeVaultInvitationButton"));
-        assert!(client_body.contains("savePageButton"));
+        assert!(!client_body.contains("savePageButton"));
+        assert!(!client_body.contains("syncBootstrapButton"));
         assert!(client_body.contains("Graph View"));
         assert!(client_body.contains("Render graph"));
         assert!(client_body.contains("contextMenu"));
