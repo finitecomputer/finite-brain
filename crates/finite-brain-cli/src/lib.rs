@@ -85,6 +85,7 @@ where
         "access" => access(&args[1..], &env, json, output),
         "vault" => vault(&args[1..], &env, json, output),
         "folder" => folder(&args[1..], &env, json, output),
+        "mount" | "mounts" => mount(&args[1..], &env, json, output),
         "permissions" | "permission" | "perms" => permissions(&args[1..], &env, json, output),
         "invites" | "invite" => invites(&args[1..], &env, json, output),
         "share" | "shared" => share(&args[1..], &env, json, output),
@@ -95,7 +96,7 @@ where
 fn help<W: Write>(output: &mut W) -> Result<(), CliError> {
     writeln!(
         output,
-        "fbrain [--config-dir <path>] doctor\nauth status|login|logout\nsigner status|public-key|sign|encrypt|decrypt\ndaemon status|start|stop|logs|tick|watch\nsync status|now [--summary]\nopen <vault-id> [path]\nstatus [--json]\nunlock [folder|--all]\nconflicts\nresolve <id>\nactivity\naccess explain <folder>\nvault create|metadata|export\nfolder create\npermissions add-member|remove-member|add-admin|remove-admin|grant-folder\ninvites create|show|accept|revoke\nshare link|accept|revoke|source|folder-invite|folder-accept"
+        "fbrain [--config-dir <path>] doctor\nauth status|login|logout\nsigner status|public-key|sign|encrypt|decrypt\ndaemon status|start|stop|logs|tick|watch\nsync status|now [--summary]\nopen <vault-id> [path]\nstatus [--json]\nunlock [folder|--all]\nconflicts\nresolve <id>\nactivity\naccess explain|list|grant|revoke\nvault create|metadata|export\nfolder create|list\nmount list\npermissions add-member|remove-member|add-admin|remove-admin|grant-folder\ninvites create|show|accept|revoke\nshare link|accept|revoke|source|folder-invite|folder-accept"
     )?;
     Ok(())
 }
@@ -317,10 +318,23 @@ fn daemon<W: Write>(
             mutate_agent_state(env, |state, now| {
                 state.daemon.state = DaemonRunState::Running;
                 state.daemon.last_started_at = Some(now.clone());
-                state.sync.status = sync_result
-                    .as_ref()
-                    .map(|report| report.status.clone())
-                    .unwrap_or_else(|error| format!("blocked: {error}"));
+                state.daemon.last_tick_at = Some(now.clone());
+                state.daemon.tick_count = 1;
+                state.daemon.watch_strategy = Some("manual-start".to_owned());
+                state.daemon.last_local_change_count = None;
+                match &sync_result {
+                    Ok(report) => {
+                        state.daemon.last_error = None;
+                        state.daemon.retry_backoff_millis = 0;
+                        state.sync.status = report.status.clone();
+                    }
+                    Err(error) => {
+                        state.daemon.failure_count = state.daemon.failure_count.saturating_add(1);
+                        state.daemon.last_error = Some(error.to_string());
+                        state.daemon.retry_backoff_millis = 0;
+                        state.sync.status = format!("blocked: {error}");
+                    }
+                }
                 state.add_activity(now, "daemon.started", "Agent Sync Daemon marked running");
                 Ok(())
             })?;
@@ -329,6 +343,8 @@ fn daemon<W: Write>(
         "stop" => {
             mutate_agent_state(env, |state, now| {
                 state.daemon.state = DaemonRunState::Stopped;
+                state.daemon.retry_backoff_millis = 0;
+                state.daemon.watch_strategy = Some("stopped".to_owned());
                 state.sync.status = "paused".to_owned();
                 state.add_activity(now, "daemon.stopped", "Agent Sync Daemon marked stopped");
                 Ok(())
@@ -349,7 +365,29 @@ fn daemon<W: Write>(
             }
         }
         "tick" => {
-            let report = sync_once(env, args, "daemon.tick")?;
+            let report = sync_once(env, args, "daemon.tick");
+            mutate_agent_state(env, |state, now| {
+                state.daemon.state = DaemonRunState::Running;
+                state.daemon.last_tick_at = Some(now.clone());
+                state.daemon.tick_count = state.daemon.tick_count.saturating_add(1);
+                state.daemon.watch_strategy = Some("manual-tick".to_owned());
+                state.daemon.last_local_change_count = None;
+                match &report {
+                    Ok(report) => {
+                        state.daemon.last_error = None;
+                        state.daemon.retry_backoff_millis = 0;
+                        state.sync.status = report.status.clone();
+                    }
+                    Err(error) => {
+                        state.daemon.failure_count = state.daemon.failure_count.saturating_add(1);
+                        state.daemon.last_error = Some(error.to_string());
+                        state.daemon.retry_backoff_millis = 0;
+                        state.sync.status = format!("blocked: {error}");
+                    }
+                }
+                Ok(())
+            })?;
+            let report = report?;
             if json {
                 write_json(output, &report)
             } else {
@@ -374,49 +412,120 @@ fn daemon_watch<W: Write>(
 ) -> Result<(), CliError> {
     let max_ticks = daemon_watch_max_ticks(args)?;
     let poll = daemon_watch_poll(args)?;
+    let file_aware = !args.iter().any(|arg| arg == "--poll-only");
+    let watch_strategy = if file_aware {
+        "working-tree-files"
+    } else {
+        "poll"
+    };
+    let remote_poll_ticks = daemon_watch_remote_poll_ticks(args)?;
+    let root = current_tree_root(env)?;
     mutate_agent_state(env, |state, now| {
         state.daemon.state = DaemonRunState::Running;
         state.daemon.last_started_at = Some(now.clone());
+        state.daemon.last_tick_at = None;
+        state.daemon.last_error = None;
+        state.daemon.tick_count = 0;
+        state.daemon.failure_count = 0;
+        state.daemon.retry_backoff_millis = 0;
+        state.daemon.watch_strategy = Some(watch_strategy.to_owned());
+        state.daemon.last_local_change_count = None;
         state.sync.status = "watching".to_owned();
         state.add_activity(
             now,
             "daemon.watch.started",
-            "Agent Sync Daemon watch loop started",
+            format!("Agent Sync Daemon watch loop started strategy={watch_strategy}"),
         );
         Ok(())
     })?;
 
     let mut ticks = 0_usize;
     let mut failures = 0_usize;
+    let mut skipped_ticks = 0_usize;
+    let mut consecutive_failures = 0_usize;
+    let mut retry_backoff_millis: u64;
     let mut last_status = None::<String>;
     let mut last_error: Option<String>;
     loop {
         ticks += 1;
-        match sync_once(env, args, "daemon.watch.tick") {
-            Ok(report) => {
-                last_status = Some(report.status);
-                last_error = None;
+        let local_change_count = if file_aware {
+            Some(pending_working_tree_change_count(&root)?)
+        } else {
+            None
+        };
+        let local_changes_due = local_change_count.unwrap_or_default() > 0;
+        let remote_poll_due =
+            remote_poll_ticks.is_some_and(|interval| ticks.is_multiple_of(interval));
+        let should_sync = !file_aware || ticks == 1 || local_changes_due || remote_poll_due;
+
+        if should_sync {
+            match sync_once(env, args, "daemon.watch.tick") {
+                Ok(report) => {
+                    last_status = Some(report.status);
+                    last_error = None;
+                    consecutive_failures = 0;
+                    retry_backoff_millis = 0;
+                }
+                Err(error) => {
+                    failures += 1;
+                    consecutive_failures += 1;
+                    retry_backoff_millis = daemon_retry_backoff_millis(poll, consecutive_failures);
+                    let error = error.to_string();
+                    last_error = Some(error.clone());
+                    mutate_agent_state(env, |state, now| {
+                        state.sync.status = format!("blocked: {error}");
+                        state.add_activity(
+                            now,
+                            "daemon.watch.blocked",
+                            format!("Sync blocked during daemon watch: {error}"),
+                        );
+                        Ok(())
+                    })?;
+                }
             }
-            Err(error) => {
-                failures += 1;
-                let error = error.to_string();
-                last_error = Some(error.clone());
-                mutate_agent_state(env, |state, now| {
-                    state.sync.status = format!("blocked: {error}");
-                    state.add_activity(
-                        now,
-                        "daemon.watch.blocked",
-                        format!("Sync blocked during daemon watch: {error}"),
-                    );
-                    Ok(())
-                })?;
-            }
+        } else {
+            skipped_ticks += 1;
+            consecutive_failures = 0;
+            retry_backoff_millis = 0;
+            last_status = Some("idle-no-local-changes".to_owned());
+            last_error = None;
+            mutate_agent_state(env, |state, now| {
+                state.sync.status = "idle-no-local-changes".to_owned();
+                state.add_activity(
+                    now,
+                    "daemon.watch.idle",
+                    "No local Vault Working Tree changes detected",
+                );
+                Ok(())
+            })?;
         }
+
+        mutate_agent_state(env, |state, now| {
+            state.daemon.state = DaemonRunState::Running;
+            state.daemon.last_tick_at = Some(now.clone());
+            state.daemon.tick_count = ticks as u64;
+            state.daemon.failure_count = failures as u64;
+            state.daemon.retry_backoff_millis = retry_backoff_millis;
+            state.daemon.watch_strategy = Some(watch_strategy.to_owned());
+            state.daemon.last_error = last_error.clone();
+            state.daemon.last_local_change_count = local_change_count;
+            if should_sync && local_changes_due {
+                state.add_activity(
+                    now,
+                    "daemon.watch.local_changes_detected",
+                    format!(
+                        "Detected {count} pending Vault Working Tree change(s)",
+                        count = local_change_count.unwrap_or_default()
+                    ),
+                );
+            }
+            Ok(())
+        })?;
 
         if max_ticks.is_some_and(|limit| ticks >= limit) {
             break;
         }
-        std::thread::sleep(poll);
+        std::thread::sleep(poll + std::time::Duration::from_millis(retry_backoff_millis));
     }
 
     let final_status = last_status
@@ -425,6 +534,9 @@ fn daemon_watch<W: Write>(
         .unwrap_or_else(|| "idle".to_owned());
     mutate_agent_state(env, |state, now| {
         state.daemon.state = DaemonRunState::Stopped;
+        state.daemon.failure_count = failures as u64;
+        state.daemon.retry_backoff_millis = retry_backoff_millis;
+        state.daemon.last_error = last_error.clone();
         state.sync.status = final_status.clone();
         state.add_activity(
             now,
@@ -437,19 +549,46 @@ fn daemon_watch<W: Write>(
     let report = serde_json::json!({
         "state": "stopped",
         "ticks": ticks,
+        "skippedTicks": skipped_ticks,
         "failures": failures,
         "lastStatus": last_status,
         "lastError": last_error,
+        "watchStrategy": watch_strategy,
+        "retryBackoffMillis": retry_backoff_millis,
     });
     if json {
         write_json(output, &report)
     } else {
         writeln!(
             output,
-            "daemon watch stopped ticks={ticks} failures={failures} status={final_status}"
+            "daemon watch stopped ticks={ticks} skipped={skipped_ticks} failures={failures} status={final_status}"
         )?;
         Ok(())
     }
+}
+
+fn daemon_watch_remote_poll_ticks(args: &[String]) -> Result<Option<usize>, CliError> {
+    option_value(args, "--remote-poll-ticks")
+        .map(|value| {
+            value.parse::<usize>().map_err(|_| {
+                CliError::InvalidInput(format!(
+                    "--remote-poll-ticks must be a non-negative integer, got {value}"
+                ))
+            })
+        })
+        .transpose()?
+        .map(|ticks| if ticks == 0 { None } else { Some(ticks) })
+        .map(Ok)
+        .unwrap_or(Ok(Some(12)))
+}
+
+fn daemon_retry_backoff_millis(poll: std::time::Duration, consecutive_failures: usize) -> u64 {
+    if consecutive_failures == 0 {
+        return 0;
+    }
+    let multiplier = 1_u128 << consecutive_failures.saturating_sub(1).min(3);
+    let millis = poll.as_millis().saturating_mul(multiplier);
+    millis.min(60_000) as u64
 }
 
 fn daemon_watch_max_ticks(args: &[String]) -> Result<Option<usize>, CliError> {
@@ -479,6 +618,17 @@ fn daemon_watch_max_ticks(args: &[String]) -> Result<Option<usize>, CliError> {
 }
 
 fn daemon_watch_poll(args: &[String]) -> Result<std::time::Duration, CliError> {
+    if let Some(value) = option_value(args, "--poll-ms") {
+        let millis = value.parse::<u64>().map_err(|_| {
+            CliError::InvalidInput(format!("--poll-ms must be a positive integer, got {value}"))
+        })?;
+        if !(10..=300_000).contains(&millis) {
+            return Err(CliError::InvalidInput(
+                "--poll-ms must be between 10 and 300000".to_owned(),
+            ));
+        }
+        return Ok(std::time::Duration::from_millis(millis));
+    }
     let seconds = option_value(args, "--poll-secs")
         .map(|value| {
             value.parse::<u64>().map_err(|_| {
@@ -895,9 +1045,159 @@ fn access<W: Write>(
                 Ok(())
             }
         }
+        Some("list") | Some("ls") => {
+            let metadata = fetch_vault_metadata_for_command(env, args)?;
+            let report = access_summary_report(metadata);
+            if json {
+                write_json(output, &report)
+            } else {
+                write_access_summary_rows(output, &report)
+            }
+        }
+        Some("grant") | Some("grant-folder") | Some("folder-grant") => {
+            let mut delegated = Vec::with_capacity(args.len());
+            delegated.push("grant-folder".to_owned());
+            delegated.extend(args.iter().skip(1).cloned());
+            permissions(&delegated, env, json, output)
+        }
+        Some("revoke") | Some("remove") | Some("remove-folder") | Some("revoke-folder") => {
+            access_revoke(args, env, json, output)
+        }
         Some(other) => Err(CliError::InvalidCommand(format!("access {other}"))),
         None => Err(CliError::MissingArgument("access command")),
     }
+}
+
+fn access_revoke<W: Write>(
+    args: &[String],
+    env: &CliEnvironment,
+    json: bool,
+    output: &mut W,
+) -> Result<(), CliError> {
+    let vault_id = command_vault_id(args, env)?;
+    let folder_id = option_value(args, "--folder").ok_or(CliError::MissingArgument("--folder"))?;
+    let target = required_option_or_positional(args, "--target", 1, "target-npub")?;
+    let route = format!("/_admin/vaults/{vault_id}/folders/{folder_id}/access/{target}");
+    let Some(body) = access_rotation_body(args)? else {
+        let report = AccessRemovalBlockedReport {
+            state: "blocked".to_owned(),
+            operation: "remove-folder-access".to_owned(),
+            vault_id,
+            folder_id,
+            target_npub: target,
+            route,
+            reason: "Folder access removal requires Folder Key rotation and re-encrypted live Folder objects; refusing unsafe metadata-only removal".to_owned(),
+            required: vec![
+                "newKeyVersion equal to the next Folder Key version".to_owned(),
+                "Folder Key Grants for every remaining recipient".to_owned(),
+                "reencryptedRecords for every live readable object in the Folder".to_owned(),
+                "admin access-change event with action remove-folder-access".to_owned(),
+            ],
+        };
+        if json {
+            return write_json(output, &report);
+        }
+        writeln!(
+            output,
+            "blocked remove-folder-access vault={} folder={} target={}",
+            report.vault_id, report.folder_id, report.target_npub
+        )?;
+        for requirement in &report.required {
+            writeln!(output, "- requires {requirement}")?;
+        }
+        return Ok(());
+    };
+
+    validate_access_rotation_body(&body)?;
+    let response = signed_json_request(env, args, "DELETE", &route, Some(body))?;
+    write_command_response(output, json, &response)
+}
+
+fn access_rotation_body(args: &[String]) -> Result<Option<serde_json::Value>, CliError> {
+    let Some(path) = option_value(args, "--rotation-body").or_else(|| option_value(args, "--body"))
+    else {
+        return Ok(None);
+    };
+    let body = fs::read_to_string(&path)?;
+    serde_json::from_str(&body)
+        .map(Some)
+        .map_err(CliError::from)
+}
+
+fn validate_access_rotation_body(body: &serde_json::Value) -> Result<(), CliError> {
+    let object = body
+        .as_object()
+        .ok_or_else(|| CliError::InvalidInput("rotation body must be a JSON object".to_owned()))?;
+    let new_key_version = object
+        .get("newKeyVersion")
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or_default();
+    if new_key_version == 0 {
+        return Err(CliError::InvalidInput(
+            "rotation body needs positive newKeyVersion".to_owned(),
+        ));
+    }
+    let grants = object
+        .get("grants")
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| CliError::InvalidInput("rotation body needs grants array".to_owned()))?;
+    if grants.is_empty() {
+        return Err(CliError::InvalidInput(
+            "rotation body needs at least one Folder Key Grant".to_owned(),
+        ));
+    }
+    if !object
+        .get("reencryptedRecords")
+        .is_some_and(serde_json::Value::is_array)
+    {
+        return Err(CliError::InvalidInput(
+            "rotation body needs reencryptedRecords array".to_owned(),
+        ));
+    }
+    if !object
+        .get("accessChangeEvent")
+        .is_some_and(serde_json::Value::is_object)
+    {
+        return Err(CliError::InvalidInput(
+            "rotation body needs accessChangeEvent object".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+fn fetch_vault_metadata_for_command(
+    env: &CliEnvironment,
+    args: &[String],
+) -> Result<VaultMetadataView, CliError> {
+    let vault_id = command_vault_id(args, env)?;
+    fetch_vault_metadata(env, args, &vault_id)
+}
+
+fn access_summary_report(metadata: VaultMetadataView) -> AccessSummaryReport {
+    AccessSummaryReport {
+        vault_id: metadata.vault_id,
+        members: metadata.members,
+        admins: metadata.admins,
+        folders: metadata.folders,
+        mounted_folders: metadata.mounted_folders,
+        grant_count: metadata.grant_count,
+    }
+}
+
+fn write_access_summary_rows<W: Write>(
+    output: &mut W,
+    report: &AccessSummaryReport,
+) -> Result<(), CliError> {
+    writeln!(
+        output,
+        "vault {} admins={} members={} grants={}",
+        report.vault_id,
+        report.admins.len(),
+        report.members.len(),
+        report.grant_count
+    )?;
+    write_folder_rows(output, &report.folders)?;
+    write_mount_rows(output, &report.mounted_folders)
 }
 
 fn vault<W: Write>(
@@ -953,6 +1253,14 @@ fn folder<W: Write>(
     output: &mut W,
 ) -> Result<(), CliError> {
     match args.first().map(String::as_str).unwrap_or("create") {
+        "list" | "ls" => {
+            let metadata = fetch_vault_metadata_for_command(env, args)?;
+            if json {
+                write_json(output, &metadata.folders)
+            } else {
+                write_folder_rows(output, &metadata.folders)
+            }
+        }
         "create" => {
             let values = positional_values(args);
             let folder_id = values
@@ -1015,6 +1323,75 @@ fn folder<W: Write>(
         }
         other => Err(CliError::InvalidCommand(format!("folder {other}"))),
     }
+}
+
+fn mount<W: Write>(
+    args: &[String],
+    env: &CliEnvironment,
+    json: bool,
+    output: &mut W,
+) -> Result<(), CliError> {
+    match args.first().map(String::as_str).unwrap_or("list") {
+        "list" | "ls" => {
+            let metadata = fetch_vault_metadata_for_command(env, args)?;
+            if json {
+                write_json(output, &metadata.mounted_folders)
+            } else {
+                write_mount_rows(output, &metadata.mounted_folders)
+            }
+        }
+        other => Err(CliError::InvalidCommand(format!("mount {other}"))),
+    }
+}
+
+fn write_folder_rows<W: Write>(
+    output: &mut W,
+    folders: &[FolderMetadataView],
+) -> Result<(), CliError> {
+    if folders.is_empty() {
+        writeln!(output, "no folders")?;
+        return Ok(());
+    }
+    for folder in folders {
+        let setup = if folder.setup_incomplete {
+            "setup-incomplete"
+        } else {
+            "ready"
+        };
+        let source = if folder.shared_folder_source {
+            " shared-source"
+        } else {
+            ""
+        };
+        writeln!(
+            output,
+            "folder {} path={} access={} keyVersion={} state={}{}",
+            folder.id, folder.path, folder.access, folder.current_key_version, setup, source
+        )?;
+    }
+    Ok(())
+}
+
+fn write_mount_rows<W: Write>(
+    output: &mut W,
+    mounts: &[MountedFolderMetadataView],
+) -> Result<(), CliError> {
+    if mounts.is_empty() {
+        writeln!(output, "no mounted folders")?;
+        return Ok(());
+    }
+    for mount in mounts {
+        writeln!(
+            output,
+            "mount {} name={} source={}/{} state={}",
+            mount.mount_id,
+            mount.display_name,
+            mount.source_vault_id,
+            mount.source_folder_id,
+            mount.state
+        )?;
+    }
+    Ok(())
 }
 
 fn permissions<W: Write>(
@@ -1558,6 +1935,93 @@ mod tests {
         (url, handle)
     }
 
+    fn start_metadata_listing_server(
+        expected_requests: usize,
+    ) -> (String, thread::JoinHandle<Vec<String>>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let handle = thread::spawn(move || {
+            let started = Instant::now();
+            let mut requests = Vec::new();
+            while requests.len() < expected_requests && started.elapsed() < Duration::from_secs(5) {
+                let Ok((mut stream, _)) = listener.accept() else {
+                    thread::sleep(Duration::from_millis(10));
+                    continue;
+                };
+                let (request_line, _) = read_http_request(&mut stream);
+                requests.push(request_line);
+                let body = serde_json::json!({
+                    "vaultId": "acme",
+                    "kind": "organization",
+                    "name": "Acme",
+                    "ownerUserId": null,
+                    "members": ["npub-member"],
+                    "admins": ["npub-admin"],
+                    "folders": [{
+                        "id": "general",
+                        "name": "General",
+                        "role": "general",
+                        "access": "all_members",
+                        "parentFolderId": null,
+                        "path": "general",
+                        "sharedFolderSource": true,
+                        "accessUserIds": [],
+                        "currentKeyVersion": 2,
+                        "setupIncomplete": false
+                    }],
+                    "mountedFolders": [{
+                        "mountId": "mount-1",
+                        "organizationVaultId": "acme",
+                        "sourceVaultId": "partner",
+                        "sourceFolderId": "strategy",
+                        "connectionId": "connection-1",
+                        "displayName": "Partner Strategy",
+                        "displayParentFolderId": null,
+                        "state": "available"
+                    }],
+                    "grantCount": 3
+                })
+                .to_string();
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                stream.write_all(response.as_bytes()).unwrap();
+            }
+            requests
+        });
+        (url, handle)
+    }
+
+    fn start_ok_capture_server(
+        expected_requests: usize,
+    ) -> (String, thread::JoinHandle<Vec<(String, String)>>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let handle = thread::spawn(move || {
+            let started = Instant::now();
+            let mut requests = Vec::new();
+            while requests.len() < expected_requests && started.elapsed() < Duration::from_secs(5) {
+                let Ok((mut stream, _)) = listener.accept() else {
+                    thread::sleep(Duration::from_millis(10));
+                    continue;
+                };
+                let (request_line, body) = read_http_request(&mut stream);
+                requests.push((request_line, body));
+                let response_body = serde_json::json!({ "status": "ok" }).to_string();
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{response_body}",
+                    response_body.len()
+                );
+                stream.write_all(response.as_bytes()).unwrap();
+            }
+            requests
+        });
+        (url, handle)
+    }
+
     fn write_opened_test_folder_key(tree: &Path, folder_id: &str, folder_key: &FolderKey) {
         fs::create_dir_all(tree.join(".finitebrain")).unwrap();
         let mut state = AgentState::new("acme", "2026-06-24T20:46:36Z");
@@ -1884,6 +2348,233 @@ mod tests {
     }
 
     #[test]
+    fn folder_mount_and_access_list_commands_use_typed_metadata() {
+        let tmp = TempDir::new().unwrap();
+        run(
+            &tmp,
+            &[
+                "auth",
+                "login",
+                "--nsec",
+                "0000000000000000000000000000000000000000000000000000000000000001",
+            ],
+        );
+        let (server_url, server) = start_metadata_listing_server(3);
+
+        let mut output = Vec::new();
+        run_with_env(
+            [
+                "folder",
+                "list",
+                "--vault",
+                "acme",
+                "--server",
+                &server_url,
+                "--json",
+            ],
+            env_for(&tmp),
+            &mut output,
+        )
+        .unwrap();
+        let folders: Value = serde_json::from_slice(&output).unwrap();
+        assert_eq!(folders[0]["id"], "general");
+        assert_eq!(folders[0]["sharedFolderSource"], true);
+
+        let mut output = Vec::new();
+        run_with_env(
+            [
+                "mount",
+                "list",
+                "--vault",
+                "acme",
+                "--server",
+                &server_url,
+                "--json",
+            ],
+            env_for(&tmp),
+            &mut output,
+        )
+        .unwrap();
+        let mounts: Value = serde_json::from_slice(&output).unwrap();
+        assert_eq!(mounts[0]["mountId"], "mount-1");
+        assert_eq!(mounts[0]["state"], "available");
+
+        let mut output = Vec::new();
+        run_with_env(
+            [
+                "access",
+                "list",
+                "--vault",
+                "acme",
+                "--server",
+                &server_url,
+                "--json",
+            ],
+            env_for(&tmp),
+            &mut output,
+        )
+        .unwrap();
+        let access: Value = serde_json::from_slice(&output).unwrap();
+        assert_eq!(access["vaultId"], "acme");
+        assert_eq!(access["grantCount"], 3);
+        assert_eq!(access["folders"][0]["currentKeyVersion"], 2);
+        assert_eq!(access["mountedFolders"][0]["sourceVaultId"], "partner");
+
+        let requests = server.join().unwrap();
+        assert_eq!(
+            requests
+                .iter()
+                .filter(|request| request.contains("/_admin/vaults/acme/metadata"))
+                .count(),
+            3
+        );
+    }
+
+    #[test]
+    fn access_revoke_blocks_without_rotation_material() {
+        let tmp = TempDir::new().unwrap();
+        let mut output = Vec::new();
+        run_with_env(
+            [
+                "access",
+                "revoke",
+                "--vault",
+                "acme",
+                "--folder",
+                "general",
+                "--target",
+                "npub-target",
+                "--json",
+            ],
+            env_for(&tmp),
+            &mut output,
+        )
+        .unwrap();
+
+        let json: Value = serde_json::from_slice(&output).unwrap();
+        assert_eq!(json["state"], "blocked");
+        assert_eq!(json["operation"], "remove-folder-access");
+        assert_eq!(json["folderId"], "general");
+        assert!(
+            json["required"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|value| value.as_str().unwrap().contains("reencryptedRecords"))
+        );
+    }
+
+    #[test]
+    fn access_revoke_with_rotation_body_uses_safe_delete_route() {
+        let tmp = TempDir::new().unwrap();
+        run(
+            &tmp,
+            &[
+                "auth",
+                "login",
+                "--nsec",
+                "0000000000000000000000000000000000000000000000000000000000000001",
+            ],
+        );
+        let body_path = tmp.path().join("rotation-body.json");
+        fs::write(
+            &body_path,
+            serde_json::json!({
+                "newKeyVersion": 2,
+                "grants": [{
+                    "id": "grant-1",
+                    "keyVersion": 2,
+                    "recipientNpub": "npub-recipient",
+                    "wrappedEventJson": "{}",
+                    "createdAt": "2026-06-24T20:46:36Z"
+                }],
+                "reencryptedRecords": [],
+                "accessChangeEvent": {}
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let (server_url, server) = start_ok_capture_server(1);
+
+        let mut output = Vec::new();
+        run_with_env(
+            [
+                "access",
+                "revoke",
+                "--vault",
+                "acme",
+                "--folder",
+                "general",
+                "--target",
+                "npub-target",
+                "--rotation-body",
+                body_path.to_str().unwrap(),
+                "--server",
+                &server_url,
+                "--json",
+            ],
+            env_for(&tmp),
+            &mut output,
+        )
+        .unwrap();
+        let json: Value = serde_json::from_slice(&output).unwrap();
+        assert_eq!(json["status"], "ok");
+
+        let requests = server.join().unwrap();
+        let (request, body) = requests.first().expect("delete request captured");
+        assert!(
+            request.starts_with("DELETE /_admin/vaults/acme/folders/general/access/npub-target")
+        );
+        let body: Value = serde_json::from_str(body).unwrap();
+        assert_eq!(body["newKeyVersion"], 2);
+        assert_eq!(body["grants"].as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn invites_create_posts_initial_folder_access() {
+        let tmp = TempDir::new().unwrap();
+        run(
+            &tmp,
+            &[
+                "auth",
+                "login",
+                "--nsec",
+                "0000000000000000000000000000000000000000000000000000000000000001",
+            ],
+        );
+        let (server_url, server) = start_ok_capture_server(1);
+
+        let mut output = Vec::new();
+        run_with_env(
+            [
+                "invites",
+                "create",
+                "--vault",
+                "acme",
+                "--target",
+                "npub-target",
+                "--folder",
+                "general",
+                "--server",
+                &server_url,
+                "--json",
+            ],
+            env_for(&tmp),
+            &mut output,
+        )
+        .unwrap();
+        let json: Value = serde_json::from_slice(&output).unwrap();
+        assert_eq!(json["status"], "ok");
+
+        let requests = server.join().unwrap();
+        let (request, body) = requests.first().expect("invite request captured");
+        assert!(request.starts_with("POST /_admin/vaults/acme/invitations"));
+        let body: Value = serde_json::from_str(body).unwrap();
+        assert_eq!(body["targetNpub"], "npub-target");
+        assert_eq!(body["initialFolderAccess"][0], "general");
+    }
+
+    #[test]
     fn share_link_uses_opened_local_folder_key() {
         let tmp = TempDir::new().unwrap();
         let admin_secret = "0000000000000000000000000000000000000000000000000000000000000001";
@@ -2145,6 +2836,89 @@ mod tests {
     }
 
     #[test]
+    fn daemon_watch_file_strategy_skips_idle_ticks() {
+        let tmp = TempDir::new().unwrap();
+        run(
+            &tmp,
+            &[
+                "auth",
+                "login",
+                "--nsec",
+                "0000000000000000000000000000000000000000000000000000000000000001",
+            ],
+        );
+        let tree = tmp.path().join("vault");
+        run(&tmp, &["open", "vault", tree.to_str().unwrap()]);
+        let (server_url, server) = start_empty_sync_server();
+
+        let mut env = env_for(&tmp);
+        env.cwd = tree.clone();
+        let mut output = Vec::new();
+        run_with_env(
+            [
+                "daemon",
+                "watch",
+                "--max-ticks",
+                "2",
+                "--poll-ms",
+                "10",
+                "--server",
+                &server_url,
+                "--json",
+            ],
+            env,
+            &mut output,
+        )
+        .unwrap();
+        let json: Value = serde_json::from_slice(&output).unwrap();
+        assert_eq!(json["state"], "stopped");
+        assert_eq!(json["watchStrategy"], "working-tree-files");
+        assert_eq!(json["ticks"], 2);
+        assert_eq!(json["skippedTicks"], 1);
+        assert_eq!(json["failures"], 0);
+
+        let requests = server.join().unwrap();
+        assert_eq!(requests.len(), 2);
+        let state = read_agent_state(&tree).unwrap();
+        assert_eq!(state.daemon.tick_count, 2);
+        assert_eq!(state.daemon.last_local_change_count, Some(0));
+        assert!(
+            state
+                .activity
+                .iter()
+                .any(|entry| entry.kind == "daemon.watch.idle")
+        );
+    }
+
+    #[test]
+    fn pending_working_tree_change_count_detects_local_markdown() {
+        let tmp = TempDir::new().unwrap();
+        let tree = tmp.path().join("vault");
+        fs::create_dir_all(tree.join(".finitebrain")).unwrap();
+        fs::create_dir_all(tree.join("General")).unwrap();
+        write_agent_state(&tree, &AgentState::new("vault", "2026-06-24T20:46:36Z")).unwrap();
+        write_json_file(
+            &tree.join(".finitebrain/working-tree-state.json"),
+            &VaultWorkingTreeStateManifest {
+                version: WORKING_TREE_STATE_VERSION.to_owned(),
+                folder_roots: vec![WorkingTreeFolderRoot {
+                    folder_id: "general".to_owned(),
+                    source_vault_id: None,
+                    path: "General".to_owned(),
+                    can_read: true,
+                    metadata_only: false,
+                }],
+                objects: Vec::new(),
+                sync: WorkingTreeSyncState { latest_sequence: 0 },
+            },
+        )
+        .unwrap();
+        fs::write(tree.join("General/new.md"), "# New\n").unwrap();
+
+        assert_eq!(pending_working_tree_change_count(&tree).unwrap(), 1);
+    }
+
+    #[test]
     fn daemon_watch_once_records_blocked_sync_without_crashing() {
         let tmp = TempDir::new().unwrap();
         run(
@@ -2162,21 +2936,50 @@ mod tests {
         let mut env = env_for(&tmp);
         env.cwd = tree.clone();
         let mut output = Vec::new();
-        run_with_env(["daemon", "watch", "--once", "--json"], env, &mut output).unwrap();
+        run_with_env(
+            ["daemon", "watch", "--once", "--json"],
+            env.clone(),
+            &mut output,
+        )
+        .unwrap();
         let json: Value = serde_json::from_slice(&output).unwrap();
         assert_eq!(json["state"], "stopped");
         assert_eq!(json["ticks"], 1);
         assert_eq!(json["failures"], 1);
+        assert_eq!(json["watchStrategy"], "working-tree-files");
+        assert_eq!(json["retryBackoffMillis"], 5000);
         assert!(!json["lastError"].as_str().unwrap().is_empty());
 
         let state = read_agent_state(&tree).unwrap();
         assert_eq!(state.daemon.state, DaemonRunState::Stopped);
+        assert_eq!(state.daemon.failure_count, 1);
+        assert_eq!(state.daemon.retry_backoff_millis, 5000);
+        assert!(
+            state
+                .daemon
+                .last_error
+                .as_deref()
+                .unwrap()
+                .contains("server URL")
+        );
         assert!(state.sync.status.contains("blocked:"));
         assert!(
             state
                 .activity
                 .iter()
                 .any(|entry| entry.kind == "daemon.watch.blocked")
+        );
+
+        let mut output = Vec::new();
+        run_with_env(["status", "--json"], env, &mut output).unwrap();
+        let json: Value = serde_json::from_slice(&output).unwrap();
+        assert_eq!(json["daemon"]["failureCount"], 1);
+        assert_eq!(json["daemon"]["retryBackoffMillis"], 5000);
+        assert!(
+            json["daemon"]["lastError"]
+                .as_str()
+                .unwrap()
+                .contains("server URL")
         );
     }
 
@@ -2563,6 +3366,8 @@ mod tests {
             members: vec!["npub-member".to_owned()],
             admins: vec!["npub-admin".to_owned()],
             folders: Vec::new(),
+            mounted_folders: Vec::new(),
+            grant_count: 0,
         };
 
         assert_eq!(

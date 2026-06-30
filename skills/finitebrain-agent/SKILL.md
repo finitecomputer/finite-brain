@@ -42,6 +42,9 @@ fbrain --config-dir "$FBRAIN_CONFIG" conflicts --json
    `fbrain conflicts --json`.
 7. If sync is blocked, stop broad edits and inspect with `fbrain status --json`,
    `fbrain conflicts --json`, and `fbrain access explain <folder>`.
+8. For long-running work, prefer supervisor-managed
+   `fbrain daemon watch --poll-ms 250` and inspect `daemon status --json` when
+   sync appears stalled.
 
 ## Gardening Workflow
 
@@ -62,8 +65,19 @@ fbrain --config-dir "$FBRAIN_CONFIG" sync now --json
 fbrain --config-dir "$FBRAIN_CONFIG" conflicts --json
 fbrain --config-dir "$FBRAIN_CONFIG" activity
 fbrain --config-dir "$FBRAIN_CONFIG" access explain general
+fbrain --config-dir "$FBRAIN_CONFIG" access list --vault "$VAULT"
+fbrain --config-dir "$FBRAIN_CONFIG" folder list --vault "$VAULT"
+fbrain --config-dir "$FBRAIN_CONFIG" mount list --vault "$VAULT"
 fbrain --config-dir "$FBRAIN_CONFIG" daemon watch --once --json
+fbrain --config-dir "$FBRAIN_CONFIG" daemon status --json
 ```
+
+Use `access grant --folder <folder-id> --target <npub>` for the happy path when
+the current agent has opened the Folder Key. Use `access revoke --folder
+<folder-id> --target <npub>` first to get the safe blocked-state checklist for
+rotation material; only pass `--rotation-body <file>` when a trusted rotation
+workflow has prepared `newKeyVersion`, grants, reencrypted records, and the
+remove-folder-access event.
 
 ## Final Report Shape
 

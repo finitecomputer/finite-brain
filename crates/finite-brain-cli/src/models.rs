@@ -68,6 +68,13 @@ impl AgentState {
             daemon: DaemonState {
                 state: DaemonRunState::Stopped,
                 last_started_at: None,
+                last_tick_at: None,
+                last_error: None,
+                tick_count: 0,
+                failure_count: 0,
+                retry_backoff_millis: 0,
+                watch_strategy: None,
+                last_local_change_count: None,
             },
             sync: AgentSyncState {
                 mode: "automatic".to_owned(),
@@ -117,6 +124,20 @@ fn activity_id(at: &str, index: usize, kind: &str) -> String {
 pub(crate) struct DaemonState {
     pub(crate) state: DaemonRunState,
     pub(crate) last_started_at: Option<String>,
+    #[serde(default)]
+    pub(crate) last_tick_at: Option<String>,
+    #[serde(default)]
+    pub(crate) last_error: Option<String>,
+    #[serde(default)]
+    pub(crate) tick_count: u64,
+    #[serde(default)]
+    pub(crate) failure_count: u64,
+    #[serde(default)]
+    pub(crate) retry_backoff_millis: u64,
+    #[serde(default)]
+    pub(crate) watch_strategy: Option<String>,
+    #[serde(default)]
+    pub(crate) last_local_change_count: Option<usize>,
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq, Deserialize, Serialize)]
@@ -211,6 +232,13 @@ pub(crate) struct DaemonStatus {
     pub(crate) state: String,
     pub(crate) sync_mode: String,
     pub(crate) last_started_at: Option<String>,
+    pub(crate) last_tick_at: Option<String>,
+    pub(crate) last_error: Option<String>,
+    pub(crate) tick_count: u64,
+    pub(crate) failure_count: u64,
+    pub(crate) retry_backoff_millis: u64,
+    pub(crate) watch_strategy: Option<String>,
+    pub(crate) last_local_change_count: Option<usize>,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, Serialize)]
@@ -331,13 +359,37 @@ pub(crate) struct AccessExplanation {
     pub(crate) reason: String,
 }
 
+#[derive(Debug, Clone, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct AccessRemovalBlockedReport {
+    pub(crate) state: String,
+    pub(crate) operation: String,
+    pub(crate) vault_id: String,
+    pub(crate) folder_id: String,
+    pub(crate) target_npub: String,
+    pub(crate) route: String,
+    pub(crate) reason: String,
+    pub(crate) required: Vec<String>,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct AccessSummaryReport {
+    pub(crate) vault_id: String,
+    pub(crate) members: Vec<String>,
+    pub(crate) admins: Vec<String>,
+    pub(crate) folders: Vec<FolderMetadataView>,
+    pub(crate) mounted_folders: Vec<MountedFolderMetadataView>,
+    pub(crate) grant_count: usize,
+}
+
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub(crate) struct HttpResponse {
     pub(crate) status: u16,
     pub(crate) body: String,
 }
 
-#[derive(Debug, Clone, Eq, PartialEq, Deserialize)]
+#[derive(Debug, Clone, Eq, PartialEq, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct VaultMetadataView {
     pub(crate) vault_id: String,
@@ -347,15 +399,44 @@ pub(crate) struct VaultMetadataView {
     pub(crate) members: Vec<String>,
     pub(crate) admins: Vec<String>,
     pub(crate) folders: Vec<FolderMetadataView>,
+    #[serde(default)]
+    pub(crate) mounted_folders: Vec<MountedFolderMetadataView>,
+    #[serde(default)]
+    pub(crate) grant_count: usize,
 }
 
-#[derive(Debug, Clone, Eq, PartialEq, Deserialize)]
+#[derive(Debug, Clone, Eq, PartialEq, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct FolderMetadataView {
     pub(crate) id: String,
     pub(crate) name: String,
+    #[serde(default = "default_folder_role")]
+    pub(crate) role: String,
     pub(crate) access: String,
+    #[serde(default)]
+    pub(crate) parent_folder_id: Option<String>,
     pub(crate) path: String,
+    #[serde(default)]
+    pub(crate) shared_folder_source: bool,
     pub(crate) access_user_ids: Vec<String>,
     pub(crate) current_key_version: u32,
+    #[serde(default)]
+    pub(crate) setup_incomplete: bool,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct MountedFolderMetadataView {
+    pub(crate) mount_id: String,
+    pub(crate) organization_vault_id: String,
+    pub(crate) source_vault_id: String,
+    pub(crate) source_folder_id: String,
+    pub(crate) connection_id: String,
+    pub(crate) display_name: String,
+    pub(crate) display_parent_folder_id: Option<String>,
+    pub(crate) state: String,
+}
+
+fn default_folder_role() -> String {
+    "folder".to_owned()
 }

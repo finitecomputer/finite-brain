@@ -113,6 +113,11 @@ pub(crate) fn run_working_tree_sync(
     })
 }
 
+pub(crate) fn pending_working_tree_change_count(root: &Path) -> Result<usize, CliError> {
+    let tree_state = read_working_tree_state(root)?;
+    Ok(scan_working_tree_changes(root, &tree_state)?.len())
+}
+
 fn fetch_encrypted_export(
     env: &CliEnvironment,
     server_url: &str,

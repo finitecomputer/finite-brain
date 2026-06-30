@@ -37,11 +37,7 @@ pub(crate) fn auth_status(env: &CliEnvironment) -> Result<AuthStatus, CliError> 
 
 pub(crate) fn daemon_status(env: &CliEnvironment) -> Result<DaemonStatus, CliError> {
     let state = load_current_agent_state(env)?;
-    Ok(DaemonStatus {
-        state: state.daemon.state.to_string(),
-        sync_mode: state.sync.mode,
-        last_started_at: state.daemon.last_started_at,
-    })
+    Ok(daemon_status_from_state(&state))
 }
 
 pub(crate) fn status_report(env: &CliEnvironment) -> Result<StatusReport, CliError> {
@@ -56,6 +52,13 @@ pub(crate) fn status_report(env: &CliEnvironment) -> Result<StatusReport, CliErr
                 state: "missing".to_owned(),
                 sync_mode: "automatic".to_owned(),
                 last_started_at: None,
+                last_tick_at: None,
+                last_error: None,
+                tick_count: 0,
+                failure_count: 0,
+                retry_backoff_millis: 0,
+                watch_strategy: None,
+                last_local_change_count: None,
             },
             sync: SyncStatus {
                 mode: "automatic".to_owned(),
@@ -86,14 +89,10 @@ pub(crate) fn status_report(env: &CliEnvironment) -> Result<StatusReport, CliErr
         blocked.push("unresolved conflicts".to_owned());
     }
     Ok(StatusReport {
-        vault_id: Some(state.vault_id),
+        vault_id: Some(state.vault_id.clone()),
         working_tree_path: Some(root.display().to_string()),
         auth,
-        daemon: DaemonStatus {
-            state: state.daemon.state.to_string(),
-            sync_mode: state.sync.mode.clone(),
-            last_started_at: state.daemon.last_started_at,
-        },
+        daemon: daemon_status_from_state(&state),
         sync: SyncStatus {
             mode: state.sync.mode,
             status: state.sync.status,
@@ -103,6 +102,21 @@ pub(crate) fn status_report(env: &CliEnvironment) -> Result<StatusReport, CliErr
         conflicts: open_conflicts,
         blocked,
     })
+}
+
+fn daemon_status_from_state(state: &AgentState) -> DaemonStatus {
+    DaemonStatus {
+        state: state.daemon.state.to_string(),
+        sync_mode: state.sync.mode.clone(),
+        last_started_at: state.daemon.last_started_at.clone(),
+        last_tick_at: state.daemon.last_tick_at.clone(),
+        last_error: state.daemon.last_error.clone(),
+        tick_count: state.daemon.tick_count,
+        failure_count: state.daemon.failure_count,
+        retry_backoff_millis: state.daemon.retry_backoff_millis,
+        watch_strategy: state.daemon.watch_strategy.clone(),
+        last_local_change_count: state.daemon.last_local_change_count,
+    }
 }
 
 pub(crate) fn explain_access(

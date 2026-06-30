@@ -64,6 +64,7 @@ fbrain open <vault-id> ./my-vault
 cd ./my-vault
 fbrain status --json
 fbrain daemon status
+fbrain daemon watch --poll-ms 250 --json
 fbrain daemon watch --once --json
 fbrain sync now --summary
 fbrain sync now --json
@@ -71,8 +72,13 @@ fbrain unlock --all
 fbrain conflicts
 fbrain activity
 fbrain access explain <folder>
+fbrain access list --vault <vault-id>
+fbrain access grant --vault <vault-id> --folder <folder-id> --target <npub>
+fbrain access revoke --vault <vault-id> --folder <folder-id> --target <npub>
 fbrain vault metadata --vault <vault-id>
+fbrain folder list --vault <vault-id>
 fbrain folder create notes --vault <vault-id> --name Notes --path Notes
+fbrain mount list --vault <vault-id>
 fbrain permissions add-member --vault <vault-id> --target <npub>
 fbrain invites create --vault <vault-id> --target <npub> --folder <folder-id>
 fbrain share link --vault <vault-id> --folder <folder-id> --target <npub>
@@ -83,14 +89,22 @@ Nostr-keypair auth, a simple NIP-07-like signer interface, Vault Working Tree
 state files, automatic sync attempts on `open`/`daemon start`, strict sync
 diagnostics through `sync now`, daemon status, blocked-state inspection, stable
 JSON status, signed server calls for Vault metadata/export/create, Folder
-creation, member/admin permission changes, Vault invitations, share links, and
-shared Folder invitations. Agents still use ordinary filesystem reads and
-writes for wiki work; `fbrain` owns the secure/control operations around that
-flow.
+creation/listing, Mount inspection, access inspection, safe Folder access grant
+and rotation-aware revoke surfaces, member/admin permission changes, Vault
+invitations, share links, and shared Folder invitations. Agents still use
+ordinary filesystem reads and writes for wiki work; `fbrain` owns the
+secure/control operations around that flow.
 
 `fbrain daemon watch` is a foreground resident sync loop for Agent Runtimes. Run
-it under tmux, systemd, or an agent supervisor for continuous smoke use; use
-`--once`, `--max-ticks`, and `--poll-secs` for bounded checks and tests.
+it under tmux, systemd, or an agent supervisor for continuous smoke use. The
+default watch strategy is file-aware: it performs an initial sync, syncs when
+readable Vault Working Tree markdown changes are detected, and still performs a
+bounded periodic remote poll. Use `--poll-ms` or `--poll-secs` to tune latency,
+`--remote-poll-ticks 0` to disable periodic remote polling, `--poll-only` for
+legacy every-tick sync behavior, and `--once`/`--max-ticks` for bounded checks
+and tests. `daemon status --json` and `status --json` expose `lastTickAt`,
+`lastError`, `tickCount`, `failureCount`, `retryBackoffMillis`,
+`watchStrategy`, and `lastLocalChangeCount` for supervisors.
 
 The CLI resolves server URLs in this order: explicit `--server`, the saved
 Vault Working Tree server URL, `FINITE_BRAIN_SERVER_URL`, then the legacy
@@ -98,9 +112,9 @@ Vault Working Tree server URL, `FINITE_BRAIN_SERVER_URL`, then the legacy
 loopback `http://` endpoints and production-shaped `https://` endpoints.
 Plain `http://` is accepted only for `localhost`, loopback IPs, and bracketed
 IPv6 loopback addresses; LAN hosts and container hostnames must use `https://`.
-Background supervisor packaging and lower-latency native file-system event
-watching remain hardening work; command driven `open`, `daemon watch`,
-`daemon start`, `daemon tick`, and `sync now` run the real sync path.
+Background process packaging remains runtime-owned for now; command driven
+`open`, `daemon watch`, `daemon start`, `daemon tick`, and `sync now` run the
+real sync path.
 
 Use global `--config-dir <path>` when an agent needs a dedicated signer/config
 directory without relying on shell-level environment persistence:
@@ -116,6 +130,15 @@ machine-readable `localChanges`, `remoteChanges`, and `conflicts` arrays. Sync
 reports include paths, actions, Folder ids, Object ids, routes, and conflict
 reasons only; they do not include plaintext contents, Folder Keys, grant
 contents, or signer secrets.
+
+Use `folder list`, `mount list`, and `access list` for agent-friendly Vault
+administration inspection without parsing raw metadata responses. `access grant`
+is the happy-path alias for granting the current opened Folder Key to a target.
+`access revoke` is intentionally safe-by-default: without a `--rotation-body`
+JSON file it returns a precise blocked state explaining the required Folder Key
+rotation material. With `--rotation-body <file>`, it submits the server's
+rotation-aware removal request to
+`DELETE /_admin/vaults/<vault>/folders/<folder>/access/<target>`.
 
 Useful local environment variables:
 
