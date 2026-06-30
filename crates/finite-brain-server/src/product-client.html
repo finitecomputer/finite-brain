@@ -8,6 +8,36 @@
   </head>
   <body>
     <div class="obsidian-shell" data-workspace-view="page">
+      <header class="obsidian-titlebar" aria-label="Workspace chrome">
+        <div class="traffic-lights" aria-hidden="true">
+          <span class="traffic-light red"></span>
+          <span class="traffic-light amber"></span>
+          <span class="traffic-light green"></span>
+        </div>
+        <div class="titlebar-tabs" role="tablist" aria-label="Workspace views">
+          <button id="pageTabButton" class="titlebar-tab active" type="button" role="tab" aria-selected="true">
+            <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M6 3h8l4 4v14H6z" />
+              <path d="M14 3v5h5" />
+            </svg>
+            <span id="titlebarTabLabel">Open a Vault</span>
+          </button>
+          <button id="graphTabButton" class="titlebar-tab" type="button" role="tab" aria-selected="false">
+            <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+              <circle cx="6" cy="7" r="2.4" />
+              <circle cx="18" cy="6" r="2.4" />
+              <circle cx="16" cy="18" r="2.4" />
+              <path d="M8.2 7h7.3M7.5 9.1l6.9 7M17.3 8.5l-1 7" />
+            </svg>
+            <span>Graph view</span>
+          </button>
+          <button id="titlebarNewTabButton" class="titlebar-new-tab" type="button" aria-label="New page">+</button>
+        </div>
+        <span id="titlebarVaultLabel" class="titlebar-vault-label">FiniteBrain</span>
+        <button id="titlebarMoreButton" class="titlebar-more-button" type="button" aria-label="More workspace actions">
+          <span aria-hidden="true">...</span>
+        </button>
+      </header>
       <aside class="app-ribbon" aria-label="Primary navigation">
         <button class="ribbon-button active" id="ribbonFilesButton" type="button" title="Files" aria-label="Files" aria-pressed="true">
           <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">

@@ -1472,6 +1472,11 @@ assert.equal(client.readerPageRows("general", draftPages)[0].label, "Draft Page"
   assert.equal(graphMetrics.edgeCount, 2);
   assert.equal(graphMetrics.filteredOutCount, 1);
   assert.equal(graphMetrics.nodeCount, 2);
+  assert.deepEqual(
+    Array.from(client.graphNeighborIds(graph, "general/page-a")).sort(),
+    ["general/page-a", "general/page-b"]
+  );
+  assert.deepEqual(Array.from(client.graphNeighborIds(graph, null)), []);
 
   const filteredGraph = client.buildGraphProjection(
     [

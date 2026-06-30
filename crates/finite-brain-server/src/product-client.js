@@ -1657,6 +1657,16 @@ const FiniteBrainProductClient = (() => {
     };
   }
 
+  function graphNeighborIds(graph, nodeId) {
+    const neighbors = new Set(nodeId ? [nodeId] : []);
+    if (!nodeId) return neighbors;
+    for (const edge of graph.edges || []) {
+      if (edge.source === nodeId) neighbors.add(edge.target);
+      if (edge.target === nodeId) neighbors.add(edge.source);
+    }
+    return neighbors;
+  }
+
   function stableGraphHash(value) {
     let hash = 2166136261;
     for (const char of String(value || "")) {
@@ -2167,6 +2177,7 @@ const FiniteBrainProductClient = (() => {
   function renderWorkspaceChrome(page = selectedReaderPage()) {
     const chrome = workspaceChromeState(state.activeWorkspaceView);
     const workspaceTitle = workspaceTabTitle(state.metadata, page);
+    const graphActive = chrome.shellView === "graph";
     const shell = document.querySelector(".obsidian-shell");
     shell.dataset.workspaceView = chrome.shellView;
     shell.dataset.vaultLoaded = state.metadata ? "true" : "false";
@@ -2174,6 +2185,12 @@ const FiniteBrainProductClient = (() => {
     $("graphWorkspace").hidden = chrome.graphHidden;
     $("ribbonGraphButton").className = chrome.ribbonGraphClass;
     setPressed("ribbonGraphButton", !chrome.graphHidden);
+    $("pageTabButton").className = `titlebar-tab${graphActive ? "" : " active"}`;
+    $("graphTabButton").className = `titlebar-tab${graphActive ? " active" : ""}`;
+    $("pageTabButton").setAttribute("aria-selected", String(!graphActive));
+    $("graphTabButton").setAttribute("aria-selected", String(graphActive));
+    setText("titlebarTabLabel", workspaceTitle);
+    setText("titlebarVaultLabel", state.metadata?.name || state.activeVaultId || "FiniteBrain");
     document.title = chrome.shellView === "graph" ? "Graph View - FiniteBrain" : `${workspaceTitle} - FiniteBrain`;
   }
 
@@ -2386,6 +2403,7 @@ const FiniteBrainProductClient = (() => {
     const svg = $("graphCanvas");
     const emptyState = $("graphEmptyState");
     svg.replaceChildren();
+    svg.classList.remove("is-hovering");
     svg.setAttribute("viewBox", `0 0 ${graphViewport.width} ${graphViewport.height}`);
     if (!graph.nodes.length) {
       if (emptyState) {
@@ -2409,6 +2427,8 @@ const FiniteBrainProductClient = (() => {
       if (!source || !target) continue;
       const line = document.createElementNS("http://www.w3.org/2000/svg", "line");
       line.setAttribute("class", "edge");
+      line.dataset.source = edge.source;
+      line.dataset.target = edge.target;
       line.setAttribute("x1", String(source.x));
       line.setAttribute("y1", String(source.y));
       line.setAttribute("x2", String(target.x));
@@ -2425,19 +2445,55 @@ const FiniteBrainProductClient = (() => {
         "class",
         `node${degree > 1 ? " focus" : ""}${isSelected ? " selected" : ""}`
       );
+      circle.dataset.baseClass = circle.getAttribute("class");
+      circle.dataset.nodeId = node.id;
       circle.setAttribute("cx", String(position.x));
       circle.setAttribute("cy", String(position.y));
       circle.setAttribute("r", String(Math.min(5.6, 2.1 + degree * 0.36)));
       circle.setAttribute("data-folder-id", node.folderId);
+      circle.addEventListener("mouseenter", () => setGraphHover(svg, graph, node.id));
+      circle.addEventListener("mouseleave", () => clearGraphHover(svg));
       svg.appendChild(circle);
 
       const label = document.createElementNS("http://www.w3.org/2000/svg", "text");
       label.setAttribute("class", "node-label");
+      label.dataset.nodeId = node.id;
       label.setAttribute("x", String(position.x + 16));
       label.setAttribute("y", String(position.y + 4));
       label.textContent = node.title;
       svg.appendChild(label);
     }
+  }
+
+  function setGraphHover(svg, graph, nodeId) {
+    const neighbors = graphNeighborIds(graph, nodeId);
+    svg.classList.add("is-hovering");
+    for (const edge of svg.querySelectorAll(".edge")) {
+      const connected = edge.dataset.source === nodeId || edge.dataset.target === nodeId;
+      edge.className.baseVal = `edge${connected ? " hover-connected" : " hover-faded"}`;
+    }
+    for (const node of svg.querySelectorAll(".node")) {
+      const id = node.dataset.nodeId;
+      const baseClass = node.dataset.baseClass || "node";
+      const hoverClass =
+        id === nodeId ? " hover-active" : neighbors.has(id) ? " hover-connected" : " hover-faded";
+      node.className.baseVal = `${baseClass}${hoverClass}`;
+    }
+    for (const label of svg.querySelectorAll(".node-label")) {
+      const id = label.dataset.nodeId;
+      const labelClass =
+        id === nodeId ? " hover-active" : neighbors.has(id) ? " hover-connected" : "";
+      label.className.baseVal = `node-label${labelClass}`;
+    }
+  }
+
+  function clearGraphHover(svg) {
+    svg.classList.remove("is-hovering");
+    for (const edge of svg.querySelectorAll(".edge")) edge.className.baseVal = "edge";
+    for (const node of svg.querySelectorAll(".node")) {
+      node.className.baseVal = node.dataset.baseClass || "node";
+    }
+    for (const label of svg.querySelectorAll(".node-label")) label.className.baseVal = "node-label";
   }
 
   function setPill(id, text, tone) {
@@ -4951,9 +5007,22 @@ const FiniteBrainProductClient = (() => {
     $("ribbonGraphButton").addEventListener("click", () => {
       setWorkspaceView("graph");
     });
+    $("graphTabButton").addEventListener("click", () => {
+      setWorkspaceView("graph");
+    });
     $("ribbonFilesButton").addEventListener("click", () => {
       setWorkspaceView("page");
       setSidebarMode("files");
+    });
+    $("pageTabButton").addEventListener("click", () => {
+      setWorkspaceView("page");
+      setSidebarMode("files");
+    });
+    $("titlebarNewTabButton").addEventListener("click", () => {
+      startNewPageDraft();
+    });
+    $("titlebarMoreButton").addEventListener("click", () => {
+      openCommandPalette();
     });
     $("ribbonSearchButton").addEventListener("click", () => {
       setSidebarMode("search");
@@ -5218,6 +5287,7 @@ const FiniteBrainProductClient = (() => {
     extractPageLinks,
     graphEmptyStateCopy,
     graphLayout,
+    graphNeighborIds,
     graphStats,
     inlineLinkSegments,
     initialVaultInvitationFolders,

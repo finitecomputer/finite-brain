@@ -696,7 +696,7 @@ pre {
 .obsidian-shell {
   display: grid;
   grid-template-columns: 44px minmax(268px, 318px) minmax(0, 1fr);
-  grid-template-rows: minmax(0, 1fr);
+  grid-template-rows: 38px minmax(0, 1fr);
   height: 100vh;
   min-height: 100vh;
   background: #1e1e1e;
@@ -707,9 +707,136 @@ pre {
   grid-template-columns: 44px minmax(268px, 318px) minmax(0, 1fr);
 }
 
+.obsidian-titlebar {
+  grid-column: 1 / -1;
+  grid-row: 1;
+  display: grid;
+  grid-template-columns: 112px minmax(0, 1fr) auto auto;
+  align-items: center;
+  min-width: 0;
+  min-height: 38px;
+  border-bottom: 1px solid #303030;
+  background: #2a2a2a;
+  color: #b8b8b8;
+  -webkit-app-region: drag;
+}
+
+.traffic-lights {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-left: 12px;
+}
+
+.traffic-light {
+  width: 12px;
+  height: 12px;
+  border-radius: 999px;
+  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.22);
+}
+
+.traffic-light.red {
+  background: #ff5f57;
+}
+
+.traffic-light.amber {
+  background: #ffbd2e;
+}
+
+.traffic-light.green {
+  background: #28c840;
+}
+
+.titlebar-tabs {
+  display: flex;
+  align-items: end;
+  min-width: 0;
+  height: 100%;
+  gap: 2px;
+  -webkit-app-region: no-drag;
+}
+
+.titlebar-tab,
+.titlebar-new-tab,
+.titlebar-more-button {
+  min-height: 30px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: #9d9d9d;
+  padding: 0 10px;
+  transition-duration: 140ms;
+  transition-property: background-color, color, transform;
+  transition-timing-function: cubic-bezier(0.2, 0, 0, 1);
+  -webkit-app-region: no-drag;
+}
+
+.titlebar-tab {
+  display: inline-grid;
+  grid-template-columns: auto minmax(0, auto);
+  align-items: center;
+  gap: 7px;
+  max-width: min(260px, 34vw);
+  height: 32px;
+  margin-bottom: -1px;
+  border-bottom-right-radius: 0;
+  border-bottom-left-radius: 0;
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.titlebar-tab .icon {
+  width: 15px;
+  height: 15px;
+}
+
+.titlebar-tab span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.titlebar-tab:hover,
+.titlebar-new-tab:hover,
+.titlebar-more-button:hover {
+  background: #333333;
+  color: #e6e6e6;
+}
+
+.titlebar-tab:active,
+.titlebar-new-tab:active,
+.titlebar-more-button:active,
+.ribbon-button:active {
+  transform: scale(0.96);
+}
+
+.titlebar-tab.active {
+  background: #1f1f1f;
+  color: #dedede;
+  box-shadow: 0 -1px 0 rgba(255, 255, 255, 0.05);
+}
+
+.titlebar-new-tab,
+.titlebar-more-button {
+  width: 32px;
+  min-width: 32px;
+  padding: 0;
+}
+
+.titlebar-vault-label {
+  max-width: 220px;
+  overflow: hidden;
+  padding: 0 10px;
+  color: #9b9b9b;
+  font-size: 12px;
+  font-weight: 650;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .app-ribbon {
   grid-column: 1;
-  grid-row: 1;
+  grid-row: 2;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -792,7 +919,7 @@ pre {
 
 .file-sidebar {
   grid-column: 2;
-  grid-row: 1;
+  grid-row: 2;
   display: grid;
   grid-template-rows: auto auto auto minmax(0, 1fr);
 }
@@ -1345,6 +1472,16 @@ pre {
   min-width: 0;
 }
 
+.obsidian-file-tree > .empty-row,
+.obsidian-file-tree ol > .empty-row {
+  margin: 10px 12px;
+  color: #858585;
+  font-size: 12px;
+  font-weight: 540;
+  line-height: 1.35;
+  text-wrap: pretty;
+}
+
 .obsidian-folder-button,
 .obsidian-page-button {
   position: relative;
@@ -1634,7 +1771,7 @@ pre {
 
 .obsidian-workspace {
   grid-column: 3;
-  grid-row: 1;
+  grid-row: 2;
   display: grid;
   grid-template-rows: minmax(0, 1fr);
   min-width: 0;
@@ -2100,10 +2237,12 @@ pre {
   display: grid;
   width: min(360px, calc(100% - 48px));
   gap: 8px;
-  padding: 18px;
-  border-radius: 8px;
-  background: rgba(32, 32, 32, 0.76);
-  box-shadow: var(--shadow-obsi-ring);
+  padding: 16px 18px;
+  border-radius: 9px;
+  background: rgba(32, 32, 32, 0.58);
+  box-shadow:
+    0 0 0 1px rgba(255, 255, 255, 0.055),
+    0 18px 46px rgba(0, 0, 0, 0.18);
   color: #aeb4c0;
   text-align: center;
   transform: translate(-50%, -50%);
@@ -2133,7 +2272,9 @@ pre {
   height: 100%;
   border: 0;
   border-radius: 0;
-  background: #1f1f1f;
+  background:
+    radial-gradient(circle at 52% 48%, rgba(255, 255, 255, 0.018), transparent 34%),
+    #1f1f1f;
 }
 
 .graph-canvas .node-label {
@@ -2149,15 +2290,13 @@ pre {
   pointer-events: none;
 }
 
-.graph-canvas .node:hover + .node-label,
-.graph-canvas .node-label:hover {
-  opacity: 0.86;
-}
-
 .graph-canvas .edge {
   stroke: rgba(188, 188, 188, 0.16);
   stroke-width: 0.88;
   opacity: 1;
+  transition-duration: 140ms;
+  transition-property: opacity, stroke, stroke-width;
+  transition-timing-function: cubic-bezier(0.2, 0, 0, 1);
 }
 
 .graph-canvas .node {
@@ -2165,6 +2304,12 @@ pre {
   stroke: rgba(31, 31, 31, 0.94);
   stroke-width: 1.25;
   filter: none;
+  transform-box: fill-box;
+  transform-origin: center;
+  transition-duration: 140ms;
+  transition-property: fill, filter, opacity, stroke, transform;
+  transition-timing-function: cubic-bezier(0.2, 0, 0, 1);
+  cursor: pointer;
 }
 
 .graph-canvas .node.focus {
@@ -2175,6 +2320,54 @@ pre {
 .graph-canvas .node.selected {
   fill: #8f7cff;
   stroke: rgba(230, 224, 255, 0.92);
+}
+
+.graph-canvas.is-hovering .edge {
+  opacity: 0.08;
+}
+
+.graph-canvas.is-hovering .node {
+  opacity: 0.2;
+}
+
+.graph-canvas .edge.hover-connected {
+  stroke: rgba(156, 126, 255, 0.96);
+  stroke-width: 1.58;
+  opacity: 0.98;
+}
+
+.graph-canvas .edge.hover-faded {
+  opacity: 0.04;
+}
+
+.graph-canvas .node.hover-active {
+  fill: #a28bff;
+  stroke: rgba(236, 232, 255, 0.94);
+  filter: drop-shadow(0 0 12px rgba(162, 139, 255, 0.52));
+  opacity: 1;
+  transform: scale(1.72);
+}
+
+.graph-canvas .node.hover-connected {
+  fill: rgba(246, 246, 246, 0.98);
+  stroke: rgba(178, 158, 255, 0.92);
+  opacity: 0.98;
+  transform: scale(1.22);
+}
+
+.graph-canvas .node.hover-faded {
+  opacity: 0.13;
+}
+
+.graph-canvas .node-label.hover-active {
+  fill: #f0edff;
+  opacity: 1;
+  stroke: #1f1f1f;
+}
+
+.graph-canvas .node-label.hover-connected {
+  fill: #e3e3e3;
+  opacity: 0.62;
 }
 
 .graph-floating-controls {
@@ -2204,16 +2397,25 @@ pre {
 @media (max-width: 1180px) {
   .obsidian-shell {
     grid-template-columns: 52px minmax(240px, 300px) minmax(0, 1fr);
-    grid-template-rows: minmax(0, 1fr);
+    grid-template-rows: 38px minmax(0, 1fr);
+  }
+
+  .obsidian-titlebar {
+    grid-row: 1;
+    grid-template-columns: 90px minmax(0, 1fr) auto;
+  }
+
+  .titlebar-vault-label {
+    display: none;
   }
 
   .app-ribbon {
-    grid-row: 1;
+    grid-row: 2;
   }
 
   .file-sidebar,
   .obsidian-workspace {
-    grid-row: 1;
+    grid-row: 2;
   }
 
 }

@@ -174,6 +174,14 @@ function checkStaticShell() {
 
   for (const marker of [
     "obsidian-shell",
+    "obsidian-titlebar",
+    "traffic-lights",
+    "titlebarTabLabel",
+    "titlebarVaultLabel",
+    "pageTabButton",
+    "graphTabButton",
+    "titlebarNewTabButton",
+    "role=\"tablist\"",
     "compact-icon-button",
     "vaultControlDetails",
     "vaultControlSummary",
@@ -227,6 +235,9 @@ function checkStaticShell() {
   for (const marker of [
     ".obsidian-shell",
     ".obsidian-shell[data-workspace-view=\"graph\"]",
+    ".obsidian-titlebar",
+    ".traffic-light",
+    ".titlebar-tab",
     ".compact-icon-button",
     ".vault-control-body",
     ".vault-connect-button",
@@ -239,6 +250,9 @@ function checkStaticShell() {
     ".graph-stage",
     ".graph-icon-button",
     ".graph-empty-state",
+    ".graph-canvas.is-hovering",
+    ".node.hover-active",
+    ".edge.hover-connected",
     ".graph-replay-overlay",
     ".access-inspector",
     ".access-flow-panel",
@@ -275,6 +289,7 @@ function checkStaticShell() {
     "renderVaultControlChrome",
     "vaultControlsCollapsedAfterLoad",
     "workspaceChromeState",
+    "graphNeighborIds",
     "accessBadgesForFolder",
     "accessActionRoute",
     "markdownFromEditorElement",
@@ -294,13 +309,6 @@ function checkStaticShell() {
   }
 
   for (const marker of [
-    "obsidian-titlebar",
-    "traffic-lights",
-    "titlebarTabLabel",
-    "titlebarVaultLabel",
-    "pageTabButton",
-    "graphTabButton",
-    "role=\"tablist\"",
     "workspace-status-cluster",
     "folderCount",
     "folderList",
@@ -323,9 +331,6 @@ function checkStaticShell() {
   }
 
   for (const marker of [
-    ".obsidian-titlebar",
-    ".traffic-light",
-    ".titlebar-tab",
     ".workspace-tab",
     ".tab-strip",
     ".workspace-status-cluster",
