@@ -1724,7 +1724,7 @@ const FiniteBrainProductClient = (() => {
       const nodeDegree = degree.get(node.id) || 0;
       const folderCenter = folderCenters.get(node.folderId || "") || { x: centerX, y: centerY };
       const jitterAngle = stableUnitInterval(`node-angle:${node.id}`) * Math.PI * 2;
-      const jitterRadius = Math.sqrt(stableUnitInterval(`node-radius:${node.id}`)) * 136;
+      const jitterRadius = Math.sqrt(stableUnitInterval(`node-radius:${node.id}`)) * 188;
       const scatterAngle = stableUnitInterval(`loose-angle:${node.id}`) * Math.PI * 2;
       const scatterRadius = 0.2 + stableUnitInterval(`loose-radius:${node.id}`) * 0.72;
       const looseX = centerX + Math.cos(scatterAngle) * radiusX * scatterRadius;
@@ -1752,9 +1752,9 @@ const FiniteBrainProductClient = (() => {
     const links = graph.edges
       .map((edge) => ({ source: byId.get(edge.source), target: byId.get(edge.target) }))
       .filter((edge) => edge.source && edge.target);
-    const iterations = Math.min(220, Math.max(110, orderedNodes.length * 5));
-    const linkDistance = Math.max(76, Math.min(138, 112 - Math.sqrt(orderedNodes.length) * 0.8));
-    const repulsion = Math.max(380, Math.min(1120, 7600 / Math.sqrt(orderedNodes.length)));
+    const iterations = Math.min(260, Math.max(130, orderedNodes.length * 6));
+    const linkDistance = Math.max(92, Math.min(168, 152 - Math.sqrt(orderedNodes.length) * 1.1));
+    const repulsion = Math.max(780, Math.min(2600, 18000 / Math.sqrt(orderedNodes.length)));
     for (let iteration = 0; iteration < iterations; iteration += 1) {
       for (let leftIndex = 0; leftIndex < nodeState.length; leftIndex += 1) {
         for (let rightIndex = leftIndex + 1; rightIndex < nodeState.length; rightIndex += 1) {
@@ -1786,7 +1786,7 @@ const FiniteBrainProductClient = (() => {
         const dx = link.target.x - link.source.x;
         const dy = link.target.y - link.source.y;
         const distance = Math.max(1, Math.sqrt(dx * dx + dy * dy));
-        const force = (distance - linkDistance) * 0.018;
+        const force = (distance - linkDistance) * 0.012;
         const fx = (dx / distance) * force;
         const fy = (dy / distance) * force;
         if (!link.source.fixed) {
@@ -1806,11 +1806,11 @@ const FiniteBrainProductClient = (() => {
           node.vy = 0;
           continue;
         }
-        const centerForce = node.loose ? 0.00035 : 0.0012;
+        const centerForce = node.loose ? 0.00022 : 0.00068;
         node.vx += (centerX - node.x) * centerForce;
         node.vy += (centerY - node.y) * centerForce;
-        node.vx *= 0.88;
-        node.vy *= 0.88;
+        node.vx *= 0.9;
+        node.vy *= 0.9;
         node.x = Math.min(width - margin, Math.max(margin, node.x + node.vx));
         node.y = Math.min(height - margin, Math.max(margin, node.y + node.vy));
       }
@@ -2442,17 +2442,18 @@ const FiniteBrainProductClient = (() => {
       circle.dataset.nodeId = node.id;
       circle.setAttribute("cx", String(position.x));
       circle.setAttribute("cy", String(position.y));
-      circle.setAttribute("r", String(Math.min(5.6, 2.1 + degree * 0.36)));
+      circle.setAttribute("r", String(Math.min(4.9, 2.15 + Math.sqrt(degree) * 0.52)));
       circle.setAttribute("data-folder-id", node.folderId);
       circle.addEventListener("mouseenter", () => setGraphHover(svg, graph, node.id));
       circle.addEventListener("mouseleave", () => clearGraphHover(svg));
       svg.appendChild(circle);
 
       const label = document.createElementNS("http://www.w3.org/2000/svg", "text");
-      label.setAttribute("class", "node-label");
+      label.setAttribute("class", `node-label${isSelected ? " selected" : ""}`);
+      label.dataset.baseClass = label.getAttribute("class");
       label.dataset.nodeId = node.id;
-      label.setAttribute("x", String(position.x + 16));
-      label.setAttribute("y", String(position.y + 4));
+      label.setAttribute("x", String(position.x + 11));
+      label.setAttribute("y", String(position.y + 3.5));
       label.textContent = node.title;
       svg.appendChild(label);
     }
@@ -2474,9 +2475,10 @@ const FiniteBrainProductClient = (() => {
     }
     for (const label of svg.querySelectorAll(".node-label")) {
       const id = label.dataset.nodeId;
+      const baseClass = label.dataset.baseClass || "node-label";
       const labelClass =
         id === nodeId ? " hover-active" : neighbors.has(id) ? " hover-connected" : "";
-      label.className.baseVal = `node-label${labelClass}`;
+      label.className.baseVal = `${baseClass}${labelClass}`;
     }
   }
 
@@ -2486,7 +2488,9 @@ const FiniteBrainProductClient = (() => {
     for (const node of svg.querySelectorAll(".node")) {
       node.className.baseVal = node.dataset.baseClass || "node";
     }
-    for (const label of svg.querySelectorAll(".node-label")) label.className.baseVal = "node-label";
+    for (const label of svg.querySelectorAll(".node-label")) {
+      label.className.baseVal = label.dataset.baseClass || "node-label";
+    }
   }
 
   function setPill(id, text, tone) {
