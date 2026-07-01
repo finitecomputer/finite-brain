@@ -5,6 +5,7 @@ members = [
     "crates/finite-brain-core",
     "crates/finite-brain-server",
     "crates/finite-brain-store",
+    "crates/finite-nostr",
 ]
 resolver = "3"
 
