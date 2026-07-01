@@ -1095,6 +1095,8 @@ mod tests {
         assert!(ui_body.contains("FiniteBrain Smoke UI"));
         assert!(ui_body.contains("Invitations and Share Links"));
         assert!(ui_body.contains("Connections and mounts"));
+        assert!(ui_body.contains("href=\"/client\""));
+        assert!(ui_body.contains("Open client"));
 
         let css_response = router
             .clone()
