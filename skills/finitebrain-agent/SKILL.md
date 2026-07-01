@@ -1,15 +1,19 @@
 ---
 name: finitebrain-agent
-description: Operate as a trusted FiniteBrain agent inside Vault Working Trees with ordinary file tools plus the fbrain CLI. Use when gardening FiniteBrain vaults, syncing markdown wiki content, checking folder access, resolving fbrain sync state, or validating agent smoke/staging vault workflows.
+description: FiniteBrain Vault Working Tree operations through ordinary file edits plus the fbrain CLI control plane. Use when gardening FiniteBrain vaults, syncing markdown wiki content, inspecting sync/conflict state, checking Folder access, using fbrain daemon/watch, or performing vault, folder, permission, invitation, and share-link admin flows.
 ---
 
 # FiniteBrain Agent
 
+Use `fbrain` as the control plane and the Vault Working Tree as the content
+surface. The repeatable loop is: verify identity, open or enter the tree, sync,
+edit readable files, sync, prove conflicts are empty.
+
 ## Quick Start
 
-Use `fbrain` as the control plane and the Vault Working Tree as the content
-surface. Prefer explicit `--config-dir` in agent runtimes because shell
-environment can be reset between calls.
+Prefer explicit `--config-dir` in agent runtimes. The CLI default is
+`$FBRAIN_CONFIG_DIR`, then `$HOME/.finitebrain/fbrain`, but explicit state avoids
+surprises when shell environment resets between calls.
 
 ```sh
 FBRAIN_CONFIG="$HOME/.config/fbrain-agent"
@@ -25,68 +29,58 @@ fbrain --config-dir "$FBRAIN_CONFIG" sync now --summary
 fbrain --config-dir "$FBRAIN_CONFIG" conflicts --json
 ```
 
-## Operating Rules
+Read [fbrain-cli.md](references/fbrain-cli.md) when a command fails, when using
+daemon/watch, access, vault, folder, permission, invite, or share commands, or
+when working from the Rust repo where `cargo run -p finite-brain-cli --bin
+fbrain -- <args>` may be the available entrypoint.
 
-1. Never print or expose private Nostr secrets, Folder Keys, grant plaintext,
-   decrypted sync payload internals, or local auth files.
-2. Assume the agent identity is provisioned by the runtime, `fauth`, or an
-   explicit human runbook. Do not create or import keypairs unless the user or
-   runbook explicitly asks.
-3. Read the Vault Working Tree instructions before editing: root `AGENTS.md`,
-   each readable Folder `AGENTS.md`, `_index.md`, and relevant `_wiki/` pages.
-4. Treat readable Folder roots as normal files. Write curated wiki content under
-   the folder conventions such as `raw/`, `compiled/`, and `output/`.
-5. Do not edit `.finitebrain/` state, locked metadata-only folders, or generated
-   convention files unless the user is explicitly asking to repair internals.
-6. After meaningful edits, run `fbrain sync now --summary` and then
-   `fbrain conflicts --json`.
-7. If sync is blocked, stop broad edits and inspect with `fbrain status --json`,
-   `fbrain conflicts --json`, and `fbrain access explain <folder>`.
-8. For long-running work, prefer supervisor-managed
-   `fbrain daemon watch --poll-ms 250` and inspect `daemon status --json` when
-   sync appears stalled.
+## Operating Loop
 
-## Gardening Workflow
+1. Verify runtime state with `doctor`, `auth status --json`, and `status --json`.
+   Completion: acting identity, working tree path, server source, daemon state,
+   sync state, and blockers are known.
+2. Sync before reading broadly: run `sync now --summary`, then `conflicts --json`.
+   Completion: latest sequence is recorded and open conflicts are either empty
+   or named.
+3. Read local instructions before editing: root `AGENTS.md`, each readable
+   Folder `AGENTS.md`, `_index.md`, and relevant `_wiki/` pages.
+   Completion: the target Folder conventions and existing wiki shape are known.
+4. Edit only readable content roots with ordinary file tools. Keep curated wiki
+   work under established folder conventions such as `raw/`, `compiled/`, and
+   `output/`.
+   Completion: the smallest coherent set of markdown files is changed.
+5. Do not edit `.finitebrain/`, locked metadata-only folders, encrypted sync
+   evidence, generated convention files, auth files, grant plaintext, or Folder
+   Key material unless the user explicitly asks for internal repair.
+   Completion: all edits stay on the safe content surface.
+6. Sync after meaningful edits with `sync now --summary`, then run
+   `conflicts --json`.
+   Completion: pushed/applied status, latest sequence, and conflict state are
+   known.
 
-1. Open or enter the Vault Working Tree.
-2. Sync first, then check conflicts.
-3. Inspect the existing structure with file tools.
-4. Add or update the smallest coherent set of markdown pages.
-5. Use wiki links, tags, and indexes so pages are navigable as an LLM wiki.
-6. Sync with `--summary` and confirm conflicts are empty.
-7. Report changed paths, sync status, latest sequence, and blockers.
+## Blocked State
 
-## Useful Commands
+If sync, access, or daemon work blocks, stop broad edits and inspect with
+`status --json`, `sync status --json`, `conflicts --json`, `daemon status --json`,
+and the relevant command in [fbrain-cli.md](references/fbrain-cli.md).
 
-```sh
-fbrain --config-dir "$FBRAIN_CONFIG" status --json
-fbrain --config-dir "$FBRAIN_CONFIG" sync now --summary
-fbrain --config-dir "$FBRAIN_CONFIG" sync now --json
-fbrain --config-dir "$FBRAIN_CONFIG" conflicts --json
-fbrain --config-dir "$FBRAIN_CONFIG" activity
-fbrain --config-dir "$FBRAIN_CONFIG" access explain general
-fbrain --config-dir "$FBRAIN_CONFIG" access list --vault "$VAULT"
-fbrain --config-dir "$FBRAIN_CONFIG" folder list --vault "$VAULT"
-fbrain --config-dir "$FBRAIN_CONFIG" mount list --vault "$VAULT"
-fbrain --config-dir "$FBRAIN_CONFIG" daemon watch --once --json
-fbrain --config-dir "$FBRAIN_CONFIG" daemon status --json
-```
+Treat `access revoke` without `--rotation-body` as a safety checklist, not a
+failed command: Folder access removal requires key rotation and re-encrypted live
+Folder objects.
 
-Use `access grant --folder <folder-id> --target <npub>` for the happy path when
-the current agent has opened the Folder Key. Use `access revoke --folder
-<folder-id> --target <npub>` first to get the safe blocked-state checklist for
-rotation material; only pass `--rotation-body <file>` when a trusted rotation
-workflow has prepared `newKeyVersion`, grants, reencrypted records, and the
-remove-folder-access event.
+## Security Rules
 
-## Final Report Shape
+- Never print or expose private Nostr secrets, Folder Keys, grant plaintext,
+  decrypted sync payload internals, local auth files, or rotation bodies.
+- Assume identity is provisioned by the runtime, `fauth`, or a human runbook. Do
+  not create, import, or ask for keypairs unless the user or runbook explicitly
+  asks.
+- Use `--json` for machine inspection, but summarize sensitive results instead
+  of pasting raw payloads.
 
-Report:
+## Final Report
 
-- acting npub when safe and relevant
-- working tree path
-- folders readable or locked
-- pages created, updated, moved, or deleted
-- `sync now --summary` status and latest sequence
-- whether `conflicts --json` is empty
-- blockers and the exact command/output category that exposed them
+Report the working tree path, safe acting npub when relevant, folders readable or
+locked, pages created/updated/moved/deleted, `sync now --summary` status, latest
+sequence, whether `conflicts --json` is empty, and blockers with the command
+category that exposed them.
