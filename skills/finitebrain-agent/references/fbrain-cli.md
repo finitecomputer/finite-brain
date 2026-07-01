@@ -62,6 +62,8 @@ cd <tree-path>
 fbrain status --json
 fbrain sync status --json
 fbrain sync now --summary
+fbrain unlock --all
+fbrain sync now --summary
 fbrain sync now --json
 fbrain conflicts --json
 fbrain resolve <conflict-id>
@@ -77,6 +79,19 @@ Useful `sync now --json` fields include `status`, `latestSequence`,
 `recordCount`, `localChanges`, `remoteChanges`, and `conflicts`. Expected status
 values include `caught-up`, `applied-remote-records`, `pushed-local-changes`, and
 `blocked-local-conflicts`.
+
+## Unlocking Folder Keys
+
+```sh
+fbrain unlock --all
+fbrain unlock <folder-id>
+fbrain unlock --all --json
+```
+
+`unlock` opens readable Folder Keys into local session state. After opening a
+fresh Vault Working Tree, run `sync now --summary`, `unlock --all`, then
+`sync now --summary` again so newly readable Folders are materialized before
+editing. Use a specific Folder id when you only need one Folder opened.
 
 ## Daemon Watch
 

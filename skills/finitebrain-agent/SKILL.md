@@ -26,6 +26,8 @@ fbrain --config-dir "$FBRAIN_CONFIG" auth status --json
 fbrain --config-dir "$FBRAIN_CONFIG" open "$VAULT" "$TREE" --server "$SERVER"
 cd "$TREE"
 fbrain --config-dir "$FBRAIN_CONFIG" sync now --summary
+fbrain --config-dir "$FBRAIN_CONFIG" unlock --all
+fbrain --config-dir "$FBRAIN_CONFIG" sync now --summary
 fbrain --config-dir "$FBRAIN_CONFIG" conflicts --json
 ```
 
@@ -39,9 +41,11 @@ fbrain -- <args>` may be the available entrypoint.
 1. Verify runtime state with `doctor`, `auth status --json`, and `status --json`.
    Completion: acting identity, working tree path, server source, daemon state,
    sync state, and blockers are known.
-2. Sync before reading broadly: run `sync now --summary`, then `conflicts --json`.
-   Completion: latest sequence is recorded and open conflicts are either empty
-   or named.
+2. Sync before reading broadly: run `sync now --summary`, then `unlock --all`,
+   then `sync now --summary` again. Finish with `conflicts --json`.
+   Completion: latest sequence is recorded, readable Folder Keys are opened in
+   local session state, newly readable Folders are materialized, and open
+   conflicts are either empty or named.
 3. Read local instructions before editing: root `AGENTS.md`, each readable
    Folder `AGENTS.md`, `_index.md`, and relevant `_wiki/` pages.
    Completion: the target Folder conventions and existing wiki shape are known.
@@ -64,9 +68,32 @@ If sync, access, or daemon work blocks, stop broad edits and inspect with
 `status --json`, `sync status --json`, `conflicts --json`, `daemon status --json`,
 and the relevant command in [fbrain-cli.md](references/fbrain-cli.md).
 
+If daemon state is missing, stale, or repeatedly failing, use:
+
+```sh
+fbrain --config-dir "$FBRAIN_CONFIG" daemon status --json
+fbrain --config-dir "$FBRAIN_CONFIG" daemon start
+fbrain --config-dir "$FBRAIN_CONFIG" daemon logs --json
+fbrain --config-dir "$FBRAIN_CONFIG" daemon tick --json
+```
+
+Use `daemon watch` only as a foreground process under a supervisor such as tmux,
+systemd, or the agent runtime; do not leave an unmanaged watch running at the
+end of a task.
+
 Treat `access revoke` without `--rotation-body` as a safety checklist, not a
 failed command: Folder access removal requires key rotation and re-encrypted live
 Folder objects.
+
+## Managed Skill Verification
+
+In Finite runtimes, `~/.finite/managed-skills/finite/current` is a symlink to
+the checked-out `finite-skills` repo. Use symlink-aware searches when verifying
+the installed skill:
+
+```sh
+find -L ~/.finite/managed-skills/finite/current -path '*finitebrain-agent/SKILL.md' -print
+```
 
 ## Security Rules
 
