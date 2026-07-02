@@ -3,7 +3,8 @@ const FiniteBrainProductClient = (() => {
     config: null,
     signerStatus: "checking",
     pubkeyHex: null,
-    activeVaultId: "smoke",
+    activeVaultId: "personal",
+    visibleVaults: [],
     metadata: null,
     keyring: null,
     lastError: null,
@@ -51,6 +52,7 @@ const FiniteBrainProductClient = (() => {
   const TOMBSTONE_VERSION = "finite-folder-object-tombstone-v1";
   const APP_EVENT_KIND = 30078;
   const MAX_OBJECT_ID_ATTEMPTS = 1000;
+  const PERSONAL_VAULT_PLACEHOLDER_ID = "personal";
   const BECH32_CHARSET = "qpzry9x8gf2tvdw0s3jn54khce6mua7l";
   const graphViewport = { height: 560, width: 900 };
   const EDITOR_SLASH_COMMANDS = [
@@ -71,6 +73,137 @@ const FiniteBrainProductClient = (() => {
     if (!value) return "-";
     if (value.length <= 18) return value;
     return `${value.slice(0, 10)}...${value.slice(-8)}`;
+  }
+
+  function personalVaultIdForPubkey(pubkeyHex) {
+    return pubkeyHex ? `personal-${pubkeyHex.slice(0, 16)}` : PERSONAL_VAULT_PLACEHOLDER_ID;
+  }
+
+  function normalizeVisibleVault(vault) {
+    const vaultId = vault?.vaultId || vault?.vault_id || vault?.id || "";
+    if (!vaultId) return null;
+    const kind = String(vault.kind || "organization").toLowerCase();
+    return {
+      vaultId,
+      kind: kind === "personal" ? "personal" : "organization",
+      name: vault.name || (kind === "personal" ? "Personal vault" : vaultId),
+      role: vault.role || (kind === "personal" ? "owner" : "member"),
+    };
+  }
+
+  function defaultPersonalVault() {
+    return {
+      vaultId: personalVaultIdForPubkey(state.pubkeyHex),
+      kind: "personal",
+      name: "Personal vault",
+      role: "owner",
+      pending: true,
+    };
+  }
+
+  function visibleVaultOptions(vaults = state.visibleVaults) {
+    const normalized = vaults.map(normalizeVisibleVault).filter(Boolean);
+    const personal = normalized.find((vault) => vault.kind === "personal") || defaultPersonalVault();
+    const organizations = normalized
+      .filter((vault) => vault.kind === "organization")
+      .sort((left, right) => left.name.localeCompare(right.name) || left.vaultId.localeCompare(right.vaultId));
+    return [personal, ...organizations];
+  }
+
+  function activeVaultOption() {
+    return visibleVaultOptions().find((vault) => vault.vaultId === state.activeVaultId) || defaultPersonalVault();
+  }
+
+  function activeVaultLabel() {
+    return state.metadata?.name || activeVaultOption()?.name || state.activeVaultId || "Personal vault";
+  }
+
+  function resetVaultSessionState() {
+    state.metadata = null;
+    state.keyring = null;
+    state.projection = createClientProjection();
+    state.selectedFolderId = null;
+    state.selectedPageKey = null;
+    state.activeAccessFolderId = null;
+    state.activeAccessIntent = "inspect";
+    state.accessResult = null;
+    state.okfPlan = null;
+    state.expandedFolderIds = new Set();
+  }
+
+  function setActiveVaultId(vaultId, options = {}) {
+    const nextVaultId = vaultId || state.activeVaultId || personalVaultIdForPubkey(state.pubkeyHex);
+    const changed = nextVaultId !== state.activeVaultId;
+    state.activeVaultId = nextVaultId;
+    const input = $("vaultIdInput");
+    if (input) input.value = nextVaultId;
+    const select = $("vaultSelect");
+    if (select) select.value = nextVaultId;
+    if (changed && options.reset !== false) resetVaultSessionState();
+  }
+
+  function selectedVaultIdFromControls() {
+    return $("vaultSelect")?.value || $("vaultIdInput")?.value || state.activeVaultId;
+  }
+
+  function renderVaultSelect() {
+    const select = $("vaultSelect");
+    if (!select) return;
+    const options = visibleVaultOptions();
+    const personalOptions = options.filter((vault) => vault.kind === "personal");
+    const organizationOptions = options.filter((vault) => vault.kind === "organization");
+    const groups = [
+      ["Personal", personalOptions],
+      ["Organizations", organizationOptions],
+    ];
+    const nodes = [];
+    for (const [label, vaults] of groups) {
+      if (!vaults.length) continue;
+      const group = document.createElement("optgroup");
+      group.label = label;
+      for (const vault of vaults) {
+        const option = document.createElement("option");
+        option.value = vault.vaultId;
+        option.textContent =
+          vault.kind === "personal" ? vault.name : `${vault.name} - ${vault.role}`;
+        group.appendChild(option);
+      }
+      nodes.push(group);
+    }
+    select.replaceChildren(...nodes);
+    select.value = options.some((vault) => vault.vaultId === state.activeVaultId)
+      ? state.activeVaultId
+      : options[0]?.vaultId || PERSONAL_VAULT_PLACEHOLDER_ID;
+    state.activeVaultId = select.value || state.activeVaultId;
+    const input = $("vaultIdInput");
+    if (input) input.value = state.activeVaultId;
+  }
+
+  function vaultIdFromName(prefix, name) {
+    const slug =
+      String(name || prefix)
+        .trim()
+        .toLowerCase()
+        .replace(/[^a-z0-9_-]+/g, "-")
+        .replace(/^-+|-+$/g, "")
+        .slice(0, 48) || prefix;
+    return `${prefix}-${slug}-${Date.now().toString(36)}`.slice(0, 128);
+  }
+
+  function rememberVisibleVault(metadata) {
+    if (!metadata?.vaultId) return;
+    const actorNpub = state.pubkeyHex ? npubFromHex(state.pubkeyHex) : null;
+    const vault = normalizeVisibleVault({
+      vaultId: metadata.vaultId,
+      kind: metadata.kind,
+      name: metadata.name,
+      role: metadata.kind === "personal" ? "owner" : actorNpub && metadata.admins?.includes(actorNpub) ? "admin" : "member",
+    });
+    if (!vault) return;
+    state.visibleVaults = [
+      vault,
+      ...state.visibleVaults.filter((candidate) => normalizeVisibleVault(candidate)?.vaultId !== vault.vaultId),
+    ];
   }
 
   function deriveSignerState(provider) {
@@ -2190,7 +2323,7 @@ const FiniteBrainProductClient = (() => {
   function renderVaultControlChrome() {
     const details = $("vaultControlDetails");
     if (!details) return;
-    setText("vaultControlSummary", state.metadata?.name || state.activeVaultId || "smoke");
+    setText("vaultControlSummary", activeVaultLabel());
     if (state.metadata && !state.vaultControlsCollapsedAfterLoad) {
       details.open = false;
       state.vaultControlsCollapsedAfterLoad = true;
@@ -3701,6 +3834,7 @@ const FiniteBrainProductClient = (() => {
   function render() {
     setOptionalDisabled("connectSignerButton", !deriveSignerState(window.nostr).canConnect);
     setOptionalDisabled("loadVaultButton", state.signerStatus !== "connected" || !state.config);
+    setOptionalDisabled("createOrganizationVaultButton", state.signerStatus !== "connected" || state.readerBusy || !state.config);
     setOptionalDisabled("openFolderKeyButton", !state.metadata);
     setOptionalDisabled("encryptDraftButton", !state.keyring);
     setOptionalDisabled("openAccessibleVaultButton", state.readerBusy || !state.config);
@@ -3710,7 +3844,7 @@ const FiniteBrainProductClient = (() => {
       "executeOkfImportButton",
       !state.okfPlan || !state.keyring || state.signerStatus !== "connected"
     );
-    $("vaultIdInput").value = state.activeVaultId;
+    renderVaultSelect();
 
     renderVaultControlChrome();
     renderSidebarMode();
@@ -3784,10 +3918,76 @@ const FiniteBrainProductClient = (() => {
     return body;
   }
 
+  async function loadVisibleVaults() {
+    if (state.signerStatus !== "connected") {
+      state.visibleVaults = [];
+      render();
+      return [];
+    }
+    const response = await protectedRequest("/_admin/vaults");
+    state.visibleVaults = (response.vaults || []).map(normalizeVisibleVault).filter(Boolean);
+    const personal = visibleVaultOptions().find((vault) => vault.kind === "personal");
+    if (
+      personal &&
+      (state.activeVaultId === PERSONAL_VAULT_PLACEHOLDER_ID || state.activeVaultId === state.config?.defaultVaultId)
+    ) {
+      setActiveVaultId(personal.vaultId, { reset: false });
+    }
+    render();
+    return state.visibleVaults;
+  }
+
+  async function createVault(vaultId, kind, name) {
+    return protectedRequest("/_admin/vaults", {
+      method: "POST",
+      body: JSON.stringify({ vaultId, kind, name }),
+    });
+  }
+
+  async function ensurePersonalVaultForActiveSelection() {
+    const active = activeVaultOption();
+    if (active.kind !== "personal") return;
+    if (state.activeVaultId === PERSONAL_VAULT_PLACEHOLDER_ID && state.pubkeyHex) {
+      setActiveVaultId(personalVaultIdForPubkey(state.pubkeyHex), { reset: false });
+    }
+    const existing = state.visibleVaults
+      .map(normalizeVisibleVault)
+      .find((vault) => vault?.kind === "personal" && vault.vaultId === state.activeVaultId);
+    if (existing && !existing.pending) return;
+    try {
+      const metadata = await createVault(state.activeVaultId, "personal", "Personal vault");
+      state.metadata = metadata;
+      rememberVisibleVault(metadata);
+    } catch (error) {
+      if (!/already has a personal vault|duplicate id/.test(error.message)) throw error;
+      await loadVisibleVaults();
+      const personal = visibleVaultOptions().find((vault) => vault.kind === "personal");
+      if (!personal) throw error;
+      setActiveVaultId(personal.vaultId, { reset: false });
+    }
+  }
+
+  async function createOrganizationVaultFromInput() {
+    const name = $("organizationVaultNameInput").value.trim() || "New organization";
+    if (state.signerStatus !== "connected") await connectSigner();
+    if (state.signerStatus !== "connected") throw new Error("Connect a NIP-07 signer first");
+    const vaultId = vaultIdFromName("org", name);
+    const metadata = await createVault(vaultId, "organization", name);
+    $("organizationVaultNameInput").value = "";
+    rememberVisibleVault(metadata);
+    setActiveVaultId(metadata.vaultId);
+    state.metadata = metadata;
+    await loadVisibleVaults();
+    log("Created organization Vault.", { vaultId: metadata.vaultId });
+    render();
+  }
+
   async function loadConfig() {
     const response = await fetch("/client/config.json");
     state.config = await response.json();
-    state.activeVaultId = state.config.defaultVaultId || state.activeVaultId;
+    if (!state.activeVaultId || state.activeVaultId === "smoke") {
+      state.activeVaultId = state.config.defaultVaultId || PERSONAL_VAULT_PLACEHOLDER_ID;
+    }
     log("Loaded Product Client config.", state.config);
     render();
   }
@@ -3801,7 +4001,7 @@ const FiniteBrainProductClient = (() => {
 
   async function connectSigner() {
     const derived = deriveSignerState(window.nostr);
-    state.activeVaultId = $("vaultIdInput").value.trim() || state.activeVaultId;
+    setActiveVaultId(selectedVaultIdFromControls(), { reset: false });
     if (!derived.canConnect) {
       state.signerStatus = derived.status;
       setText("signerDetail", derived.detail);
@@ -3811,17 +4011,26 @@ const FiniteBrainProductClient = (() => {
     const pubkey = await window.nostr.getPublicKey();
     state.pubkeyHex = pubkey;
     state.signerStatus = "connected";
+    if (state.activeVaultId === PERSONAL_VAULT_PLACEHOLDER_ID || state.activeVaultId === state.config?.defaultVaultId) {
+      setActiveVaultId(personalVaultIdForPubkey(pubkey), { reset: false });
+    }
     setText("signerDetail", `Connected as ${shortKey(pubkey)}.`);
     setText("authDetail", "Signed requests are ready for protected Vault routes.");
     log("Connected NIP-07 signer.", { pubkey: shortKey(pubkey) });
+    await loadVisibleVaults().catch((error) => {
+      state.lastError = error.message;
+      log("Failed to load visible Vaults.", { error: error.message });
+    });
     render();
   }
 
   async function loadVaultMetadata() {
-    state.activeVaultId = $("vaultIdInput").value.trim() || state.activeVaultId;
+    setActiveVaultId(selectedVaultIdFromControls(), { reset: false });
+    await ensurePersonalVaultForActiveSelection();
     const path = `/_admin/vaults/${encodeURIComponent(state.activeVaultId)}/metadata`;
     const metadata = await protectedRequest(path);
     state.metadata = metadata;
+    rememberVisibleVault(metadata);
     log("Loaded Vault metadata.", metadata);
     render();
   }
@@ -3834,12 +4043,15 @@ const FiniteBrainProductClient = (() => {
   }
 
   async function openAccessibleVaultReader() {
-    state.activeVaultId = $("vaultIdInput").value.trim() || state.activeVaultId;
+    setActiveVaultId(selectedVaultIdFromControls(), { reset: false });
     state.readerBusy = true;
     render();
     try {
       if (state.signerStatus !== "connected") await connectSigner();
       if (state.signerStatus !== "connected") throw new Error("Connect a NIP-07 signer first");
+      await loadVisibleVaults().catch((error) => {
+        log("Failed to refresh visible Vaults before opening reader.", { error: error.message });
+      });
       await loadVaultMetadata();
       const grants = await openAvailableFolderKeyGrants();
       await pullSyncBootstrap();
@@ -4663,10 +4875,10 @@ const FiniteBrainProductClient = (() => {
       });
       state.lastVaultInvitationId = invitation.id;
       state.lastVaultInvitationCode = invitation.inviteCode;
-      state.activeVaultId = invitation.vaultId;
-      $("vaultIdInput").value = invitation.vaultId;
+      setActiveVaultId(invitation.vaultId);
       $("vaultInviteCodeInput").value = invitation.inviteCode;
       await loadVaultMetadata();
+      await loadVisibleVaults();
       setAccessResult(
         "ready",
         invitation.duplicateAccept ? "Invitation already accepted" : "Invitation accepted",
@@ -4971,10 +5183,30 @@ const FiniteBrainProductClient = (() => {
         render();
       });
     });
+    $("vaultSelect").addEventListener("change", () => {
+      setActiveVaultId($("vaultSelect").value);
+      render();
+    });
     $("loadVaultButton").addEventListener("click", () => {
       loadVaultMetadata().catch((error) => {
         state.lastError = error.message;
         log("Failed to load Vault metadata.", { error: error.message });
+        render();
+      });
+    });
+    $("createOrganizationVaultButton").addEventListener("click", () => {
+      createOrganizationVaultFromInput().catch((error) => {
+        state.lastError = error.message;
+        log("Failed to create organization Vault.", { error: error.message });
+        render();
+      });
+    });
+    $("organizationVaultNameInput").addEventListener("keydown", (event) => {
+      if (event.key !== "Enter") return;
+      event.preventDefault();
+      createOrganizationVaultFromInput().catch((error) => {
+        state.lastError = error.message;
+        log("Failed to create organization Vault.", { error: error.message });
         render();
       });
     });
@@ -5269,6 +5501,7 @@ const FiniteBrainProductClient = (() => {
     metadataMountRows,
     nextDraftObjectId,
     normalizeSidebarMode,
+    normalizeVisibleVault,
     npubFromHex,
     npubToHex,
     openFolderKeyGrants,
@@ -5280,6 +5513,7 @@ const FiniteBrainProductClient = (() => {
     pageLinkContext,
     pagePathLabel,
     pageStatsForText,
+    personalVaultIdForPubkey,
     plaintextDevelopmentGrantFromExportGrant,
     plaintextGrantFromGiftWrappedExportGrant,
     planOkfImport,
@@ -5294,6 +5528,7 @@ const FiniteBrainProductClient = (() => {
     sidebarModeLabel,
     shortKey,
     start,
+    visibleVaultOptions,
     workspaceChromeState,
     workspaceTabTitle,
     vaultInvitationAcceptPath,

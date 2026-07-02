@@ -854,11 +854,35 @@ pre {
   min-width: 0;
 }
 
-.vault-control-body input {
+.vault-picker,
+.vault-create-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.vault-picker {
+  grid-column: 1 / 3;
+}
+
+.vault-create-row {
+  grid-column: 1 / 3;
+  grid-row: 3;
+}
+
+.vault-control-body input,
+.vault-control-body select {
   min-height: 28px;
   border-color: #363636;
   background: #1f1f1f;
   color: #d7d7d7;
+}
+
+.vault-control-body select,
+.vault-create-row input {
+  width: 100%;
+  min-width: 0;
 }
 
 .vault-control-body button {

@@ -60,12 +60,15 @@
         <details id="vaultControlDetails" class="vault-control-strip" aria-label="Vault controls" open>
           <summary>
             <span>Vault</span>
-            <span id="vaultControlSummary">smoke</span>
+            <span id="vaultControlSummary">Personal vault</span>
           </summary>
           <div class="vault-control-body">
-            <label class="sr-only" for="vaultIdInput">Vault</label>
-            <div class="inline-control">
-              <input id="vaultIdInput" value="smoke" autocomplete="off" spellcheck="false" />
+            <label class="sr-only" for="vaultSelect">Vault</label>
+            <div class="vault-picker">
+              <select id="vaultSelect" aria-label="Vault">
+                <option value="personal">Personal vault</option>
+              </select>
+              <input id="vaultIdInput" type="hidden" value="personal" />
               <button id="loadVaultButton" class="compact-icon-button" type="button" title="Load vault" aria-label="Load vault">
                 <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
                   <path d="M21 12a9 9 0 1 1-2.64-6.36" />
@@ -87,6 +90,20 @@
                 <path d="M12 15v3" />
               </svg>
             </button>
+            <div class="vault-create-row">
+              <label class="sr-only" for="organizationVaultNameInput">New organization vault</label>
+              <input
+                id="organizationVaultNameInput"
+                placeholder="New organization"
+                autocomplete="off"
+                spellcheck="false"
+              />
+              <button id="createOrganizationVaultButton" class="compact-icon-button" type="button" title="Create organization vault" aria-label="Create organization vault">
+                <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M12 5v14M5 12h14" />
+                </svg>
+              </button>
+            </div>
           </div>
         </details>
 

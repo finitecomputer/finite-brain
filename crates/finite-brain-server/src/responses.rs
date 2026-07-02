@@ -75,6 +75,25 @@ pub(crate) fn metadata_response_with_mounts(
     }
 }
 
+pub(crate) fn visible_vaults_response(vaults: Vec<VisibleVault>) -> VisibleVaultsResponse {
+    VisibleVaultsResponse {
+        vaults: vaults
+            .into_iter()
+            .map(|vault| VisibleVaultResponse {
+                vault_id: vault.id.to_string(),
+                kind: vault.kind,
+                name: vault.name,
+                role: match vault.role {
+                    VisibleVaultRole::Owner => "owner",
+                    VisibleVaultRole::Admin => "admin",
+                    VisibleVaultRole::Member => "member",
+                }
+                .to_owned(),
+            })
+            .collect(),
+    }
+}
+
 pub(crate) fn vault_invitation_response(
     invitation: StoredVaultInvitation,
 ) -> VaultInvitationResponse {

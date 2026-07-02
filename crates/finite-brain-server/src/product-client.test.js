@@ -152,6 +152,17 @@ assert.match(client.accessPanelState("share", folderRows[1]).detail, /Choose who
 assert.equal(client.accessPanelState("manage", folderRows[1]).title, "Manage Restricted");
 assert.equal(client.accessPanelState("manage", folderRows[0]).title, "General");
 assert.equal(client.accessPanelState("share", folderRows[0]).status, "all members");
+assert.equal(client.personalVaultIdForPubkey("ab".repeat(32)), "personal-abababababababab");
+assert.equal(
+  JSON.stringify(client.visibleVaultOptions([
+    { vaultId: "acme", kind: "organization", name: "Acme", role: "admin" },
+    { vaultId: "personal-ab", kind: "personal", name: "Personal vault", role: "owner" },
+  ]).map((vault) => [vault.vaultId, vault.kind, vault.role])),
+  JSON.stringify([
+    ["personal-ab", "personal", "owner"],
+    ["acme", "organization", "admin"],
+  ])
+);
 
 const projection = client.createClientProjection();
 projection.localDrafts.set("general/obj_draft", {

@@ -27,7 +27,8 @@ use finite_brain_store::{
     FolderObjectRevisionSyncRecord, FolderObjectTombstoneSyncRecord, LinkStatus,
     MountedFolderProjection, MountedFolderState, SharedFolderConnectionStatus, StoreError,
     StoredShareLink, StoredSharedFolderConnection, StoredSharedFolderInvitation, StoredSyncRecord,
-    StoredVault, StoredVaultInvitation, SyncRecordInput, SyncRecordType,
+    StoredVault, StoredVaultInvitation, SyncRecordInput, SyncRecordType, VisibleVault,
+    VisibleVaultRole,
 };
 use finite_nostr::{NostrPublicKey, validate_gift_wrap};
 use nostr::Event;
@@ -263,7 +264,10 @@ pub fn router_with_state(state: ServerState) -> Router {
         .route("/client/app.css", get(product_client_css_handler))
         .route("/client/app.js", get(product_client_js_handler))
         .route("/client/config.json", get(product_client_config_handler))
-        .route("/_admin/vaults", post(create_vault_handler))
+        .route(
+            "/_admin/vaults",
+            get(list_vaults_handler).post(create_vault_handler),
+        )
         .route(
             "/_admin/vaults/{vault_id}/metadata",
             get(vault_metadata_handler),
@@ -1193,7 +1197,10 @@ mod tests {
         assert!(client_body.contains("Connect signer"));
         assert!(client_body.contains("Open accessible vault"));
         assert!(client_body.contains("vaultControlDetails"));
+        assert!(client_body.contains("vaultSelect"));
         assert!(client_body.contains("vault-connect-button"));
+        assert!(client_body.contains("organizationVaultNameInput"));
+        assert!(client_body.contains("createOrganizationVaultButton"));
         assert!(client_body.contains("readerFolderList"));
         assert!(client_body.contains("searchSidebarPanel"));
         assert!(client_body.contains("commandPalette"));
@@ -1243,7 +1250,7 @@ mod tests {
                 public_base_url: TEST_BASE_URL.to_owned(),
                 auth_scheme: "Nostr".to_owned(),
                 http_auth_kind: 27_235,
-                default_vault_id: "smoke".to_owned(),
+                default_vault_id: "personal".to_owned(),
             }
         );
 
@@ -1267,6 +1274,8 @@ mod tests {
         assert!(!css_body.contains(".traffic-light"));
         assert!(!css_body.contains(".titlebar-tab"));
         assert!(css_body.contains(".app-ribbon"));
+        assert!(css_body.contains(".vault-picker"));
+        assert!(css_body.contains(".vault-create-row"));
         assert!(css_body.contains(".obsidian-folder-button"));
         assert!(css_body.contains(".context-menu"));
         assert!(css_body.contains(".graph-stage"));
@@ -1299,6 +1308,8 @@ mod tests {
         assert!(js_body.contains("buildAuthEventTemplate"));
         assert!(js_body.contains("buildPageWriteRequest"));
         assert!(js_body.contains("workspaceChromeState"));
+        assert!(js_body.contains("visibleVaultOptions"));
+        assert!(js_body.contains("personalVaultIdForPubkey"));
         assert!(js_body.contains("accessBadgesForFolder"));
         assert!(js_body.contains("accessActionRoute"));
         assert!(js_body.contains("readerFolderRows"));
@@ -1345,7 +1356,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn same_owner_can_create_multiple_personal_vaults() {
+    async fn same_owner_cannot_create_multiple_personal_vaults() {
         let keys = Keys::generate();
         let router = test_router();
         let first = post_vault(
@@ -1370,7 +1381,52 @@ mod tests {
         .await;
 
         assert_eq!(first.status(), StatusCode::OK);
-        assert_eq!(second.status(), StatusCode::OK);
+        assert_error(
+            second,
+            StatusCode::BAD_REQUEST,
+            "user already has a personal vault",
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn visible_vaults_lists_personal_and_member_organizations() {
+        let keys = Keys::generate();
+        let router = test_router();
+        let personal = post_vault(
+            router.clone(),
+            &keys,
+            &create_vault_body("personal", "personal"),
+            TEST_NOW,
+            None,
+            None,
+            None,
+        )
+        .await;
+        assert_eq!(personal.status(), StatusCode::OK);
+
+        let org = post_vault(
+            router.clone(),
+            &keys,
+            &create_vault_body("acme", "organization"),
+            TEST_NOW + 1,
+            None,
+            None,
+            None,
+        )
+        .await;
+        assert_eq!(org.status(), StatusCode::OK);
+
+        let list = authed_request(router, &keys, "GET", "/_admin/vaults", None, TEST_NOW + 2).await;
+        assert_eq!(list.status(), StatusCode::OK);
+        let list: VisibleVaultsResponse = read_json(list).await;
+        assert_eq!(list.vaults.len(), 2);
+        assert_eq!(list.vaults[0].vault_id, "personal");
+        assert_eq!(list.vaults[0].kind, VaultKind::Personal);
+        assert_eq!(list.vaults[0].role, "owner");
+        assert_eq!(list.vaults[1].vault_id, "acme");
+        assert_eq!(list.vaults[1].kind, VaultKind::Organization);
+        assert_eq!(list.vaults[1].role, "admin");
     }
 
     #[tokio::test]

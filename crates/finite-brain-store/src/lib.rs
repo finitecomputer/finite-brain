@@ -151,6 +151,30 @@ pub struct StoredVault {
     pub setup_incomplete_folder_ids: BTreeSet<FolderId>,
 }
 
+/// Vault summary visible to an authenticated actor.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct VisibleVault {
+    /// Stable Vault id.
+    pub id: VaultId,
+    /// Vault kind.
+    pub kind: VaultKind,
+    /// Display name.
+    pub name: String,
+    /// Actor's relationship to this Vault.
+    pub role: VisibleVaultRole,
+}
+
+/// Actor relationship used by client Vault switchers.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum VisibleVaultRole {
+    /// Personal Vault owner.
+    Owner,
+    /// Organization Vault admin.
+    Admin,
+    /// Organization Vault member.
+    Member,
+}
+
 /// Accepted sync record type.
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum SyncRecordType {

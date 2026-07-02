@@ -18,6 +18,11 @@ impl BrainStore {
         }
         validate_bootstrap_output(output)?;
         validate_required_grants(&output.vault, &output.required_key_grants, grants)?;
+        if let (VaultKind::Personal, Some(owner)) =
+            (output.vault.kind, output.vault.owner_user_id.as_ref())
+        {
+            self.ensure_personal_vault_available(owner)?;
+        }
 
         let tx = self.conn.transaction()?;
         insert_vault(&tx, &output.vault)?;
@@ -30,6 +35,58 @@ impl BrainStore {
         }
         tx.commit()?;
         Ok(())
+    }
+
+    pub fn list_visible_vaults(&self, actor: &UserId) -> Result<Vec<VisibleVault>, StoreError> {
+        let mut stmt = self.conn.prepare(
+            r#"
+            SELECT v.id, v.kind, v.name,
+                   CASE
+                       WHEN v.owner_user_id = ?1 THEN 'owner'
+                       WHEN va.user_id IS NOT NULL THEN 'admin'
+                       ELSE 'member'
+                   END AS role
+            FROM vaults v
+            LEFT JOIN vault_admins va
+              ON va.vault_id = v.id AND va.user_id = ?1
+            LEFT JOIN vault_members vm
+              ON vm.vault_id = v.id AND vm.user_id = ?1
+            WHERE v.owner_user_id = ?1 OR vm.user_id IS NOT NULL
+            ORDER BY
+              CASE v.kind WHEN 'personal' THEN 0 ELSE 1 END,
+              lower(v.name),
+              v.id
+            "#,
+        )?;
+        let rows = stmt.query_map(params![actor.as_str()], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+            ))
+        })?;
+
+        let mut vaults = Vec::new();
+        for row in rows {
+            let (id, kind, name, role) = row?;
+            vaults.push(VisibleVault {
+                id: VaultId::new(id)?,
+                kind: parse_vault_kind(&kind)?,
+                name,
+                role: match role.as_str() {
+                    "owner" => VisibleVaultRole::Owner,
+                    "admin" => VisibleVaultRole::Admin,
+                    "member" => VisibleVaultRole::Member,
+                    _ => {
+                        return Err(StoreError::BrokenInvariant {
+                            reason: format!("unknown visible vault role: {role}"),
+                        });
+                    }
+                },
+            });
+        }
+        Ok(vaults)
     }
 
     /// Add an organization Vault Member.
@@ -119,6 +176,20 @@ impl BrainStore {
             "DELETE FROM vault_members WHERE vault_id = ?1 AND user_id = ?2",
             params![vault_id.as_str(), user_id.as_str()],
         )?;
+        Ok(())
+    }
+
+    fn ensure_personal_vault_available(&self, owner: &UserId) -> Result<(), StoreError> {
+        let exists = self.conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM vaults WHERE kind = 'personal' AND owner_user_id = ?1)",
+            params![owner.as_str()],
+            |row| row.get::<_, bool>(0),
+        )?;
+        if exists {
+            return Err(StoreError::BrokenInvariant {
+                reason: "user already has a personal vault".to_owned(),
+            });
+        }
         Ok(())
     }
 }

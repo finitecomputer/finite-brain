@@ -1,5 +1,21 @@
 use crate::*;
 
+pub(crate) async fn list_vaults_handler(
+    State(state): State<ServerState>,
+    headers: HeaderMap,
+    method: Method,
+    OriginalUri(uri): OriginalUri,
+) -> Result<Json<VisibleVaultsResponse>, ApiError> {
+    let actor_npub = validate_request_auth(&state, &headers, &method, &uri, None)?;
+    let actor = UserId::new(actor_npub)?;
+    let vaults = {
+        let store = state.store.lock().map_err(lock_error)?;
+        store.list_visible_vaults(&actor)?
+    };
+
+    Ok(Json(visible_vaults_response(vaults)))
+}
+
 pub(crate) async fn create_vault_handler(
     State(state): State<ServerState>,
     headers: HeaderMap,

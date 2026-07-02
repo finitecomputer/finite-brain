@@ -43,6 +43,23 @@ pub struct VaultMetadataResponse {
     pub grant_count: usize,
 }
 
+/// Authenticated Vault switcher response.
+#[derive(Debug, Clone, Eq, PartialEq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VisibleVaultsResponse {
+    pub vaults: Vec<VisibleVaultResponse>,
+}
+
+/// Client-visible Vault summary.
+#[derive(Debug, Clone, Eq, PartialEq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VisibleVaultResponse {
+    pub vault_id: String,
+    pub kind: VaultKind,
+    pub name: String,
+    pub role: String,
+}
+
 /// Server-visible Folder metadata response.
 #[derive(Debug, Clone, Eq, PartialEq, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
