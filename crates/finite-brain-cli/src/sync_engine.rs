@@ -28,6 +28,7 @@ use crate::{
 
 const CIPHER_AES_256_GCM: &str = "AES-256-GCM";
 const FOLDER_OBJECT_PAGE_VERSION: &str = "finite-folder-object-page-v1";
+const SYNC_RECORDS_PAGE_LIMIT: u64 = 1_000;
 
 pub(crate) fn run_working_tree_sync(
     env: &CliEnvironment,
@@ -35,6 +36,7 @@ pub(crate) fn run_working_tree_sync(
     activity_kind: &str,
 ) -> Result<SyncOnceReport, CliError> {
     let root = current_tree_root(env)?;
+    let prior_tree_state = read_working_tree_state(&root)?;
     let agent_state = read_agent_state(&root)?;
     let server_url = server_url_for_command(env, args)?;
     let auth = read_auth_required(env)?;
@@ -53,33 +55,66 @@ pub(crate) fn run_working_tree_sync(
         &export,
         &mounted_exports,
     )?;
-    let bootstrap = fetch_sync_bootstrap(env, &server_url, &agent_state.vault_id)?;
+    let force_bootstrap_reason = sync_bootstrap_reason(&local_result, opened_grants);
+    let remote_result = if let Some(reason) = force_bootstrap_reason {
+        fetch_bootstrap_remote_sync(env, &server_url, &agent_state.vault_id, reason)?
+    } else {
+        fetch_incremental_remote_sync(
+            env,
+            &root,
+            &server_url,
+            &agent_state.vault_id,
+            prior_tree_state.sync.latest_sequence,
+        )?
+    };
     let mounted_materializations =
         fetch_mounted_folder_materializations(env, &server_url, mounted_exports)?;
-    write_sync_evidence(&root, &export, &bootstrap)?;
+    write_sync_evidence(&root, &export, &remote_result.bootstrap)?;
 
     materialize_remote_projection(
         env,
         &root,
         &auth.npub,
         &export,
-        &bootstrap,
+        &remote_result.bootstrap,
         &mounted_materializations,
         &local_result.path_overrides,
     )?;
     restore_conflicted_markdown(&root, &local_result.conflicted_markdown)?;
 
-    let latest_sequence = bootstrap.latest_sequence;
-    let remote_count = bootstrap
+    let applied_tree_state = read_working_tree_state(&root)?;
+    let remote_changes = sync_record_reports(
+        &remote_result.records,
+        &prior_tree_state,
+        &applied_tree_state,
+        remote_result.report_status.as_str(),
+        remote_result.report_reason.as_deref(),
+    );
+    let latest_sequence = remote_result.bootstrap.latest_sequence;
+    let active_remote_object_count = remote_result
+        .bootstrap
         .objects
         .iter()
         .filter(|object| !object.deleted)
         .count();
+    let remote_record_count = if remote_changes.is_empty()
+        && remote_result.used_bootstrap
+        && latest_sequence > prior_tree_state.sync.latest_sequence
+    {
+        active_remote_object_count
+    } else {
+        remote_changes.len()
+    };
     let status = if local_result.conflict_count > 0 {
         "blocked-local-conflicts".to_owned()
     } else if local_result.pushed_count > 0 {
         "pushed-local-changes".to_owned()
-    } else if remote_count > 0 || opened_grants > 0 {
+    } else if !remote_changes.is_empty()
+        || opened_grants > 0
+        || (remote_result.used_bootstrap
+            && latest_sequence > prior_tree_state.sync.latest_sequence
+            && active_remote_object_count > 0)
+    {
         "applied-remote-records".to_owned()
     } else {
         "caught-up".to_owned()
@@ -100,7 +135,7 @@ pub(crate) fn run_working_tree_sync(
     Ok(SyncOnceReport {
         status,
         latest_sequence,
-        record_count: remote_count + local_result.pushed_count,
+        record_count: remote_record_count + local_result.pushed_count,
         server_url,
         conflicts: local_result
             .changes
@@ -109,7 +144,7 @@ pub(crate) fn run_working_tree_sync(
             .cloned()
             .collect(),
         local_changes: local_result.changes,
-        remote_changes: Vec::new(),
+        remote_changes,
     })
 }
 
@@ -136,6 +171,341 @@ fn fetch_sync_bootstrap(
     let path = format!("/_admin/vaults/{vault_id}/sync/bootstrap");
     let response = signed_json_request_to_server(env, server_url, "GET", &path, None)?;
     serde_json::from_value(response).map_err(CliError::from)
+}
+
+fn fetch_bootstrap_remote_sync(
+    env: &CliEnvironment,
+    server_url: &str,
+    vault_id: &str,
+    reason: String,
+) -> Result<RemoteSyncResult, CliError> {
+    Ok(RemoteSyncResult {
+        bootstrap: fetch_sync_bootstrap(env, server_url, vault_id)?,
+        records: Vec::new(),
+        report_status: "rebootstrapped".to_owned(),
+        report_reason: Some(reason),
+        used_bootstrap: true,
+    })
+}
+
+fn fetch_incremental_remote_sync(
+    env: &CliEnvironment,
+    root: &Path,
+    server_url: &str,
+    vault_id: &str,
+    after_sequence: u64,
+) -> Result<RemoteSyncResult, CliError> {
+    let pull = match fetch_all_sync_records(env, server_url, vault_id, after_sequence) {
+        Ok(pull) => pull,
+        Err(error) if is_rebootstrap_required_error(&error) => {
+            return fetch_bootstrap_remote_sync(
+                env,
+                server_url,
+                vault_id,
+                format!("incremental cursor {after_sequence} expired; fetched bootstrap"),
+            );
+        }
+        Err(error) if is_sync_records_route_unavailable(&error) => {
+            return fetch_bootstrap_remote_sync(
+                env,
+                server_url,
+                vault_id,
+                "incremental sync records route unavailable; fetched bootstrap".to_owned(),
+            );
+        }
+        Err(error) => return Err(error),
+    };
+    let records = pull.records;
+    match apply_incremental_records(root, after_sequence, pull.latest_sequence, &records) {
+        Ok(bootstrap) => Ok(RemoteSyncResult {
+            bootstrap,
+            records,
+            report_status: "applied".to_owned(),
+            report_reason: None,
+            used_bootstrap: false,
+        }),
+        Err(reason) => {
+            let mut result =
+                fetch_bootstrap_remote_sync(env, server_url, vault_id, reason.clone())?;
+            result.records = records;
+            result.report_reason = Some(reason);
+            Ok(result)
+        }
+    }
+}
+
+fn fetch_all_sync_records(
+    env: &CliEnvironment,
+    server_url: &str,
+    vault_id: &str,
+    after_sequence: u64,
+) -> Result<IncrementalSyncPull, CliError> {
+    let mut after = after_sequence;
+    let mut records = Vec::new();
+    loop {
+        let page = fetch_sync_records_page(env, server_url, vault_id, after)?;
+        if page.vault_id != vault_id {
+            return Err(CliError::InvalidInput(format!(
+                "sync records response vault {} did not match requested vault {vault_id}",
+                page.vault_id
+            )));
+        }
+        let latest_sequence = page.latest_sequence;
+        records.extend(page.records);
+        if !page.has_more {
+            return Ok(IncrementalSyncPull {
+                latest_sequence,
+                records,
+            });
+        }
+        if page.next_sequence <= after {
+            return Err(CliError::InvalidInput(format!(
+                "sync records cursor did not advance after sequence {after}"
+            )));
+        }
+        after = page.next_sequence;
+    }
+}
+
+fn fetch_sync_records_page(
+    env: &CliEnvironment,
+    server_url: &str,
+    vault_id: &str,
+    after_sequence: u64,
+) -> Result<CliSyncPull, CliError> {
+    let path = format!(
+        "/_admin/vaults/{vault_id}/sync/records?after={after_sequence}&limit={SYNC_RECORDS_PAGE_LIMIT}"
+    );
+    let response = signed_json_request_to_server(env, server_url, "GET", &path, None)?;
+    serde_json::from_value(response).map_err(CliError::from)
+}
+
+fn sync_bootstrap_reason(local_result: &LocalSyncResult, opened_grants: usize) -> Option<String> {
+    if local_result.pushed_count > 0 {
+        Some(
+            "local writes were accepted; fetched bootstrap to confirm server projection".to_owned(),
+        )
+    } else if local_result.conflict_count > 0 {
+        Some("local conflicts were recorded; fetched bootstrap before restoring edits".to_owned())
+    } else if opened_grants > 0 {
+        Some("new folder keys were opened; fetched bootstrap for newly readable content".to_owned())
+    } else {
+        None
+    }
+}
+
+fn is_rebootstrap_required_error(error: &CliError) -> bool {
+    matches!(error, CliError::Http(message) if message.contains("410") || message.contains("rebootstrap required"))
+}
+
+fn is_sync_records_route_unavailable(error: &CliError) -> bool {
+    matches!(error, CliError::Http(message) if message.contains("404"))
+}
+
+fn apply_incremental_records(
+    root: &Path,
+    after_sequence: u64,
+    latest_sequence: u64,
+    records: &[CliSyncRecord],
+) -> Result<CliSyncBootstrap, String> {
+    if latest_sequence < after_sequence {
+        return Err(format!(
+            "sync records latest sequence {latest_sequence} is older than cursor {after_sequence}"
+        ));
+    }
+    let base = incremental_base_bootstrap(root, after_sequence)?;
+    let mut objects = base
+        .objects
+        .into_iter()
+        .map(|object| ((object.folder_id.clone(), object.object_id.clone()), object))
+        .collect::<BTreeMap<_, _>>();
+
+    for record in records {
+        if record.sequence <= after_sequence {
+            return Err(format!(
+                "sync record {} did not advance cursor {after_sequence}",
+                record.sequence
+            ));
+        }
+        match record.record_type.as_str() {
+            "folder_object_revision" => {
+                let folder_id = record_folder_id(record)?;
+                let object_id = record_object_id(record)?;
+                objects.insert(
+                    (folder_id.clone(), object_id.clone()),
+                    CliSyncObject {
+                        folder_id,
+                        object_id,
+                        revision: record_revision(record)?,
+                        ciphertext: record_payload_ciphertext(record),
+                        deleted: false,
+                    },
+                );
+            }
+            "folder_object_tombstone" => {
+                let folder_id = record_folder_id(record)?;
+                let object_id = record_object_id(record)?;
+                objects.insert(
+                    (folder_id.clone(), object_id.clone()),
+                    CliSyncObject {
+                        folder_id,
+                        object_id,
+                        revision: record_revision(record)?,
+                        ciphertext: record.payload_json.clone(),
+                        deleted: true,
+                    },
+                );
+            }
+            other => {
+                return Err(format!(
+                    "sync record {} type {other} requires bootstrap",
+                    record.sequence
+                ));
+            }
+        }
+    }
+
+    Ok(CliSyncBootstrap {
+        latest_sequence,
+        objects: objects.into_values().collect(),
+    })
+}
+
+fn incremental_base_bootstrap(
+    root: &Path,
+    after_sequence: u64,
+) -> Result<CliSyncBootstrap, String> {
+    match read_cached_sync_bootstrap(root) {
+        Ok(Some(cached)) if cached.latest_sequence == after_sequence => Ok(cached),
+        Ok(Some(cached)) => Err(format!(
+            "cached bootstrap sequence {} does not match cursor {after_sequence}",
+            cached.latest_sequence
+        )),
+        Ok(None) if after_sequence == 0 => Ok(CliSyncBootstrap {
+            latest_sequence: 0,
+            objects: Vec::new(),
+        }),
+        Ok(None) => Err(format!(
+            "cached bootstrap missing for incremental cursor {after_sequence}"
+        )),
+        Err(error) => Err(format!("cached bootstrap unreadable: {error}")),
+    }
+}
+
+fn read_cached_sync_bootstrap(root: &Path) -> Result<Option<CliSyncBootstrap>, CliError> {
+    let path = root.join(".finitebrain/encrypted-sync/bootstrap.json");
+    if !path.exists() {
+        return Ok(None);
+    }
+    let text = fs::read_to_string(path)?;
+    serde_json::from_str(&text)
+        .map(Some)
+        .map_err(CliError::from)
+}
+
+fn record_folder_id(record: &CliSyncRecord) -> Result<String, String> {
+    record
+        .folder_id
+        .clone()
+        .ok_or_else(|| format!("sync record {} is missing folderId", record.sequence))
+}
+
+fn record_object_id(record: &CliSyncRecord) -> Result<String, String> {
+    record
+        .object_id
+        .clone()
+        .ok_or_else(|| format!("sync record {} is missing objectId", record.sequence))
+}
+
+fn record_revision(record: &CliSyncRecord) -> Result<u64, String> {
+    record
+        .revision
+        .ok_or_else(|| format!("sync record {} is missing revision", record.sequence))
+}
+
+fn record_payload_ciphertext(record: &CliSyncRecord) -> String {
+    serde_json::from_str::<serde_json::Value>(&record.payload_json)
+        .ok()
+        .and_then(|value| {
+            value
+                .get("ciphertext")
+                .and_then(serde_json::Value::as_str)
+                .map(ToOwned::to_owned)
+        })
+        .unwrap_or_else(|| record.payload_json.clone())
+}
+
+fn sync_record_reports(
+    records: &[CliSyncRecord],
+    prior_state: &finite_brain_core::portability::VaultWorkingTreeStateManifest,
+    applied_state: &finite_brain_core::portability::VaultWorkingTreeStateManifest,
+    status: &str,
+    reason: Option<&str>,
+) -> Vec<SyncChangeReport> {
+    records
+        .iter()
+        .map(|record| SyncChangeReport {
+            status: status.to_owned(),
+            action: sync_record_action(record),
+            sequence: Some(record.sequence),
+            path: sync_record_path(record, prior_state, applied_state),
+            from_path: None,
+            folder_id: record.folder_id.clone(),
+            source_vault_id: None,
+            object_id: record.object_id.clone(),
+            route: "sync-record".to_owned(),
+            reason: reason.map(ToOwned::to_owned),
+        })
+        .collect()
+}
+
+fn sync_record_action(record: &CliSyncRecord) -> String {
+    match record.record_type.as_str() {
+        "folder_object_revision" => {
+            if sync_record_base_revision_is_none(record) {
+                "create".to_owned()
+            } else {
+                "update".to_owned()
+            }
+        }
+        "folder_object_tombstone" => "delete".to_owned(),
+        other => other.to_owned(),
+    }
+}
+
+fn sync_record_base_revision_is_none(record: &CliSyncRecord) -> bool {
+    serde_json::from_str::<serde_json::Value>(&record.payload_json)
+        .ok()
+        .and_then(|value| value.get("baseRevision").cloned())
+        .is_none_or(|value| value.is_null())
+}
+
+fn sync_record_path(
+    record: &CliSyncRecord,
+    prior_state: &finite_brain_core::portability::VaultWorkingTreeStateManifest,
+    applied_state: &finite_brain_core::portability::VaultWorkingTreeStateManifest,
+) -> Option<String> {
+    let folder_id = record.folder_id.as_deref()?;
+    let object_id = record.object_id.as_deref()?;
+    working_tree_path_for_record(applied_state, folder_id, object_id)
+        .or_else(|| working_tree_path_for_record(prior_state, folder_id, object_id))
+}
+
+fn working_tree_path_for_record(
+    state: &finite_brain_core::portability::VaultWorkingTreeStateManifest,
+    folder_id: &str,
+    object_id: &str,
+) -> Option<String> {
+    let object = state.objects.iter().find(|object| {
+        object.source_vault_id.is_none()
+            && object.folder_id == folder_id
+            && object.object_id == object_id
+    })?;
+    let folder = state
+        .folder_roots
+        .iter()
+        .find(|folder| folder.source_vault_id.is_none() && folder.folder_id == folder_id)?;
+    Some(format!("{}/{}", folder.path, object.path))
 }
 
 fn fetch_vault_metadata_for_sync(
@@ -533,6 +903,7 @@ fn sync_change_report(
     SyncChangeReport {
         status: status.to_owned(),
         action: sync_action_label(intent.action).to_owned(),
+        sequence: None,
         path,
         from_path,
         folder_id: intent.folder_id.as_ref().map(ToString::to_string),
@@ -1473,6 +1844,21 @@ struct LocalSyncResult {
 }
 
 #[derive(Debug)]
+struct RemoteSyncResult {
+    bootstrap: CliSyncBootstrap,
+    records: Vec<CliSyncRecord>,
+    report_status: String,
+    report_reason: Option<String>,
+    used_bootstrap: bool,
+}
+
+#[derive(Debug)]
+struct IncrementalSyncPull {
+    latest_sequence: u64,
+    records: Vec<CliSyncRecord>,
+}
+
+#[derive(Debug)]
 struct MountedFolderSyncContext {
     mount: CliMountedFolder,
     export: CliEncryptedVaultExport,
@@ -1615,6 +2001,35 @@ struct CliExportAccessState {
 struct CliSyncBootstrap {
     latest_sequence: u64,
     objects: Vec<CliSyncObject>,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone, Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CliSyncPull {
+    vault_id: String,
+    after_sequence: u64,
+    latest_sequence: u64,
+    records: Vec<CliSyncRecord>,
+    count: usize,
+    has_more: bool,
+    next_sequence: u64,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone, Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CliSyncRecord {
+    sequence: u64,
+    record_event_id: String,
+    record_type: String,
+    folder_id: Option<String>,
+    object_id: Option<String>,
+    revision: Option<u64>,
+    actor_npub: String,
+    client_created_at: String,
+    payload_json: String,
+    record_event_kind: u16,
 }
 
 #[derive(Debug, Clone, Deserialize, serde::Serialize)]

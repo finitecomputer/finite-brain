@@ -266,6 +266,8 @@ pub(crate) struct SyncOnceReport {
 pub(crate) struct SyncChangeReport {
     pub(crate) status: String,
     pub(crate) action: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) sequence: Option<u64>,
     pub(crate) path: Option<String>,
     pub(crate) from_path: Option<String>,
     pub(crate) folder_id: Option<String>,

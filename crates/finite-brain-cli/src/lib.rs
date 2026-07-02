@@ -719,15 +719,27 @@ fn write_sync_change_group<W: Write>(
     }
     writeln!(output, "{label}:")?;
     for change in changes {
-        let path = change.path.as_deref().unwrap_or("-");
+        let path = change
+            .path
+            .as_deref()
+            .or(change.object_id.as_deref())
+            .unwrap_or("-");
+        let sequence = change
+            .sequence
+            .map(|sequence| format!(" seq={sequence}"))
+            .unwrap_or_default();
         if let Some(from_path) = change.from_path.as_deref() {
             writeln!(
                 output,
-                "- {} {} {} -> {}",
-                change.status, change.action, from_path, path
+                "- {} {} {} -> {}{}",
+                change.status, change.action, from_path, path, sequence
             )?;
         } else {
-            writeln!(output, "- {} {} {}", change.status, change.action, path)?;
+            writeln!(
+                output,
+                "- {} {} {}{}",
+                change.status, change.action, path, sequence
+            )?;
         }
         if let Some(reason) = change.reason.as_deref() {
             writeln!(output, "  reason: {reason}")?;
@@ -1946,26 +1958,16 @@ mod tests {
                 let (request_line, _) = read_http_request(&mut stream);
                 requests.push(request_line.clone());
                 let body = if request_line.contains("/export") {
+                    empty_export_body()
+                } else if request_line.contains("/sync/records") {
                     serde_json::json!({
-                        "vault": {
-                            "id": "vault",
-                            "kind": "personal",
-                            "name": "Vault",
-                            "ownerUserId": null
-                        },
-                        "folders": [{
-                            "id": "general",
-                            "path": "General",
-                            "access": "owner",
-                            "currentKeyVersion": 1,
-                            "sharedFolderSource": false,
-                            "accessible": true
-                        }],
-                        "keyGrants": [],
-                        "accessState": {
-                            "members": [],
-                            "admins": []
-                        }
+                        "vaultId": "vault",
+                        "afterSequence": 0,
+                        "latestSequence": 0,
+                        "records": [],
+                        "count": 0,
+                        "hasMore": false,
+                        "nextSequence": 0
                     })
                     .to_string()
                 } else {
@@ -1984,6 +1986,335 @@ mod tests {
             requests
         });
         (url, handle)
+    }
+
+    fn empty_export_body() -> String {
+        serde_json::json!({
+            "vault": {
+                "id": "vault",
+                "kind": "personal",
+                "name": "Vault",
+                "ownerUserId": null
+            },
+            "folders": [{
+                "id": "general",
+                "path": "General",
+                "access": "owner",
+                "currentKeyVersion": 1,
+                "sharedFolderSource": false,
+                "accessible": true
+            }],
+            "keyGrants": [],
+            "accessState": {
+                "members": [],
+                "admins": []
+            }
+        })
+        .to_string()
+    }
+
+    fn start_incremental_remote_sync_server(
+        ciphertext: String,
+    ) -> (String, thread::JoinHandle<Vec<String>>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let handle = thread::spawn(move || {
+            let started = Instant::now();
+            let mut requests = Vec::new();
+            while requests.len() < 2 && started.elapsed() < Duration::from_secs(5) {
+                let Ok((mut stream, _)) = listener.accept() else {
+                    thread::sleep(Duration::from_millis(10));
+                    continue;
+                };
+                let (request_line, _) = read_http_request(&mut stream);
+                requests.push(request_line.clone());
+                let (status, body) = if request_line.contains("/export") {
+                    ("200 OK", empty_export_body())
+                } else if request_line.contains("/sync/records") {
+                    (
+                        "200 OK",
+                        serde_json::json!({
+                            "vaultId": "vault",
+                            "afterSequence": 0,
+                            "latestSequence": 7,
+                            "records": [{
+                                "sequence": 7,
+                                "recordEventId": "evt-remote-7",
+                                "recordType": "folder_object_revision",
+                                "folderId": "general",
+                                "objectId": "obj_remote000001",
+                                "revision": 1,
+                                "actorNpub": "npub-remote",
+                                "clientCreatedAt": "2026-06-24T20:46:36Z",
+                                "payloadJson": remote_revision_payload_json(&ciphertext),
+                                "recordEventKind": APP_SPECIFIC_KIND
+                            }],
+                            "count": 1,
+                            "hasMore": false,
+                            "nextSequence": 7
+                        })
+                        .to_string(),
+                    )
+                } else {
+                    (
+                        "404 Not Found",
+                        serde_json::json!({ "error": "not found" }).to_string(),
+                    )
+                };
+                let response = format!(
+                    "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                stream.write_all(response.as_bytes()).unwrap();
+            }
+            requests
+        });
+        (url, handle)
+    }
+
+    fn start_expired_cursor_sync_server(
+        ciphertext: String,
+    ) -> (String, thread::JoinHandle<Vec<String>>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let handle = thread::spawn(move || {
+            let started = Instant::now();
+            let mut requests = Vec::new();
+            while requests.len() < 3 && started.elapsed() < Duration::from_secs(5) {
+                let Ok((mut stream, _)) = listener.accept() else {
+                    thread::sleep(Duration::from_millis(10));
+                    continue;
+                };
+                let (request_line, _) = read_http_request(&mut stream);
+                requests.push(request_line.clone());
+                let (status, body) = if request_line.contains("/export") {
+                    ("200 OK", empty_export_body())
+                } else if request_line.contains("/sync/records") {
+                    (
+                        "410 Gone",
+                        serde_json::json!({
+                            "error": "rebootstrap required from retention floor 3"
+                        })
+                        .to_string(),
+                    )
+                } else if request_line.contains("/sync/bootstrap") {
+                    (
+                        "200 OK",
+                        serde_json::json!({
+                            "latestSequence": 5,
+                            "objects": [{
+                                "folderId": "general",
+                                "objectId": "obj_remote000001",
+                                "revision": 1,
+                                "ciphertext": ciphertext,
+                                "deleted": false
+                            }]
+                        })
+                        .to_string(),
+                    )
+                } else {
+                    (
+                        "404 Not Found",
+                        serde_json::json!({ "error": "not found" }).to_string(),
+                    )
+                };
+                let response = format!(
+                    "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                stream.write_all(response.as_bytes()).unwrap();
+            }
+            requests
+        });
+        (url, handle)
+    }
+
+    fn start_two_agent_incremental_sync_server() -> (String, thread::JoinHandle<Vec<String>>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let handle = thread::spawn(move || {
+            let started = Instant::now();
+            let mut requests = Vec::new();
+            let mut accepted_object = None::<(String, String)>;
+            while requests.len() < 5 && started.elapsed() < Duration::from_secs(5) {
+                let Ok((mut stream, _)) = listener.accept() else {
+                    thread::sleep(Duration::from_millis(10));
+                    continue;
+                };
+                let (request_line, body) = read_http_request(&mut stream);
+                requests.push(request_line.clone());
+                let (status, response_body) = if request_line.contains("/export") {
+                    ("200 OK", empty_export_body())
+                } else if request_line.starts_with("PUT ") {
+                    let path = request_line.split_whitespace().nth(1).unwrap_or_default();
+                    let object_id = path.rsplit('/').next().unwrap_or_default().to_owned();
+                    let body: Value = serde_json::from_str(&body).unwrap();
+                    let ciphertext = body["ciphertext"].as_str().unwrap().to_owned();
+                    accepted_object = Some((object_id, ciphertext));
+                    (
+                        "200 OK",
+                        serde_json::json!({
+                            "sequence": 1,
+                            "duplicate": false,
+                            "revision": 1
+                        })
+                        .to_string(),
+                    )
+                } else if request_line.contains("/sync/bootstrap") {
+                    let objects = accepted_object
+                        .as_ref()
+                        .map(|(object_id, ciphertext)| {
+                            vec![serde_json::json!({
+                                "folderId": "general",
+                                "objectId": object_id,
+                                "revision": 1,
+                                "ciphertext": ciphertext,
+                                "deleted": false
+                            })]
+                        })
+                        .unwrap_or_default();
+                    (
+                        "200 OK",
+                        serde_json::json!({
+                            "latestSequence": objects.len() as u64,
+                            "objects": objects
+                        })
+                        .to_string(),
+                    )
+                } else if request_line.contains("/sync/records") {
+                    let records = accepted_object
+                        .as_ref()
+                        .map(|(object_id, ciphertext)| {
+                            vec![serde_json::json!({
+                                "sequence": 1,
+                                "recordEventId": "evt-agent-b-1",
+                                "recordType": "folder_object_revision",
+                                "folderId": "general",
+                                "objectId": object_id,
+                                "revision": 1,
+                                "actorNpub": "npub-agent-b",
+                                "clientCreatedAt": "2026-06-24T20:46:36Z",
+                                "payloadJson": remote_revision_payload_json_for_object(
+                                    object_id,
+                                    ciphertext,
+                                ),
+                                "recordEventKind": APP_SPECIFIC_KIND
+                            })]
+                        })
+                        .unwrap_or_default();
+                    (
+                        "200 OK",
+                        serde_json::json!({
+                            "vaultId": "vault",
+                            "afterSequence": 0,
+                            "latestSequence": records.len() as u64,
+                            "records": records,
+                            "count": records.len(),
+                            "hasMore": false,
+                            "nextSequence": records.len() as u64
+                        })
+                        .to_string(),
+                    )
+                } else {
+                    (
+                        "404 Not Found",
+                        serde_json::json!({ "error": "not found" }).to_string(),
+                    )
+                };
+                let response = format!(
+                    "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{response_body}",
+                    response_body.len()
+                );
+                stream.write_all(response.as_bytes()).unwrap();
+            }
+            requests
+        });
+        (url, handle)
+    }
+
+    fn remote_revision_payload_json(ciphertext: &str) -> String {
+        remote_revision_payload_json_for_object("obj_remote000001", ciphertext)
+    }
+
+    fn remote_revision_payload_json_for_object(object_id: &str, ciphertext: &str) -> String {
+        serde_json::json!({
+            "recordType": "folder_object_revision",
+            "folderId": "general",
+            "objectId": object_id,
+            "baseRevision": null,
+            "keyVersion": 1,
+            "cipher": CIPHER_AES_256_GCM,
+            "ciphertext": ciphertext,
+            "revisionEvent": {}
+        })
+        .to_string()
+    }
+
+    fn remote_page_ciphertext(folder_key: &FolderKey, page_path: &str, markdown: &str) -> String {
+        let plaintext = encode_folder_object_page_plaintext(
+            &SafeRelativePath::new("page_path", page_path).unwrap(),
+            markdown,
+        )
+        .unwrap();
+        let aad = FolderObjectAad {
+            vault_id: VaultId::new("vault").unwrap(),
+            folder_id: FolderId::new("general").unwrap(),
+            object_id: ObjectId::new("obj_remote000001").unwrap(),
+            key_version: 1,
+        };
+        encrypt_folder_object(folder_key, &aad, &plaintext)
+            .unwrap()
+            .canonical_json()
+    }
+
+    fn setup_incremental_tree(
+        tmp: &TempDir,
+        folder_key: &FolderKey,
+        latest_sequence: u64,
+    ) -> PathBuf {
+        setup_incremental_tree_named(tmp, "vault", folder_key, latest_sequence)
+    }
+
+    fn setup_incremental_tree_named(
+        tmp: &TempDir,
+        name: &str,
+        folder_key: &FolderKey,
+        latest_sequence: u64,
+    ) -> PathBuf {
+        let tree = tmp.path().join(name);
+        fs::create_dir_all(tree.join(".finitebrain")).unwrap();
+        fs::create_dir_all(tree.join("General")).unwrap();
+        let now = "2026-06-24T20:46:36Z";
+        let mut state = AgentState::new("vault", now);
+        state.local_folder_keys.push(LocalFolderKey {
+            vault_id: Some("vault".to_owned()),
+            folder_id: "general".to_owned(),
+            key_version: 1,
+            key_base64: folder_key.to_base64(),
+            source: "test".to_owned(),
+            opened_at: now.to_owned(),
+        });
+        write_agent_state(&tree, &state).unwrap();
+        write_json_file(
+            &tree.join(".finitebrain/working-tree-state.json"),
+            &VaultWorkingTreeStateManifest {
+                version: WORKING_TREE_STATE_VERSION.to_owned(),
+                folder_roots: vec![WorkingTreeFolderRoot {
+                    folder_id: "general".to_owned(),
+                    source_vault_id: None,
+                    path: "General".to_owned(),
+                    can_read: true,
+                    metadata_only: false,
+                }],
+                objects: Vec::new(),
+                sync: WorkingTreeSyncState { latest_sequence },
+            },
+        )
+        .unwrap();
+        tree
     }
 
     fn start_metadata_and_grant_server(
@@ -3065,7 +3396,7 @@ mod tests {
         assert!(
             requests
                 .iter()
-                .any(|request| request.contains("/_admin/vaults/vault/sync/bootstrap"))
+                .any(|request| request.contains("/_admin/vaults/vault/sync/records?after=0"))
         );
 
         let state = read_agent_state(&tree).unwrap();
@@ -3143,6 +3474,60 @@ mod tests {
                 .activity
                 .iter()
                 .any(|entry| entry.kind == "daemon.watch.idle")
+        );
+    }
+
+    #[test]
+    fn daemon_watch_once_applies_incremental_remote_records() {
+        let tmp = TempDir::new().unwrap();
+        run(
+            &tmp,
+            &[
+                "auth",
+                "login",
+                "--nsec",
+                "0000000000000000000000000000000000000000000000000000000000000001",
+            ],
+        );
+        let folder_key = FolderKey::from_bytes([8; 32]);
+        let tree = setup_incremental_tree(&tmp, &folder_key, 0);
+        let ciphertext = remote_page_ciphertext(&folder_key, "compiled/daemon.md", "# Daemon\n");
+        let (server_url, server) = start_incremental_remote_sync_server(ciphertext);
+
+        let mut env = env_for(&tmp);
+        env.cwd = tree.clone();
+        let mut output = Vec::new();
+        run_with_env(
+            [
+                "daemon",
+                "watch",
+                "--once",
+                "--server",
+                &server_url,
+                "--json",
+            ],
+            env,
+            &mut output,
+        )
+        .unwrap();
+
+        let json: Value = serde_json::from_slice(&output).unwrap();
+        assert_eq!(json["state"], "stopped");
+        assert_eq!(json["lastStatus"], "applied-remote-records");
+        assert_eq!(
+            fs::read_to_string(tree.join("General/compiled/daemon.md")).unwrap(),
+            "# Daemon\n"
+        );
+        let state = read_agent_state(&tree).unwrap();
+        assert_eq!(state.sync.status, "applied-remote-records");
+        let tree_state = read_working_tree_state(&tree).unwrap();
+        assert_eq!(tree_state.sync.latest_sequence, 7);
+
+        let requests = server.join().unwrap();
+        assert!(
+            requests
+                .iter()
+                .any(|request| request.contains("/_admin/vaults/vault/sync/records?after=0"))
         );
     }
 
@@ -3236,6 +3621,263 @@ mod tests {
                 .as_str()
                 .unwrap()
                 .contains("server URL")
+        );
+    }
+
+    #[test]
+    fn sync_now_applies_incremental_remote_records_and_reports_them() {
+        let tmp = TempDir::new().unwrap();
+        run(
+            &tmp,
+            &[
+                "auth",
+                "login",
+                "--nsec",
+                "0000000000000000000000000000000000000000000000000000000000000001",
+            ],
+        );
+        let folder_key = FolderKey::from_bytes([4; 32]);
+        let tree = setup_incremental_tree(&tmp, &folder_key, 0);
+        let ciphertext = remote_page_ciphertext(&folder_key, "compiled/remote.md", "# Remote\n");
+        let (server_url, server) = start_incremental_remote_sync_server(ciphertext);
+
+        let mut env = env_for(&tmp);
+        env.cwd = tree.clone();
+        let mut output = Vec::new();
+        run_with_env(
+            ["sync", "now", "--server", &server_url, "--json"],
+            env,
+            &mut output,
+        )
+        .unwrap();
+
+        let json: Value = serde_json::from_slice(&output).unwrap();
+        assert_eq!(json["status"], "applied-remote-records");
+        assert_eq!(json["latestSequence"], 7);
+        assert_eq!(json["recordCount"], 1);
+        assert_eq!(json["remoteChanges"].as_array().unwrap().len(), 1);
+        assert_eq!(json["remoteChanges"][0]["status"], "applied");
+        assert_eq!(json["remoteChanges"][0]["action"], "create");
+        assert_eq!(json["remoteChanges"][0]["sequence"], 7);
+        assert_eq!(json["remoteChanges"][0]["folderId"], "general");
+        assert_eq!(json["remoteChanges"][0]["objectId"], "obj_remote000001");
+        assert_eq!(
+            json["remoteChanges"][0]["path"],
+            "General/compiled/remote.md"
+        );
+
+        assert_eq!(
+            fs::read_to_string(tree.join("General/compiled/remote.md")).unwrap(),
+            "# Remote\n"
+        );
+        let tree_state = read_working_tree_state(&tree).unwrap();
+        assert_eq!(tree_state.sync.latest_sequence, 7);
+        assert_eq!(tree_state.objects.len(), 1);
+
+        let requests = server.join().unwrap();
+        assert!(requests[0].contains("/_admin/vaults/vault/export"));
+        assert!(
+            requests
+                .iter()
+                .any(|request| request.contains("/_admin/vaults/vault/sync/records?after=0"))
+        );
+        assert!(
+            !requests
+                .iter()
+                .any(|request| request.contains("/_admin/vaults/vault/sync/bootstrap"))
+        );
+    }
+
+    #[test]
+    fn sync_now_summary_prints_incremental_remote_records() {
+        let tmp = TempDir::new().unwrap();
+        run(
+            &tmp,
+            &[
+                "auth",
+                "login",
+                "--nsec",
+                "0000000000000000000000000000000000000000000000000000000000000001",
+            ],
+        );
+        let folder_key = FolderKey::from_bytes([7; 32]);
+        let tree = setup_incremental_tree(&tmp, &folder_key, 0);
+        let ciphertext = remote_page_ciphertext(&folder_key, "compiled/summary.md", "# Summary\n");
+        let (server_url, server) = start_incremental_remote_sync_server(ciphertext);
+
+        let mut env = env_for(&tmp);
+        env.cwd = tree;
+        let mut output = Vec::new();
+        run_with_env(
+            ["sync", "now", "--server", &server_url, "--summary"],
+            env,
+            &mut output,
+        )
+        .unwrap();
+
+        let text = String::from_utf8(output).unwrap();
+        assert!(text.contains("applied-remote-records latestSequence=7"));
+        assert!(text.contains("local changes: none"));
+        assert!(text.contains("remote changes:"));
+        assert!(text.contains("- applied create General/compiled/summary.md seq=7"));
+        assert!(text.contains("conflicts: none"));
+
+        let requests = server.join().unwrap();
+        assert!(
+            requests
+                .iter()
+                .any(|request| request.contains("/_admin/vaults/vault/sync/records?after=0"))
+        );
+    }
+
+    #[test]
+    fn sync_now_rebootstraps_when_incremental_cursor_expired() {
+        let tmp = TempDir::new().unwrap();
+        run(
+            &tmp,
+            &[
+                "auth",
+                "login",
+                "--nsec",
+                "0000000000000000000000000000000000000000000000000000000000000001",
+            ],
+        );
+        let folder_key = FolderKey::from_bytes([5; 32]);
+        let tree = setup_incremental_tree(&tmp, &folder_key, 2);
+        let ciphertext =
+            remote_page_ciphertext(&folder_key, "compiled/rebootstrap.md", "# Bootstrap\n");
+        let (server_url, server) = start_expired_cursor_sync_server(ciphertext);
+
+        let mut env = env_for(&tmp);
+        env.cwd = tree.clone();
+        let mut output = Vec::new();
+        run_with_env(
+            ["sync", "now", "--server", &server_url, "--json"],
+            env,
+            &mut output,
+        )
+        .unwrap();
+
+        let json: Value = serde_json::from_slice(&output).unwrap();
+        assert_eq!(json["status"], "applied-remote-records");
+        assert_eq!(json["latestSequence"], 5);
+        assert_eq!(json["remoteChanges"].as_array().unwrap().len(), 0);
+        assert_eq!(
+            fs::read_to_string(tree.join("General/compiled/rebootstrap.md")).unwrap(),
+            "# Bootstrap\n"
+        );
+        let tree_state = read_working_tree_state(&tree).unwrap();
+        assert_eq!(tree_state.sync.latest_sequence, 5);
+
+        let requests = server.join().unwrap();
+        assert!(
+            requests
+                .iter()
+                .any(|request| request.contains("/_admin/vaults/vault/sync/records?after=2"))
+        );
+        assert!(
+            requests
+                .iter()
+                .any(|request| request.contains("/_admin/vaults/vault/sync/bootstrap"))
+        );
+    }
+
+    #[test]
+    fn two_agent_sync_uses_incremental_records_for_second_working_tree() {
+        let tmp = TempDir::new().unwrap();
+        let nsec = "0000000000000000000000000000000000000000000000000000000000000001";
+        let agent_a_config = tmp.path().join("agent-a-config");
+        let agent_b_config = tmp.path().join("agent-b-config");
+        let agent_a_auth_env = CliEnvironment {
+            cwd: tmp.path().to_path_buf(),
+            config_dir: agent_a_config.clone(),
+            now: Some("2026-06-24T20:46:36Z".to_owned()),
+        };
+        let agent_b_auth_env = CliEnvironment {
+            cwd: tmp.path().to_path_buf(),
+            config_dir: agent_b_config.clone(),
+            now: Some("2026-06-24T20:46:36Z".to_owned()),
+        };
+        let mut output = Vec::new();
+        run_with_env(
+            ["auth", "login", "--nsec", nsec],
+            agent_a_auth_env,
+            &mut output,
+        )
+        .unwrap();
+        output.clear();
+        run_with_env(
+            ["auth", "login", "--nsec", nsec],
+            agent_b_auth_env,
+            &mut output,
+        )
+        .unwrap();
+        let folder_key = FolderKey::from_bytes([6; 32]);
+        let agent_a_tree = setup_incremental_tree_named(&tmp, "agent-a", &folder_key, 0);
+        let agent_b_tree = setup_incremental_tree_named(&tmp, "agent-b", &folder_key, 0);
+        fs::write(agent_b_tree.join("General/shared.md"), "# Shared\n").unwrap();
+        let (server_url, server) = start_two_agent_incremental_sync_server();
+
+        let env_b = CliEnvironment {
+            cwd: agent_b_tree.clone(),
+            config_dir: agent_b_config,
+            now: Some("2026-06-24T20:46:36Z".to_owned()),
+        };
+        let mut output_b = Vec::new();
+        run_with_env(
+            ["sync", "now", "--server", &server_url, "--json"],
+            env_b,
+            &mut output_b,
+        )
+        .unwrap();
+        let json_b: Value = serde_json::from_slice(&output_b).unwrap();
+        assert_eq!(json_b["status"], "pushed-local-changes");
+        assert_eq!(json_b["localChanges"].as_array().unwrap().len(), 1);
+
+        let env_a = CliEnvironment {
+            cwd: agent_a_tree.clone(),
+            config_dir: agent_a_config,
+            now: Some("2026-06-24T20:46:36Z".to_owned()),
+        };
+        let mut output_a = Vec::new();
+        run_with_env(
+            ["sync", "now", "--server", &server_url, "--json"],
+            env_a,
+            &mut output_a,
+        )
+        .unwrap();
+
+        let json_a: Value = serde_json::from_slice(&output_a).unwrap();
+        assert_eq!(json_a["status"], "applied-remote-records");
+        assert_eq!(json_a["latestSequence"], 1);
+        assert_eq!(json_a["remoteChanges"].as_array().unwrap().len(), 1);
+        assert_eq!(json_a["remoteChanges"][0]["status"], "applied");
+        assert_eq!(json_a["remoteChanges"][0]["sequence"], 1);
+        assert_eq!(json_a["remoteChanges"][0]["path"], "General/shared.md");
+        assert_eq!(
+            fs::read_to_string(agent_a_tree.join("General/shared.md")).unwrap(),
+            "# Shared\n"
+        );
+        let agent_a_state = read_working_tree_state(&agent_a_tree).unwrap();
+        assert_eq!(agent_a_state.sync.latest_sequence, 1);
+
+        let requests = server.join().unwrap();
+        assert_eq!(
+            requests
+                .iter()
+                .filter(|request| request.starts_with("PUT "))
+                .count(),
+            1
+        );
+        assert!(
+            requests
+                .iter()
+                .any(|request| request.contains("/_admin/vaults/vault/sync/bootstrap"))
+        );
+        assert!(
+            requests
+                .iter()
+                .any(|request| request.contains("/_admin/vaults/vault/sync/records?after=0"))
         );
     }
 
@@ -3454,7 +4096,7 @@ mod tests {
         assert!(
             requests
                 .iter()
-                .any(|request| request.contains("/_admin/vaults/vault/sync/bootstrap"))
+                .any(|request| request.contains("/_admin/vaults/vault/sync/records?after=0"))
         );
     }
 
