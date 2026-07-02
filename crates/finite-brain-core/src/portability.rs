@@ -744,6 +744,44 @@ mod tests {
     }
 
     #[test]
+    fn working_tree_prefers_real_convention_pages_over_generated_fallbacks() {
+        let projection = materialize_vault_working_tree(WorkingTreeMaterializeInput {
+            generated_at: "2026-06-24T00:00:00.000Z".to_owned(),
+            generated_by_npub: UserId::new("npub-admin").unwrap(),
+            vault: sample_vault(),
+            opened_pages: vec![
+                page(
+                    "concepts",
+                    "obj_000000000001",
+                    "Concepts",
+                    "AGENTS.md",
+                    "# Real Folder Agents\n\nUse the durable vault instructions.",
+                ),
+                page(
+                    "concepts",
+                    "obj_000000000002",
+                    "Concepts",
+                    "_index.md",
+                    "# Real Folder Index\n\nThis is the canonical folder index.",
+                ),
+            ],
+            locked_folders: Vec::new(),
+            latest_sequence: 42,
+        })
+        .unwrap();
+
+        assert_eq!(
+            projection.files.get("Concepts/AGENTS.md").unwrap(),
+            "# Real Folder Agents\n\nUse the durable vault instructions."
+        );
+        assert_eq!(
+            projection.files.get("Concepts/_index.md").unwrap(),
+            "# Real Folder Index\n\nThis is the canonical folder index."
+        );
+        assert!(projection.files.contains_key("Concepts/_wiki/index.md"));
+    }
+
+    #[test]
     fn working_tree_change_intents_use_encrypted_product_client_routes() {
         let mut opened = page(
             "concepts",

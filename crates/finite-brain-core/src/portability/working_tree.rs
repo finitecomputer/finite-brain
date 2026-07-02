@@ -163,30 +163,28 @@ pub fn materialize_vault_working_tree(
         if !root.can_read {
             continue;
         }
-        insert_working_tree_file(
-            &mut files,
-            &format!("{}/AGENTS.md", root.path),
-            folder_agents_file(&root.folder_id),
-        )?;
-        insert_working_tree_file(
-            &mut files,
-            &format!("{}/_index.md", root.path),
-            folder_index_file(root, &state),
-        )?;
-        insert_working_tree_file(
+        insert_working_tree_file_if_absent(&mut files, &format!("{}/AGENTS.md", root.path), || {
+            folder_agents_file(&root.folder_id)
+        });
+        insert_working_tree_file_if_absent(&mut files, &format!("{}/_index.md", root.path), || {
+            folder_index_file(root, &state)
+        });
+        insert_working_tree_file_if_absent(
             &mut files,
             &format!("{}/_wiki/index.md", root.path),
-            folder_wiki_index(root, &input.generated_at, &input.generated_by_npub, &state),
-        )?;
+            || folder_wiki_index(root, &input.generated_at, &input.generated_by_npub, &state),
+        );
         for convention in ["raw", "compiled", "output"] {
-            insert_working_tree_file(
+            insert_working_tree_file_if_absent(
                 &mut files,
                 &format!("{}/{convention}/.keep", root.path),
-                format!(
-                    "# {convention}\n\nAgent convention directory for Folder `{}`.\n",
-                    root.folder_id
-                ),
-            )?;
+                || {
+                    format!(
+                        "# {convention}\n\nAgent convention directory for Folder `{}`.\n",
+                        root.folder_id
+                    )
+                },
+            );
         }
     }
 
@@ -236,6 +234,14 @@ fn insert_working_tree_file(
         return Err(PortabilityError::WorkingTreePathCollision { path });
     }
     Ok(())
+}
+
+fn insert_working_tree_file_if_absent(
+    files: &mut BTreeMap<String, String>,
+    path: &str,
+    content: impl FnOnce() -> String,
+) {
+    files.entry(path.to_owned()).or_insert_with(content);
 }
 
 fn validate_working_tree_file_path(path: &str) -> Result<(), CoreError> {
