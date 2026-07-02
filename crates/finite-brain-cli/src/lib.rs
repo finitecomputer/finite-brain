@@ -37,9 +37,9 @@ use finite_brain_core::portability::{
     WorkingTreeObjectManifestEntry, WorkingTreeSyncState,
 };
 use finite_brain_core::{
-    AdminAccessAction, FolderKey, FolderObjectAad, FolderObjectOperation, ObjectId,
+    AdminAccessAction, FolderId, FolderKey, FolderObjectAad, FolderObjectOperation, ObjectId,
     SafeRelativePath, VaultId, VaultKind, bootstrap_organization_vault, bootstrap_personal_vault,
-    default_vault_pages, default_vault_pages_folder_id, encrypt_folder_object,
+    default_vault_pages, encrypt_folder_object,
 };
 use finite_nostr::{NostrPublicKey, decrypt_nip44, encrypt_nip44};
 use nostr::{Keys, Kind};
@@ -986,8 +986,8 @@ fn activity<W: Write>(env: &CliEnvironment, json: bool, output: &mut W) -> Resul
 
 struct VaultCreateBootstrapPlan {
     bootstrap_grants: Vec<serde_json::Value>,
-    default_folder_id: String,
     folder_keys: BTreeMap<(String, u32), FolderKey>,
+    vault_kind: VaultKind,
 }
 
 fn bootstrap_plan_for_vault_create(
@@ -1042,8 +1042,8 @@ fn bootstrap_plan_for_vault_create(
 
     Ok(VaultCreateBootstrapPlan {
         bootstrap_grants,
-        default_folder_id: default_vault_pages_folder_id(vault_kind).to_owned(),
         folder_keys,
+        vault_kind,
     })
 }
 
@@ -1056,20 +1056,20 @@ fn write_default_vault_pages_for_create(
     let auth = read_auth_required(env)?;
     let keys = Keys::parse(&auth.secret_key)
         .map_err(|error| CliError::InvalidSigner(error.to_string()))?;
-    let folder_id = finite_brain_core::FolderId::new(plan.default_folder_id.clone())
-        .map_err(|error| CliError::InvalidInput(error.to_string()))?;
     let key_version = 1;
-    let folder_key = plan
-        .folder_keys
-        .get(&(plan.default_folder_id.clone(), key_version))
-        .ok_or_else(|| {
-            CliError::InvalidInput(format!(
-                "missing generated Folder Key for {}",
-                plan.default_folder_id
-            ))
-        })?;
 
-    for page in default_vault_pages() {
+    for page in default_vault_pages(plan.vault_kind) {
+        let folder_id = FolderId::new(page.folder_id)
+            .map_err(|error| CliError::InvalidInput(error.to_string()))?;
+        let folder_key = plan
+            .folder_keys
+            .get(&(page.folder_id.to_owned(), key_version))
+            .ok_or_else(|| {
+                CliError::InvalidInput(format!(
+                    "missing generated Folder Key for {}",
+                    page.folder_id
+                ))
+            })?;
         let object_id = ObjectId::new(page.object_id)
             .map_err(|error| CliError::InvalidInput(error.to_string()))?;
         let page_path = SafeRelativePath::new("page_path", page.path)
@@ -2473,26 +2473,35 @@ mod tests {
         let cases = [
             (
                 "personal",
+                VaultKind::Personal,
                 "personal-defaults",
                 "Personal defaults",
-                vec!["home"],
-                "home",
+                vec!["home", "projects", "work", "life", "learning", "archive"],
             ),
             (
                 "organization",
+                VaultKind::Organization,
                 "org-defaults",
                 "Org defaults",
-                vec!["vault-ops", "general"],
-                "general",
+                vec![
+                    "vault-ops",
+                    "general",
+                    "product",
+                    "engineering",
+                    "marketing",
+                    "design",
+                    "operations",
+                ],
             ),
         ];
 
-        for (kind, vault_id, name, expected_grant_folders, default_folder_id) in cases {
+        for (kind, vault_kind, vault_id, name, expected_grant_folders) in cases {
             let tmp = TempDir::new().unwrap();
             let secret = "0000000000000000000000000000000000000000000000000000000000000001";
             run(&tmp, &["auth", "login", "--nsec", secret]);
             let actor_npub = run(&tmp, &["signer", "public-key"]).trim().to_owned();
-            let (server_url, server) = start_ok_capture_server(3);
+            let default_pages = finite_brain_core::default_vault_pages(vault_kind);
+            let (server_url, server) = start_ok_capture_server(1 + default_pages.len());
 
             let mut output = Vec::new();
             run_with_env(
@@ -2517,7 +2526,7 @@ mod tests {
             assert_eq!(response["status"], "ok");
 
             let requests = server.join().unwrap();
-            assert_eq!(requests.len(), 3);
+            assert_eq!(requests.len(), 1 + default_pages.len());
             let (_, post_body) = requests
                 .iter()
                 .find(|(request, _)| request.starts_with("POST /_admin/vaults "))
@@ -2536,36 +2545,40 @@ mod tests {
                 expected_grant_folders
             );
 
-            let default_grant = post_body["bootstrapGrants"]
+            let folder_keys = post_body["bootstrapGrants"]
                 .as_array()
                 .unwrap()
                 .iter()
-                .find(|grant| grant["folderId"] == default_folder_id)
-                .expect("default Folder grant captured");
-            let default_folder_key = grant_plaintext_folder_key(default_grant, secret, &actor_npub);
+                .map(|grant| {
+                    let folder_id = grant["folderId"].as_str().unwrap().to_owned();
+                    let folder_key = grant_plaintext_folder_key(grant, secret, &actor_npub);
+                    (folder_id, folder_key)
+                })
+                .collect::<BTreeMap<_, _>>();
 
-            for (object_id, page_path) in [
-                ("obj_default_agents", "AGENTS.md"),
-                ("obj_default_humans", "HUMANS.md"),
-            ] {
+            for page in default_pages {
+                let folder_key = folder_keys
+                    .get(page.folder_id)
+                    .expect("default Page Folder grant captured");
                 let (request, body) = requests
                     .iter()
                     .find(|(request, _)| {
                         request.starts_with(&format!(
-                            "PUT /_admin/vaults/{vault_id}/folders/{default_folder_id}/objects/{object_id} "
+                            "PUT /_admin/vaults/{vault_id}/folders/{}/objects/{} ",
+                            page.folder_id, page.object_id
                         ))
                     })
                     .expect("default Page write captured");
-                assert!(request.contains(object_id));
+                assert!(request.contains(page.object_id));
                 let plaintext = open_default_page_request(
                     body,
                     vault_id,
-                    default_folder_id,
-                    object_id,
-                    &default_folder_key,
+                    page.folder_id,
+                    page.object_id,
+                    folder_key,
                 );
                 assert_eq!(plaintext["version"], "finite-folder-object-page-v1");
-                assert_eq!(plaintext["path"], page_path);
+                assert_eq!(plaintext["path"], page.path);
                 assert!(plaintext["markdown"].as_str().unwrap().starts_with('#'));
             }
         }

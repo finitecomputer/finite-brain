@@ -45,6 +45,14 @@ Grants, decrypt readable Pages, edit one Page, encrypt and write the Page back
 as a signed revision, and pull/apply sync records without losing unresolved
 local edits.
 
+### Folder-scoped LLM Wiki
+
+The FiniteBrain knowledge model. A Vault is a namespace of many LLM wikis, and
+each Folder is the enforceable wiki scope because Folder Keys and Folder Access
+define who can read it. Folder-local `_index.md`, `config.md`, and `log.md`
+describe only that Folder. Root/global indexes must not leak private Folder
+titles, summaries, sources, or activity.
+
 ### Graph View
 
 A Product Client view over the active User's decrypted accessible Pages. It
@@ -68,10 +76,12 @@ plaintext Page content during import.
 ### Vault Working Tree
 
 A local agent-facing file projection built from already-decrypted accessible
-Pages. It writes `AGENTS.md`, `_index.md`, `_wiki/`, `raw/`, `compiled/`, and
-`output/` conventions for readable Folders, stores only safe locked metadata
-for inaccessible Folders, and maps file changes back into Product Client
-encrypted-object write, move, and delete intents.
+Pages. It materializes readable Folders as Folder-scoped LLM wiki roots with
+local `AGENTS.md` or `HUMANS.md` when present, `_index.md`, `config.md`,
+`log.md`, `raw/`, `wiki/`, `inventory/`, `datasets/`, and `output/`
+conventions. It stores only safe locked metadata for inaccessible Folders, and
+maps file changes back into Product Client encrypted-object write, move, and
+delete intents.
 
 ### Agent CLI
 

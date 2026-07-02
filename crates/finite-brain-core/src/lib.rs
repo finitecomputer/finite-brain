@@ -25,9 +25,11 @@ const MAX_USER_ID_LEN: usize = 128;
 const MAX_DISPLAY_NAME_LEN: usize = 128;
 const MAX_SAFE_RELATIVE_PATH_LEN: usize = 1024;
 
-/// Default markdown Page materialized in every new Vault.
+/// Default markdown Page materialized in a starter Vault Folder.
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub struct DefaultVaultPage {
+    /// Starter Folder receiving the default Page.
+    pub folder_id: &'static str,
     /// Stable default object id.
     pub object_id: &'static str,
     /// Decrypted Page path.
@@ -38,13 +40,18 @@ pub struct DefaultVaultPage {
 
 const DEFAULT_AGENTS_MARKDOWN: &str = r#"# AGENTS.md
 
-This is a FiniteBrain vault. Treat it as an encrypted, syncable LLM wiki.
+This is a FiniteBrain vault. Treat every readable Folder as its own encrypted,
+syncable LLM wiki scope.
 
 ## Operating Model
 
 FiniteBrain stores encrypted Vault state on the server. Trusted clients and agent runtimes open Folder Key Grants locally, decrypt accessible Pages, edit ordinary markdown files, then sync encrypted changes back.
 
 Agents act as the user. They do not have independent Vault membership, Folder access, or attribution unless explicitly modeled as a separate user.
+
+A Vault is not one giant wiki with folders. It is a namespace of many
+Folder-scoped LLM wikis. Folder access determines which wiki scopes can be read
+or written.
 
 ## Use `fbrain`
 
@@ -95,31 +102,35 @@ Resolve conflicts before reporting done.
 
 ## LLM Wiki Rules
 
-Use this vault as a durable LLM wiki.
+Use each readable Folder as a durable LLM wiki scope.
 
-- Keep raw sources immutable under `raw/`.
-- Put synthesized durable knowledge in wiki pages.
+- Keep raw sources immutable under that Folder's `raw/`.
+- Put synthesized durable knowledge in that Folder's `wiki/`.
 - Prefer updating existing pages over creating duplicates.
 - Use `[[wikilinks]]` for internal relationships.
-- Keep indexes current.
-- Append to `log.md` after meaningful writes.
+- Keep the Folder-local `_index.md` current.
+- Append only to the Folder-local `log.md` after meaningful writes in that Folder.
 - Use `inventory/` for source candidates, open questions, watch items, and next actions.
 - Use `datasets/` for manifests, schemas, samples, and query recipes.
 - Use `output/` for reports, plans, summaries, and deliverables.
 - Archive superseded material instead of deleting it.
 - Answer from compiled wiki pages first; say what is missing when evidence is thin.
+- Never summarize restricted Folder contents into a less-restricted Folder,
+  index, log, or output.
 
 ## Suggested Layout
 
 ```text
+config.md
+_index.md
+log.md
+inbox/
 raw/
 wiki/
 inventory/
 datasets/
 output/
 archive/
-_index.md
-log.md
 ```
 
 Local folder instructions may override this layout.
@@ -144,29 +155,175 @@ This vault is your private, encrypted knowledge workspace.
 
 FiniteBrain keeps the server blind to page contents. Your client or agent opens the vault locally, decrypts what you can access, edits markdown, then syncs encrypted changes back.
 
-Use this vault like an LLM wiki:
+A FiniteBrain vault is a namespace of wiki scopes. Each top-level Folder is its
+own LLM wiki with its own `_index.md`, `config.md`, and `log.md`.
 
-- `raw/` is for source material.
-- `wiki/` is for durable notes and synthesized understanding.
-- `inventory/` is for things to track or decide later.
-- `datasets/` is for structured references.
-- `output/` is for reports, plans, and finished work.
-- `log.md` records meaningful changes.
+Inside a Folder:
+
+- `raw/` is source material.
+- `wiki/` is durable notes and synthesized understanding.
+- `inventory/` tracks things to revisit.
+- `datasets/` indexes structured references.
+- `output/` holds reports, plans, and finished work.
+- `log.md` records meaningful changes for that Folder only.
 
 Agents should read `AGENTS.md` first, sync before editing, avoid duplicates, preserve sources, and keep the wiki useful for future work.
 "#;
 
-const DEFAULT_VAULT_PAGES: [DefaultVaultPage; 2] = [
+const DEFAULT_SCOPE_CONFIG_MARKDOWN: &str = r#"# Wiki Scope Config
+
+This Folder is an independent FiniteBrain LLM wiki scope.
+
+Use this Folder's `raw/`, `wiki/`, `inventory/`, `datasets/`, and `output/`
+directories for knowledge that belongs inside this access boundary. Keep this
+Folder's `_index.md` and `log.md` scoped only to pages in this Folder.
+
+Do not summarize restricted sibling Folder contents here unless the user
+explicitly chooses this Folder as an equal-or-more-restricted destination.
+"#;
+
+const DEFAULT_SCOPE_INDEX_MARKDOWN: &str = r#"# Folder Index
+
+This index maps this Folder's local wiki scope.
+
+Add durable pages, sources, outputs, and open questions here as this Folder
+grows. Do not list private titles, summaries, or activity from sibling Folders.
+"#;
+
+const DEFAULT_SCOPE_LOG_MARKDOWN: &str = r#"# Folder Log
+
+Append meaningful changes in this Folder only.
+
+Do not record activity from sibling Folders here.
+"#;
+
+const DEFAULT_PRIMARY_SCOPE_PAGES: [DefaultVaultPage; 5] = [
     DefaultVaultPage {
+        folder_id: "home",
         object_id: "obj_default_agents",
         path: "AGENTS.md",
         markdown: DEFAULT_AGENTS_MARKDOWN,
     },
     DefaultVaultPage {
+        folder_id: "home",
         object_id: "obj_default_humans",
         path: "HUMANS.md",
         markdown: DEFAULT_HUMANS_MARKDOWN,
     },
+    DefaultVaultPage {
+        folder_id: "home",
+        object_id: "obj_default_scope_config",
+        path: "config.md",
+        markdown: DEFAULT_SCOPE_CONFIG_MARKDOWN,
+    },
+    DefaultVaultPage {
+        folder_id: "home",
+        object_id: "obj_default_scope_index",
+        path: "_index.md",
+        markdown: DEFAULT_SCOPE_INDEX_MARKDOWN,
+    },
+    DefaultVaultPage {
+        folder_id: "home",
+        object_id: "obj_default_scope_log",
+        path: "log.md",
+        markdown: DEFAULT_SCOPE_LOG_MARKDOWN,
+    },
+];
+
+macro_rules! default_scope_pages {
+    ($folder_id:literal) => {
+        [
+            DefaultVaultPage {
+                folder_id: $folder_id,
+                object_id: "obj_default_scope_config",
+                path: "config.md",
+                markdown: DEFAULT_SCOPE_CONFIG_MARKDOWN,
+            },
+            DefaultVaultPage {
+                folder_id: $folder_id,
+                object_id: "obj_default_scope_index",
+                path: "_index.md",
+                markdown: DEFAULT_SCOPE_INDEX_MARKDOWN,
+            },
+            DefaultVaultPage {
+                folder_id: $folder_id,
+                object_id: "obj_default_scope_log",
+                path: "log.md",
+                markdown: DEFAULT_SCOPE_LOG_MARKDOWN,
+            },
+        ]
+    };
+}
+
+const PERSONAL_DEFAULT_VAULT_PAGES: [DefaultVaultPage; 20] = [
+    DEFAULT_PRIMARY_SCOPE_PAGES[0],
+    DEFAULT_PRIMARY_SCOPE_PAGES[1],
+    DEFAULT_PRIMARY_SCOPE_PAGES[2],
+    DEFAULT_PRIMARY_SCOPE_PAGES[3],
+    DEFAULT_PRIMARY_SCOPE_PAGES[4],
+    default_scope_pages!("projects")[0],
+    default_scope_pages!("projects")[1],
+    default_scope_pages!("projects")[2],
+    default_scope_pages!("work")[0],
+    default_scope_pages!("work")[1],
+    default_scope_pages!("work")[2],
+    default_scope_pages!("life")[0],
+    default_scope_pages!("life")[1],
+    default_scope_pages!("life")[2],
+    default_scope_pages!("learning")[0],
+    default_scope_pages!("learning")[1],
+    default_scope_pages!("learning")[2],
+    default_scope_pages!("archive")[0],
+    default_scope_pages!("archive")[1],
+    default_scope_pages!("archive")[2],
+];
+
+const ORGANIZATION_DEFAULT_VAULT_PAGES: [DefaultVaultPage; 20] = [
+    DefaultVaultPage {
+        folder_id: "general",
+        object_id: "obj_default_agents",
+        path: "AGENTS.md",
+        markdown: DEFAULT_AGENTS_MARKDOWN,
+    },
+    DefaultVaultPage {
+        folder_id: "general",
+        object_id: "obj_default_humans",
+        path: "HUMANS.md",
+        markdown: DEFAULT_HUMANS_MARKDOWN,
+    },
+    DefaultVaultPage {
+        folder_id: "general",
+        object_id: "obj_default_scope_config",
+        path: "config.md",
+        markdown: DEFAULT_SCOPE_CONFIG_MARKDOWN,
+    },
+    DefaultVaultPage {
+        folder_id: "general",
+        object_id: "obj_default_scope_index",
+        path: "_index.md",
+        markdown: DEFAULT_SCOPE_INDEX_MARKDOWN,
+    },
+    DefaultVaultPage {
+        folder_id: "general",
+        object_id: "obj_default_scope_log",
+        path: "log.md",
+        markdown: DEFAULT_SCOPE_LOG_MARKDOWN,
+    },
+    default_scope_pages!("product")[0],
+    default_scope_pages!("product")[1],
+    default_scope_pages!("product")[2],
+    default_scope_pages!("engineering")[0],
+    default_scope_pages!("engineering")[1],
+    default_scope_pages!("engineering")[2],
+    default_scope_pages!("marketing")[0],
+    default_scope_pages!("marketing")[1],
+    default_scope_pages!("marketing")[2],
+    default_scope_pages!("design")[0],
+    default_scope_pages!("design")[1],
+    default_scope_pages!("design")[2],
+    default_scope_pages!("operations")[0],
+    default_scope_pages!("operations")[1],
+    default_scope_pages!("operations")[2],
 ];
 
 /// Returns the crate name used in workspace status surfaces.
@@ -175,11 +332,14 @@ pub fn crate_name() -> &'static str {
 }
 
 /// Default encrypted Pages clients should write after new Vault bootstrap.
-pub fn default_vault_pages() -> &'static [DefaultVaultPage] {
-    &DEFAULT_VAULT_PAGES
+pub fn default_vault_pages(kind: VaultKind) -> &'static [DefaultVaultPage] {
+    match kind {
+        VaultKind::Personal => &PERSONAL_DEFAULT_VAULT_PAGES,
+        VaultKind::Organization => &ORGANIZATION_DEFAULT_VAULT_PAGES,
+    }
 }
 
-/// Default Folder that receives starter Pages for a new Vault.
+/// Primary Folder that receives starter orientation Pages for a new Vault.
 pub fn default_vault_pages_folder_id(kind: VaultKind) -> &'static str {
     match kind {
         VaultKind::Personal => "home",
@@ -612,32 +772,57 @@ pub fn bootstrap_personal_vault(
     let name = DisplayName::new("vault_name", name)?;
     let owner_user_id = UserId::new(owner_user_id)?;
 
-    let home = root_folder(
-        "home",
-        "home",
-        FolderRole::PersonalHome,
-        FolderAccessMode::Owner,
-    )?;
+    let folders = vec![
+        root_folder(
+            "home",
+            "home",
+            FolderRole::PersonalHome,
+            FolderAccessMode::Owner,
+        )?,
+        root_folder(
+            "projects",
+            "projects",
+            FolderRole::Folder,
+            FolderAccessMode::Owner,
+        )?,
+        root_folder("work", "work", FolderRole::Folder, FolderAccessMode::Owner)?,
+        root_folder("life", "life", FolderRole::Folder, FolderAccessMode::Owner)?,
+        root_folder(
+            "learning",
+            "learning",
+            FolderRole::Folder,
+            FolderAccessMode::Owner,
+        )?,
+        root_folder(
+            "archive",
+            "archive",
+            FolderRole::Folder,
+            FolderAccessMode::Owner,
+        )?,
+    ];
 
-    let grant = RequiredFolderKeyGrant {
-        folder_id: home.id.clone(),
-        recipient_user_id: owner_user_id.clone(),
-        key_version: 1,
-    };
+    let required_key_grants = folders
+        .iter()
+        .map(|folder| RequiredFolderKeyGrant {
+            folder_id: folder.id.clone(),
+            recipient_user_id: owner_user_id.clone(),
+            key_version: 1,
+        })
+        .collect();
 
     let vault = Vault {
         id: vault_id,
         kind: VaultKind::Personal,
         name,
         owner_user_id: Some(owner_user_id),
-        folders: vec![home],
+        folders,
         members: Vec::new(),
         admins: Vec::new(),
     };
 
     Ok(BootstrapOutput {
         vault,
-        required_key_grants: vec![grant],
+        required_key_grants,
     })
 }
 
@@ -651,38 +836,66 @@ pub fn bootstrap_organization_vault(
     let name = DisplayName::new("vault_name", name)?;
     let admin_user_id = UserId::new(admin_user_id)?;
 
-    let vault_ops = root_folder(
-        "vault-ops",
-        "vault-ops",
-        FolderRole::VaultOps,
-        FolderAccessMode::AdminOnly,
-    )?;
-    let general = root_folder(
-        "general",
-        "general",
-        FolderRole::General,
-        FolderAccessMode::AllMembers,
-    )?;
-
-    let required_key_grants = vec![
-        RequiredFolderKeyGrant {
-            folder_id: vault_ops.id.clone(),
-            recipient_user_id: admin_user_id.clone(),
-            key_version: 1,
-        },
-        RequiredFolderKeyGrant {
-            folder_id: general.id.clone(),
-            recipient_user_id: admin_user_id.clone(),
-            key_version: 1,
-        },
+    let folders = vec![
+        root_folder(
+            "vault-ops",
+            "vault-ops",
+            FolderRole::VaultOps,
+            FolderAccessMode::AdminOnly,
+        )?,
+        root_folder(
+            "general",
+            "general",
+            FolderRole::General,
+            FolderAccessMode::AllMembers,
+        )?,
+        root_folder(
+            "product",
+            "product",
+            FolderRole::Folder,
+            FolderAccessMode::AllMembers,
+        )?,
+        root_folder(
+            "engineering",
+            "engineering",
+            FolderRole::Folder,
+            FolderAccessMode::AllMembers,
+        )?,
+        root_folder(
+            "marketing",
+            "marketing",
+            FolderRole::Folder,
+            FolderAccessMode::AllMembers,
+        )?,
+        root_folder(
+            "design",
+            "design",
+            FolderRole::Folder,
+            FolderAccessMode::AllMembers,
+        )?,
+        root_folder(
+            "operations",
+            "operations",
+            FolderRole::Folder,
+            FolderAccessMode::AllMembers,
+        )?,
     ];
+
+    let required_key_grants = folders
+        .iter()
+        .map(|folder| RequiredFolderKeyGrant {
+            folder_id: folder.id.clone(),
+            recipient_user_id: admin_user_id.clone(),
+            key_version: 1,
+        })
+        .collect();
 
     let vault = Vault {
         id: vault_id,
         kind: VaultKind::Organization,
         name,
         owner_user_id: None,
-        folders: vec![vault_ops, general],
+        folders,
         members: vec![VaultMember {
             user_id: admin_user_id.clone(),
             folder_access: BTreeSet::new(),
@@ -1710,24 +1923,42 @@ mod tests {
 
     #[test]
     fn exposes_default_vault_pages() {
-        let pages = default_vault_pages();
+        let pages = default_vault_pages(VaultKind::Personal);
 
         assert_eq!(
             pages
                 .iter()
-                .map(|page| (page.object_id, page.path))
+                .take(5)
+                .map(|page| (page.folder_id, page.object_id, page.path))
                 .collect::<Vec<_>>(),
             vec![
-                ("obj_default_agents", "AGENTS.md"),
-                ("obj_default_humans", "HUMANS.md")
+                ("home", "obj_default_agents", "AGENTS.md"),
+                ("home", "obj_default_humans", "HUMANS.md"),
+                ("home", "obj_default_scope_config", "config.md"),
+                ("home", "obj_default_scope_index", "_index.md"),
+                ("home", "obj_default_scope_log", "log.md")
             ]
         );
+        assert_eq!(pages.len(), 20);
+        assert!(pages.iter().any(|page| page.folder_id == "projects"));
         assert!(pages[0].markdown.contains("Use `fbrain`"));
         assert!(pages[0].markdown.contains("LLM Wiki Rules"));
         assert!(
             pages[1]
                 .markdown
                 .contains("private, encrypted knowledge workspace")
+        );
+        let organization_pages = default_vault_pages(VaultKind::Organization);
+        assert_eq!(organization_pages.len(), 20);
+        assert!(
+            organization_pages
+                .iter()
+                .all(|page| page.folder_id != "vault-ops")
+        );
+        assert!(
+            organization_pages
+                .iter()
+                .any(|page| page.folder_id == "engineering")
         );
         assert_eq!(default_vault_pages_folder_id(VaultKind::Personal), "home");
         assert_eq!(
@@ -1747,7 +1978,7 @@ mod tests {
         );
         assert!(output.vault.members.is_empty());
         assert!(output.vault.admins.is_empty());
-        assert_eq!(output.vault.folders.len(), 1);
+        assert_eq!(output.vault.folders.len(), 6);
 
         let home = &output.vault.folders[0];
         assert_eq!(home.id, FolderId::new("home").unwrap());
@@ -1759,12 +1990,21 @@ mod tests {
             SafeRelativePath::new("folder_path", "home").unwrap()
         );
         assert_eq!(
-            output.required_key_grants,
-            vec![RequiredFolderKeyGrant {
-                folder_id: FolderId::new("home").unwrap(),
-                recipient_user_id: UserId::new("npub-owner").unwrap(),
-                key_version: 1
-            }]
+            output
+                .required_key_grants
+                .iter()
+                .map(|grant| grant.folder_id.to_string())
+                .collect::<Vec<_>>(),
+            vec!["home", "projects", "work", "life", "learning", "archive"]
+        );
+        assert!(
+            output
+                .required_key_grants
+                .iter()
+                .all(
+                    |grant| grant.recipient_user_id == UserId::new("npub-owner").unwrap()
+                        && grant.key_version == 1
+                )
         );
     }
 
@@ -1783,8 +2023,24 @@ mod tests {
             output.vault.members[0].user_id,
             UserId::new("npub-admin").unwrap()
         );
-        assert_eq!(output.vault.folders.len(), 2);
-        assert_eq!(output.required_key_grants.len(), 2);
+        assert_eq!(output.vault.folders.len(), 7);
+        assert_eq!(output.required_key_grants.len(), 7);
+        assert_eq!(
+            output
+                .required_key_grants
+                .iter()
+                .map(|grant| grant.folder_id.to_string())
+                .collect::<Vec<_>>(),
+            vec![
+                "vault-ops",
+                "general",
+                "product",
+                "engineering",
+                "marketing",
+                "design",
+                "operations"
+            ]
+        );
 
         let vault_ops = &output.vault.folders[0];
         assert_eq!(vault_ops.id, FolderId::new("vault-ops").unwrap());
@@ -1795,6 +2051,15 @@ mod tests {
         assert_eq!(general.id, FolderId::new("general").unwrap());
         assert_eq!(general.role, FolderRole::General);
         assert_eq!(general.access, FolderAccessMode::AllMembers);
+        assert!(
+            output
+                .vault
+                .folders
+                .iter()
+                .skip(2)
+                .all(|folder| folder.role == FolderRole::Folder
+                    && folder.access == FolderAccessMode::AllMembers)
+        );
     }
 
     #[test]
@@ -1959,15 +2224,26 @@ mod tests {
         let summary = smoke_bootstrap_summary().unwrap();
 
         assert_eq!(summary.personal.kind, VaultKind::Personal);
-        assert_eq!(summary.personal.folder_ids, vec!["home"]);
-        assert_eq!(summary.personal.required_grants, 1);
+        assert_eq!(
+            summary.personal.folder_ids,
+            vec!["home", "projects", "work", "life", "learning", "archive"]
+        );
+        assert_eq!(summary.personal.required_grants, 6);
 
         assert_eq!(summary.organization.kind, VaultKind::Organization);
         assert_eq!(
             summary.organization.folder_ids,
-            vec!["vault-ops".to_owned(), "general".to_owned()]
+            vec![
+                "vault-ops".to_owned(),
+                "general".to_owned(),
+                "product".to_owned(),
+                "engineering".to_owned(),
+                "marketing".to_owned(),
+                "design".to_owned(),
+                "operations".to_owned()
+            ]
         );
-        assert_eq!(summary.organization.required_grants, 2);
+        assert_eq!(summary.organization.required_grants, 7);
         assert_eq!(summary.organization.admin_count, 1);
         assert_eq!(summary.organization.member_count, 1);
     }

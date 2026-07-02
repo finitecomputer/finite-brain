@@ -17,18 +17,24 @@ behavior that exists now but should be revisited before production hardening.
 ## 1. Product Boundary
 
 FiniteBrain is a personal and organizational knowledge system built from
-Markdown-like file content. The top-level privacy container is a Vault. A Vault
-contains Folders. A Folder contains Folder Objects. A Folder Object decrypts
-into a Page, attachment, asset, generated file, or future content type.
+Markdown-like file content. The top-level namespace container is a Vault. A
+Vault contains Folders. A Folder is the access boundary and the default LLM wiki
+scope. A Folder contains Folder Objects. A Folder Object decrypts into a Page,
+attachment, asset, generated file, or future content type.
 
 FiniteBrain inherits SilverBullet as the editor/runtime foundation, but
 FiniteBrain product language should use Vault, Folder, and Page rather than
 SilverBullet Space.
 
 The server stores and syncs encrypted Vault state. It does not need to decrypt
-Page paths, Page titles, links, backlinks, or Page contents. The trusted client
-or Agent Runtime opens Folder Key Grants, decrypts accessible Folder Objects,
-and materializes readable content into a Vault Working Tree.
+Page paths, Page titles, links, backlinks, wiki indexes, wiki logs, or Page
+contents. The trusted client or Agent Runtime opens Folder Key Grants, decrypts
+accessible Folder Objects, and materializes readable content into a Vault
+Working Tree.
+
+A FiniteBrain Vault is not one wiki with folders. It is one Vault namespace
+containing many Folder-scoped LLM wikis. Indexes and logs live at the same
+Folder scope as the knowledge they describe.
 
 ## 2. Trust Model
 
@@ -158,7 +164,13 @@ A Vault is the top-level privacy container.
 Personal Vault:
 
 - Has exactly one owner identity in `ownerUserId`.
-- Has a `home` Folder with role `personal_home` and access `owner`.
+- Starts with Folder-scoped wiki roots:
+  - `home`: role `personal_home`, access `owner`
+  - `projects`: role `folder`, access `owner`
+  - `work`: role `folder`, access `owner`
+  - `life`: role `folder`, access `owner`
+  - `learning`: role `folder`, access `owner`
+  - `archive`: role `folder`, access `owner`
 - Does not use ordinary organization membership/admin lists for the owner.
 - May contain limited members only when sharing a source Folder.
 
@@ -170,6 +182,14 @@ Organization Vault:
 - A new organization Vault starts with:
   - `vault-ops`: role `vault_ops`, access `admin_only`
   - `general`: role `general`, access `all_members`
+  - `product`: role `folder`, access `all_members`
+  - `engineering`: role `folder`, access `all_members`
+  - `marketing`: role `folder`, access `all_members`
+  - `design`: role `folder`, access `all_members`
+  - `operations`: role `folder`, access `all_members`
+- Sensitive or limited-audience org knowledge SHOULD be created as additional
+  `restricted` Folders rather than hidden local directories inside an
+  `all_members` Folder.
 - Organization Vaults MUST keep at least one Vault Admin.
 
 ### 4.2 Vault Member
@@ -212,6 +232,8 @@ Folder rules:
 - Moving or renaming a Folder changes metadata only. It does not change Folder
   Keys, Folder Object ids, or Folder Access.
 - Creating a local directory inside a Folder does not create a Child Folder.
+- A local directory inside a Folder is part of that same Folder-scoped wiki and
+  inherits that Folder's access boundary.
 
 Access modes:
 
@@ -219,6 +241,49 @@ Access modes:
 - `admin_only`: Vault Admins only.
 - `all_members`: all organization Vault Members and Vault Admins.
 - `restricted`: Vault Admins plus members listed in `folderAccess`.
+
+### 4.3.1 Folder-scoped LLM Wiki Profile
+
+Every readable Folder SHOULD be treated as an independent LLM Wiki root unless
+its local instructions say otherwise.
+
+The default wiki profile for a knowledge Folder is:
+
+```text
+config.md
+_index.md
+log.md
+inbox/
+raw/
+wiki/
+inventory/
+datasets/
+output/
+archive/
+```
+
+Scope rules:
+
+- `_index.md` MUST describe only the Folder it lives in.
+- `log.md` MUST record only meaningful writes and maintenance work inside that
+  Folder.
+- A Vault-wide or root-level index MUST NOT reveal titles, summaries, activity,
+  or source hints from Folders the active User cannot access.
+- Trusted clients and Agent Runtimes MUST filter by Folder access before
+  reading, querying, compiling, indexing, or answering with content.
+- Content from a more-restricted Folder MUST NOT be synthesized into a
+  less-restricted Folder, index, log, output, or public summary unless the User
+  explicitly chooses a destination Folder whose audience is allowed to see the
+  source material.
+- Cross-Folder outputs SHOULD be written to the most restrictive common Folder
+  that is appropriate for every source used.
+- Folder names and server-visible Folder ids are metadata. Sensitive project or
+  people names SHOULD live inside encrypted Pages when the Folder audience is
+  narrow.
+
+This profile is FiniteBrain's access-aware adaptation of the LLM Wiki topic
+model: the LLM Wiki spec's "topic wiki" maps to a FiniteBrain Folder, because
+Folder Keys and Folder Access are the enforceable privacy boundary.
 
 ### 4.4 Folder Object
 
@@ -354,10 +419,12 @@ Personal Vault bootstrap:
 
 - Create one Vault with `kind: "personal"` and `ownerUserId` equal to the
   acting User.
-- Create one default `home` Folder with role `personal_home`, access `owner`,
-  current key version `1`, and a Folder Key Grant for the owner.
-- Optional default Pages such as `index.md`, `log.md`, or `SCHEMA.md` are
-  ordinary encrypted Folder Objects in `home`.
+- Create the default personal wiki scope Folders from Section 4.1 with current
+  key version `1` and Folder Key Grants for the owner.
+- Seed ordinary encrypted Folder Objects for default Pages:
+  - `AGENTS.md` and `HUMANS.md` in `home`
+  - `config.md`, `_index.md`, and `log.md` in each default personal knowledge
+    Folder
 
 Organization Vault bootstrap:
 
@@ -365,10 +432,14 @@ Organization Vault bootstrap:
 - Add the acting User as both Vault Member and Vault Admin.
 - Create `vault-ops` with role `vault_ops`, access `admin_only`, current key
   version `1`, and grants for all initial admins.
-- Create `general` with role `general`, access `all_members`, current key
-  version `1`, and grants for all initial members/admins.
-- Optional default Pages are ordinary encrypted Folder Objects in one of those
-  default Folders.
+- Create the default organization wiki scope Folders from Section 4.1 with
+  current key version `1` and grants for all initial members/admins.
+- Seed ordinary encrypted Folder Objects for default Pages:
+  - `AGENTS.md` and `HUMANS.md` in `general`
+  - `config.md`, `_index.md`, and `log.md` in each default organization
+    knowledge Folder
+- `vault-ops` is an admin/control Folder and is not seeded as a knowledge wiki
+  by default.
 
 Smoke/demo bootstrap:
 

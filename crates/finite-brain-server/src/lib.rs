@@ -1149,7 +1149,7 @@ mod tests {
         assert_eq!(metadata.status(), StatusCode::OK);
         let metadata: VaultMetadataResponse = read_json(metadata).await;
         assert_eq!(metadata.vault_id, "smoke");
-        assert_eq!(metadata.folders.len(), 2);
+        assert_eq!(metadata.folders.len(), 7);
         assert!(metadata.folders.iter().any(|folder| folder.id == "general"));
 
         let sync_bootstrap = authed_request(
@@ -1339,8 +1339,8 @@ mod tests {
         let metadata: VaultMetadataResponse = read_json(response).await;
         assert_eq!(metadata.vault_id, "acme");
         assert_eq!(metadata.kind, VaultKind::Organization);
-        assert_eq!(metadata.folders.len(), 2);
-        assert_eq!(metadata.grant_count, 2);
+        assert_eq!(metadata.folders.len(), 7);
+        assert_eq!(metadata.grant_count, 7);
         assert!(
             metadata
                 .folders
@@ -1419,9 +1419,15 @@ mod tests {
         .await;
         assert_eq!(org.status(), StatusCode::OK);
 
-        let list =
-            authed_request(router.clone(), &keys, "GET", "/_admin/vaults", None, TEST_NOW + 2)
-                .await;
+        let list = authed_request(
+            router.clone(),
+            &keys,
+            "GET",
+            "/_admin/vaults",
+            None,
+            TEST_NOW + 2,
+        )
+        .await;
         assert_eq!(list.status(), StatusCode::OK);
         let list: VisibleVaultsResponse = read_json(list).await;
         assert_eq!(list.vaults.len(), 2);
@@ -2912,7 +2918,7 @@ mod tests {
             .find(|folder| folder.id == "strategy")
             .expect("strategy folder metadata");
         assert_eq!(strategy.access_user_ids, vec![recipient_npub]);
-        assert_eq!(metadata.grant_count, 4);
+        assert_eq!(metadata.grant_count, 9);
 
         let revoke =
             authed_request(router, &admin_keys, "DELETE", &share_path, None, TEST_NOW).await;

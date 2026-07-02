@@ -47,14 +47,15 @@ fbrain -- <args>` may be the available entrypoint.
    Completion: latest sequence is recorded, readable Folder Keys are opened in
    local session state, newly readable Folders are materialized, and open
    conflicts are either empty or named.
-3. Orient before editing: read root `AGENTS.md`, each readable Folder
-   `AGENTS.md`, `config.md` or `SCHEMA.md`, `_index.md` or `index.md`, recent
-   `log.md`, and relevant wiki pages. Search before creating new pages.
-   Completion: the target Folder conventions, existing wiki shape, and likely
-   duplicate pages are known.
+3. Orient before editing: identify the target Folder scope, then read its
+   `AGENTS.md`, `HUMANS.md`, `config.md` or `SCHEMA.md`, `_index.md` or
+   `index.md`, recent `log.md`, and relevant wiki pages. Search that Folder
+   before creating new pages.
+   Completion: the target Folder conventions, access boundary, existing wiki
+   shape, and likely duplicate pages are known.
 4. Edit only readable content roots with ordinary file tools. Keep LLM wiki work
-   under established folder conventions such as `raw/`, `wiki/`, `compiled/`,
-   `_wiki/`, `inventory/`, `datasets/`, and `output/`.
+   under Folder-local conventions such as `raw/`, `wiki/`, `inventory/`,
+   `datasets/`, and `output/`.
    Completion: the smallest coherent set of markdown files is changed.
 5. Do not edit `.finitebrain/`, locked metadata-only folders, encrypted sync
    evidence, generated convention files, auth files, grant plaintext, or Folder
@@ -67,10 +68,16 @@ fbrain -- <args>` may be the available entrypoint.
 
 ## LLM Wiki Rules
 
-Treat each readable FiniteBrain Folder as a durable LLM wiki surface unless its
-local instructions say otherwise. The wiki is plain Markdown: sources become
-immutable `raw/` notes, synthesized knowledge becomes cross-linked articles, and
-outputs build on the compiled wiki instead of re-deriving context from scratch.
+A FiniteBrain Vault is not one wiki with folders. It is a namespace of many
+Folder-scoped LLM wikis. Treat each readable FiniteBrain Folder as an
+independent access-scoped LLM wiki root unless its local instructions say
+otherwise. The wiki is plain Markdown: sources become immutable `raw/` notes,
+synthesized knowledge becomes cross-linked articles, and outputs build on the
+compiled wiki instead of re-deriving context from scratch.
+
+The LLM Wiki topic model maps to a FiniteBrain Folder. Folder Keys and Folder
+Access define which topic wikis the active user or agent can read. Indexes and
+logs live at the same Folder scope as the knowledge they describe.
 
 When initializing a new wiki area, prefer this shape unless an existing Folder
 uses a different convention:
@@ -93,8 +100,9 @@ uses a different convention:
 
 Core wiki rules:
 
-- Read indexes first. `_index.md` and `index.md` are navigation caches; stale
-  check them before trusting them, then update them after meaningful writes.
+- Read the target Folder's local index first. `_index.md` and `index.md` are
+  navigation caches for that Folder only; stale check them before trusting them,
+  then update them after meaningful writes.
 - Keep raw immutable. Once a URL, PDF, transcript, pasted source, or file is
   captured under `raw/`, do not edit it; synthesize corrections in `wiki/`.
 - Synthesize articles, do not copy sources. Articles should connect claims,
@@ -105,7 +113,8 @@ Core wiki rules:
   navigation would benefit from them.
 - Prefer updating an existing page over creating a near-duplicate. Create new
   pages only for central, recurring, or clearly durable topics.
-- Append `log.md` for every wiki write operation; never rewrite old log entries.
+- Append the target Folder's `log.md` for every meaningful wiki write; never
+  rewrite old log entries.
 - Use `inventory/` for durable operational state such as source candidates,
   watch items, open questions, tasks, and next actions.
 - Use `datasets/` for manifests, samples, schemas, and query recipes; large or
@@ -118,6 +127,24 @@ Core wiki rules:
   evidence, say what is missing and suggest what source to ingest.
 - Chunk large article or output writes into small edits so agent tool streams do
   not stall.
+
+Access-aware wiki rules:
+
+- Never maintain a root-level or Vault-wide log that records restricted Folder
+  activity.
+- Do not list private Folder titles, summaries, source hints, or activity in an
+  index visible to users who cannot access that Folder.
+- Filter by readable Folder access before querying, compiling, indexing, or
+  answering. Locked metadata-only Folders are not source material.
+- Never synthesize content from a more-restricted Folder into a less-restricted
+  Folder, index, log, output, or public summary.
+- Put cross-Folder outputs in the most restrictive appropriate Folder for every
+  source used. If there is no safe common audience, split the output by Folder.
+- Treat local directories as layout inside one Folder. They do not create new
+  access boundaries.
+- Treat Folder names and server-visible Folder ids as metadata. Keep sensitive
+  project, client, people, or deal names inside encrypted pages when the
+  audience is narrow.
 
 ## Blocked State
 

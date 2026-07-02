@@ -2357,8 +2357,22 @@ mod tests {
             stored.vault.owner_user_id,
             Some(UserId::new("npub-owner").unwrap())
         );
-        assert_eq!(stored.vault.folders.len(), 1);
-        assert_eq!(stored.vault.folders[0].id, FolderId::new("home").unwrap());
+        assert_eq!(
+            stored
+                .vault
+                .folders
+                .iter()
+                .map(|folder| folder.id.to_string())
+                .collect::<BTreeSet<_>>(),
+            BTreeSet::from([
+                "archive".to_owned(),
+                "home".to_owned(),
+                "learning".to_owned(),
+                "life".to_owned(),
+                "projects".to_owned(),
+                "work".to_owned()
+            ])
+        );
         assert_same_grants(&stored.grants, &grants);
         assert!(stored.setup_incomplete_folder_ids.is_empty());
     }
@@ -2390,8 +2404,16 @@ mod tests {
                 .folders
                 .iter()
                 .map(|folder| folder.id.to_string())
-                .collect::<Vec<_>>(),
-            vec!["general".to_owned(), "vault-ops".to_owned()]
+                .collect::<BTreeSet<_>>(),
+            BTreeSet::from([
+                "design".to_owned(),
+                "engineering".to_owned(),
+                "general".to_owned(),
+                "marketing".to_owned(),
+                "operations".to_owned(),
+                "product".to_owned(),
+                "vault-ops".to_owned()
+            ])
         );
         assert_same_grants(&stored.grants, &grants);
     }

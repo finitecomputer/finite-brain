@@ -53,137 +53,196 @@ const FiniteBrainProductClient = (() => {
   const APP_EVENT_KIND = 30078;
   const MAX_OBJECT_ID_ATTEMPTS = 1000;
   const PERSONAL_VAULT_PLACEHOLDER_ID = "personal";
-  const DEFAULT_VAULT_PAGES = Object.freeze([
-    Object.freeze({
-      objectId: "obj_default_agents",
-      path: "AGENTS.md",
-      markdown:
-        [
-          "# AGENTS.md",
-          "",
-          "This is a FiniteBrain vault. Treat it as an encrypted, syncable LLM wiki.",
-          "",
-          "## Operating Model",
-          "",
-          "FiniteBrain stores encrypted Vault state on the server. Trusted clients and agent runtimes open Folder Key Grants locally, decrypt accessible Pages, edit ordinary markdown files, then sync encrypted changes back.",
-          "",
-          "Agents act as the user. They do not have independent Vault membership, Folder access, or attribution unless explicitly modeled as a separate user.",
-          "",
-          "## Use `fbrain`",
-          "",
-          "Use `fbrain` for identity, sync, access, and daemon state.",
-          "",
-          "Start here:",
-          "",
-          "```sh",
-          "fbrain doctor --server \"$SERVER\"",
-          "fbrain auth status --json",
-          "fbrain open \"$VAULT\" \"$TREE\" --server \"$SERVER\"",
-          "cd \"$TREE\"",
-          "fbrain sync now --summary",
-          "fbrain unlock --all",
-          "fbrain sync now --summary",
-          "fbrain conflicts --json",
-          "```",
-          "",
-          "Use an explicit config dir in agent runtimes:",
-          "",
-          "```sh",
-          "fbrain --config-dir \"$HOME/.config/finitebrain\" auth status --json",
-          "```",
-          "",
-          "Never print or expose Nostr secrets, Folder Keys, grant plaintext, auth files, decrypted sync internals, or rotation bodies.",
-          "",
-          "## Editing Rules",
-          "",
-          "Before editing:",
-          "",
-          "1. Sync.",
-          "2. Unlock readable folders.",
-          "3. Read this file.",
-          "4. Read `HUMANS.md`.",
-          "5. Read `_index.md`, `index.md`, `log.md`, `config.md`, or `SCHEMA.md` when present.",
-          "6. Search before creating new pages.",
-          "",
-          "Only edit readable content. Do not edit `.finitebrain/`, encrypted sync evidence, locked metadata-only folders, generated state files, auth files, or key material.",
-          "",
-          "After editing:",
-          "",
-          "```sh",
-          "fbrain sync now --summary",
-          "fbrain conflicts --json",
-          "```",
-          "",
-          "Resolve conflicts before reporting done.",
-          "",
-          "## LLM Wiki Rules",
-          "",
-          "Use this vault as a durable LLM wiki.",
-          "",
-          "- Keep raw sources immutable under `raw/`.",
-          "- Put synthesized durable knowledge in wiki pages.",
-          "- Prefer updating existing pages over creating duplicates.",
-          "- Use `[[wikilinks]]` for internal relationships.",
-          "- Keep indexes current.",
-          "- Append to `log.md` after meaningful writes.",
-          "- Use `inventory/` for source candidates, open questions, watch items, and next actions.",
-          "- Use `datasets/` for manifests, schemas, samples, and query recipes.",
-          "- Use `output/` for reports, plans, summaries, and deliverables.",
-          "- Archive superseded material instead of deleting it.",
-          "- Answer from compiled wiki pages first; say what is missing when evidence is thin.",
-          "",
-          "## Suggested Layout",
-          "",
-          "```text",
-          "raw/",
-          "wiki/",
-          "inventory/",
-          "datasets/",
-          "output/",
-          "archive/",
-          "_index.md",
-          "log.md",
-          "```",
-          "",
-          "Local folder instructions may override this layout.",
-          "",
-          "## Final Report",
-          "",
-          "When finished, report:",
-          "",
-          "- working tree path",
-          "- acting npub, if relevant",
-          "- folders readable or locked",
-          "- pages or sources created/updated/moved/deleted",
-          "- index/log updates",
-          "- sync summary",
-          "- latest sequence, if available",
-          "- whether conflicts are empty",
-        ].join("\n") + "\n",
-    }),
-    Object.freeze({
-      objectId: "obj_default_humans",
-      path: "HUMANS.md",
-      markdown:
-        [
-          "# HUMANS.md",
-          "",
-          "This vault is your private, encrypted knowledge workspace.",
-          "",
-          "FiniteBrain keeps the server blind to page contents. Your client or agent opens the vault locally, decrypts what you can access, edits markdown, then syncs encrypted changes back.",
-          "",
-          "Use this vault like an LLM wiki:",
-          "",
-          "- `raw/` is for source material.",
-          "- `wiki/` is for durable notes and synthesized understanding.",
-          "- `inventory/` is for things to track or decide later.",
-          "- `datasets/` is for structured references.",
-          "- `output/` is for reports, plans, and finished work.",
-          "- `log.md` records meaningful changes.",
-          "",
-          "Agents should read `AGENTS.md` first, sync before editing, avoid duplicates, preserve sources, and keep the wiki useful for future work.",
-        ].join("\n") + "\n",
-    }),
+  const DEFAULT_AGENTS_MARKDOWN =
+    [
+      "# AGENTS.md",
+      "",
+      "This is a FiniteBrain vault. Treat every readable Folder as its own encrypted,",
+      "syncable LLM wiki scope.",
+      "",
+      "## Operating Model",
+      "",
+      "FiniteBrain stores encrypted Vault state on the server. Trusted clients and agent runtimes open Folder Key Grants locally, decrypt accessible Pages, edit ordinary markdown files, then sync encrypted changes back.",
+      "",
+      "Agents act as the user. They do not have independent Vault membership, Folder access, or attribution unless explicitly modeled as a separate user.",
+      "",
+      "A Vault is not one giant wiki with folders. It is a namespace of many",
+      "Folder-scoped LLM wikis. Folder access determines which wiki scopes can be read",
+      "or written.",
+      "",
+      "## Use `fbrain`",
+      "",
+      "Use `fbrain` for identity, sync, access, and daemon state.",
+      "",
+      "Start here:",
+      "",
+      "```sh",
+      "fbrain doctor --server \"$SERVER\"",
+      "fbrain auth status --json",
+      "fbrain open \"$VAULT\" \"$TREE\" --server \"$SERVER\"",
+      "cd \"$TREE\"",
+      "fbrain sync now --summary",
+      "fbrain unlock --all",
+      "fbrain sync now --summary",
+      "fbrain conflicts --json",
+      "```",
+      "",
+      "Use an explicit config dir in agent runtimes:",
+      "",
+      "```sh",
+      "fbrain --config-dir \"$HOME/.config/finitebrain\" auth status --json",
+      "```",
+      "",
+      "Never print or expose Nostr secrets, Folder Keys, grant plaintext, auth files, decrypted sync internals, or rotation bodies.",
+      "",
+      "## Editing Rules",
+      "",
+      "Before editing:",
+      "",
+      "1. Sync.",
+      "2. Unlock readable folders.",
+      "3. Read this file.",
+      "4. Read `HUMANS.md`.",
+      "5. Read `_index.md`, `index.md`, `log.md`, `config.md`, or `SCHEMA.md` when present.",
+      "6. Search before creating new pages.",
+      "",
+      "Only edit readable content. Do not edit `.finitebrain/`, encrypted sync evidence, locked metadata-only folders, generated state files, auth files, or key material.",
+      "",
+      "After editing:",
+      "",
+      "```sh",
+      "fbrain sync now --summary",
+      "fbrain conflicts --json",
+      "```",
+      "",
+      "Resolve conflicts before reporting done.",
+      "",
+      "## LLM Wiki Rules",
+      "",
+      "Use each readable Folder as a durable LLM wiki scope.",
+      "",
+      "- Keep raw sources immutable under that Folder's `raw/`.",
+      "- Put synthesized durable knowledge in that Folder's `wiki/`.",
+      "- Prefer updating existing pages over creating duplicates.",
+      "- Use `[[wikilinks]]` for internal relationships.",
+      "- Keep the Folder-local `_index.md` current.",
+      "- Append only to the Folder-local `log.md` after meaningful writes in that Folder.",
+      "- Use `inventory/` for source candidates, open questions, watch items, and next actions.",
+      "- Use `datasets/` for manifests, schemas, samples, and query recipes.",
+      "- Use `output/` for reports, plans, summaries, and deliverables.",
+      "- Archive superseded material instead of deleting it.",
+      "- Answer from compiled wiki pages first; say what is missing when evidence is thin.",
+      "- Never summarize restricted Folder contents into a less-restricted Folder, index, log, or output.",
+      "",
+      "## Suggested Layout",
+      "",
+      "```text",
+      "config.md",
+      "_index.md",
+      "log.md",
+      "inbox/",
+      "raw/",
+      "wiki/",
+      "inventory/",
+      "datasets/",
+      "output/",
+      "archive/",
+      "```",
+      "",
+      "Local folder instructions may override this layout.",
+      "",
+      "## Final Report",
+      "",
+      "When finished, report:",
+      "",
+      "- working tree path",
+      "- acting npub, if relevant",
+      "- folders readable or locked",
+      "- pages or sources created/updated/moved/deleted",
+      "- index/log updates",
+      "- sync summary",
+      "- latest sequence, if available",
+      "- whether conflicts are empty",
+    ].join("\n") + "\n";
+  const DEFAULT_HUMANS_MARKDOWN =
+    [
+      "# HUMANS.md",
+      "",
+      "This vault is your private, encrypted knowledge workspace.",
+      "",
+      "FiniteBrain keeps the server blind to page contents. Your client or agent opens the vault locally, decrypts what you can access, edits markdown, then syncs encrypted changes back.",
+      "",
+      "A FiniteBrain vault is a namespace of wiki scopes. Each top-level Folder is its",
+      "own LLM wiki with its own `_index.md`, `config.md`, and `log.md`.",
+      "",
+      "Inside a Folder:",
+      "",
+      "- `raw/` is source material.",
+      "- `wiki/` is durable notes and synthesized understanding.",
+      "- `inventory/` tracks things to revisit.",
+      "- `datasets/` indexes structured references.",
+      "- `output/` holds reports, plans, and finished work.",
+      "- `log.md` records meaningful changes for that Folder only.",
+      "",
+      "Agents should read `AGENTS.md` first, sync before editing, avoid duplicates, preserve sources, and keep the wiki useful for future work.",
+    ].join("\n") + "\n";
+  const DEFAULT_SCOPE_CONFIG_MARKDOWN =
+    [
+      "# Wiki Scope Config",
+      "",
+      "This Folder is an independent FiniteBrain LLM wiki scope.",
+      "",
+      "Use this Folder's `raw/`, `wiki/`, `inventory/`, `datasets/`, and `output/`",
+      "directories for knowledge that belongs inside this access boundary. Keep this",
+      "Folder's `_index.md` and `log.md` scoped only to pages in this Folder.",
+      "",
+      "Do not summarize restricted sibling Folder contents here unless the user",
+      "explicitly chooses this Folder as an equal-or-more-restricted destination.",
+    ].join("\n") + "\n";
+  const DEFAULT_SCOPE_INDEX_MARKDOWN =
+    [
+      "# Folder Index",
+      "",
+      "This index maps this Folder's local wiki scope.",
+      "",
+      "Add durable pages, sources, outputs, and open questions here as this Folder",
+      "grows. Do not list private titles, summaries, or activity from sibling Folders.",
+    ].join("\n") + "\n";
+  const DEFAULT_SCOPE_LOG_MARKDOWN =
+    [
+      "# Folder Log",
+      "",
+      "Append meaningful changes in this Folder only.",
+      "",
+      "Do not record activity from sibling Folders here.",
+    ].join("\n") + "\n";
+  const defaultPage = (folderId, objectId, path, markdown) =>
+    Object.freeze({ folderId, objectId, path, markdown });
+  const defaultScopePages = (folderId) => [
+    defaultPage(folderId, "obj_default_scope_config", "config.md", DEFAULT_SCOPE_CONFIG_MARKDOWN),
+    defaultPage(folderId, "obj_default_scope_index", "_index.md", DEFAULT_SCOPE_INDEX_MARKDOWN),
+    defaultPage(folderId, "obj_default_scope_log", "log.md", DEFAULT_SCOPE_LOG_MARKDOWN),
+  ];
+  const defaultPrimaryScopePages = (folderId) => [
+    defaultPage(folderId, "obj_default_agents", "AGENTS.md", DEFAULT_AGENTS_MARKDOWN),
+    defaultPage(folderId, "obj_default_humans", "HUMANS.md", DEFAULT_HUMANS_MARKDOWN),
+    ...defaultScopePages(folderId),
+  ];
+  const PERSONAL_DEFAULT_VAULT_PAGES = Object.freeze([
+    ...defaultPrimaryScopePages("home"),
+    ...defaultScopePages("projects"),
+    ...defaultScopePages("work"),
+    ...defaultScopePages("life"),
+    ...defaultScopePages("learning"),
+    ...defaultScopePages("archive"),
+  ]);
+  const ORGANIZATION_DEFAULT_VAULT_PAGES = Object.freeze([
+    ...defaultPrimaryScopePages("general"),
+    ...defaultScopePages("product"),
+    ...defaultScopePages("engineering"),
+    ...defaultScopePages("marketing"),
+    ...defaultScopePages("design"),
+    ...defaultScopePages("operations"),
   ]);
   const BECH32_CHARSET = "qpzry9x8gf2tvdw0s3jn54khce6mua7l";
   const graphViewport = { height: 560, width: 900 };
@@ -4070,8 +4129,10 @@ const FiniteBrainProductClient = (() => {
     return state.visibleVaults;
   }
 
-  function defaultVaultPages() {
-    return DEFAULT_VAULT_PAGES.map((page) => ({ ...page }));
+  function defaultVaultPages(kind) {
+    if (kind === "personal") return PERSONAL_DEFAULT_VAULT_PAGES.map((page) => ({ ...page }));
+    if (kind === "organization") return ORGANIZATION_DEFAULT_VAULT_PAGES.map((page) => ({ ...page }));
+    throw new Error(`Unsupported Vault kind: ${kind}`);
   }
 
   function defaultVaultPagesFolderId(kind) {
@@ -4081,8 +4142,10 @@ const FiniteBrainProductClient = (() => {
   }
 
   function defaultVaultBootstrapFolderIds(kind) {
-    if (kind === "personal") return ["home"];
-    if (kind === "organization") return ["vault-ops", "general"];
+    if (kind === "personal") return ["home", "projects", "work", "life", "learning", "archive"];
+    if (kind === "organization") {
+      return ["vault-ops", "general", "product", "engineering", "marketing", "design", "operations"];
+    }
     throw new Error(`Unsupported Vault kind: ${kind}`);
   }
 
@@ -4133,7 +4196,7 @@ const FiniteBrainProductClient = (() => {
     return {
       bootstrapGrants,
       defaultFolderId: defaultVaultPagesFolderId(input.kind),
-      defaultPages: defaultVaultPages(),
+      defaultPages: defaultVaultPages(input.kind),
       folderKeys,
       keyring,
     };
@@ -4142,14 +4205,14 @@ const FiniteBrainProductClient = (() => {
   async function buildDefaultVaultPageWrites(input) {
     if (!input?.keyring) throw new Error("Default Vault Pages need an opened keyring");
     if (!input?.vaultId) throw new Error("Default Vault Pages need a Vault id");
-    const folderId = input.folderId || defaultVaultPagesFolderId(input.kind);
-    if (!folderId) throw new Error("Default Vault Pages need a target Folder");
     const actorNpub = input.actorNpub || currentActorNpub();
     const signEvent = input.signEvent || ((event) => window.nostr.signEvent(event));
-    const pages = input.pages || defaultVaultPages();
+    const pages = input.pages || defaultVaultPages(input.kind);
     const writes = [];
     let pageIndex = 0;
     for (const page of pages) {
+      const folderId = page.folderId || input.folderId || defaultVaultPagesFolderId(input.kind);
+      if (!folderId) throw new Error("Default Vault Pages need a target Folder");
       const nonceBytes =
         typeof input.nonceFactory === "function" ? input.nonceFactory(pageIndex, page) : undefined;
       const body = await buildPageWriteRequest(input.keyring, {
@@ -4200,7 +4263,7 @@ const FiniteBrainProductClient = (() => {
     });
     await writeDefaultVaultPages({
       actorNpub,
-      folderId: plan.defaultFolderId,
+      kind,
       keyring: plan.keyring,
       signEvent: (event) => window.nostr.signEvent(event),
       vaultId,

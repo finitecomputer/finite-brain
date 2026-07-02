@@ -477,22 +477,27 @@ assert.equal(client.readerPageRows("general", draftPages)[0].label, "Draft Page"
 
   assert.equal(
     JSON.stringify(client.defaultVaultBootstrapFolderIds("personal")),
-    JSON.stringify(["home"])
+    JSON.stringify(["home", "projects", "work", "life", "learning", "archive"])
   );
   assert.equal(
     JSON.stringify(client.defaultVaultBootstrapFolderIds("organization")),
-    JSON.stringify(["vault-ops", "general"])
+    JSON.stringify(["vault-ops", "general", "product", "engineering", "marketing", "design", "operations"])
   );
   assert.equal(client.defaultVaultPagesFolderId("personal"), "home");
   assert.equal(client.defaultVaultPagesFolderId("organization"), "general");
-  const defaultPages = client.defaultVaultPages();
+  const defaultPages = client.defaultVaultPages("organization");
   assert.equal(
-    JSON.stringify(defaultPages.map((page) => [page.objectId, page.path])),
+    JSON.stringify(defaultPages.slice(0, 5).map((page) => [page.folderId, page.objectId, page.path])),
     JSON.stringify([
-      ["obj_default_agents", "AGENTS.md"],
-      ["obj_default_humans", "HUMANS.md"],
+      ["general", "obj_default_agents", "AGENTS.md"],
+      ["general", "obj_default_humans", "HUMANS.md"],
+      ["general", "obj_default_scope_config", "config.md"],
+      ["general", "obj_default_scope_index", "_index.md"],
+      ["general", "obj_default_scope_log", "log.md"],
     ])
   );
+  assert.equal(defaultPages.length, 20);
+  assert.equal(defaultPages.some((page) => page.folderId === "vault-ops"), false);
   assert.match(defaultPages[0].markdown, /Use `fbrain`/);
   assert.match(defaultPages[0].markdown, /LLM Wiki Rules/);
   assert.match(defaultPages[1].markdown, /private, encrypted knowledge workspace/);
@@ -518,15 +523,16 @@ assert.equal(client.readerPageRows("general", draftPages)[0].label, "Draft Page"
   });
   assert.equal(
     JSON.stringify(orgBootstrapPlan.bootstrapGrants.map((entry) => entry.folderId)),
-    JSON.stringify(["vault-ops", "general"])
+    JSON.stringify(["vault-ops", "general", "product", "engineering", "marketing", "design", "operations"])
   );
   assert.equal(orgBootstrapPlan.defaultFolderId, "general");
   assert.equal(orgBootstrapPlan.keyring.keys.has("org-smoke:vault-ops:1"), true);
   assert.equal(orgBootstrapPlan.keyring.keys.has("org-smoke:general:1"), true);
+  assert.equal(orgBootstrapPlan.keyring.keys.has("org-smoke:product:1"), true);
   const starterWrites = await client.buildDefaultVaultPageWrites({
     actorNpub: authorNpub,
     createdAtUnix: 1780000300,
-    folderId: orgBootstrapPlan.defaultFolderId,
+    kind: "organization",
     keyring: orgBootstrapPlan.keyring,
     nonceFactory: (index) => new Uint8Array(12).fill(index + 1),
     signEvent: bootstrapSigner,
@@ -534,13 +540,21 @@ assert.equal(client.readerPageRows("general", draftPages)[0].label, "Draft Page"
   });
   assert.equal(
     JSON.stringify(
-      starterWrites.map((write) => [write.folderId, write.objectId, write.targetPath])
+      starterWrites.slice(0, 8).map((write) => [write.folderId, write.objectId, write.targetPath])
     ),
     JSON.stringify([
       ["general", "obj_default_agents", "AGENTS.md"],
       ["general", "obj_default_humans", "HUMANS.md"],
+      ["general", "obj_default_scope_config", "config.md"],
+      ["general", "obj_default_scope_index", "_index.md"],
+      ["general", "obj_default_scope_log", "log.md"],
+      ["product", "obj_default_scope_config", "config.md"],
+      ["product", "obj_default_scope_index", "_index.md"],
+      ["product", "obj_default_scope_log", "log.md"],
     ])
   );
+  assert.equal(starterWrites.length, 20);
+  assert.equal(starterWrites.some((write) => write.folderId === "vault-ops"), false);
   const openedAgentsDefault = await client.openFolderObject(orgBootstrapPlan.keyring, {
     vaultId: "org-smoke",
     folderId: "general",
