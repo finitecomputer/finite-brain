@@ -219,9 +219,14 @@ const FiniteBrainProductClient = (() => {
   const defaultPage = (folderId, objectId, path, markdown) =>
     Object.freeze({ folderId, objectId, path, markdown });
   const defaultScopePages = (folderId) => [
-    defaultPage(folderId, "obj_default_scope_config", "config.md", DEFAULT_SCOPE_CONFIG_MARKDOWN),
-    defaultPage(folderId, "obj_default_scope_index", "_index.md", DEFAULT_SCOPE_INDEX_MARKDOWN),
-    defaultPage(folderId, "obj_default_scope_log", "log.md", DEFAULT_SCOPE_LOG_MARKDOWN),
+    defaultPage(
+      folderId,
+      `obj_default_${folderId}_scope_config`,
+      "config.md",
+      DEFAULT_SCOPE_CONFIG_MARKDOWN
+    ),
+    defaultPage(folderId, `obj_default_${folderId}_scope_index`, "_index.md", DEFAULT_SCOPE_INDEX_MARKDOWN),
+    defaultPage(folderId, `obj_default_${folderId}_scope_log`, "log.md", DEFAULT_SCOPE_LOG_MARKDOWN),
   ];
   const defaultPrimaryScopePages = (folderId) => [
     defaultPage(folderId, "obj_default_agents", "AGENTS.md", DEFAULT_AGENTS_MARKDOWN),

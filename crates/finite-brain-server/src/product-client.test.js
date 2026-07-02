@@ -491,12 +491,13 @@ assert.equal(client.readerPageRows("general", draftPages)[0].label, "Draft Page"
     JSON.stringify([
       ["general", "obj_default_agents", "AGENTS.md"],
       ["general", "obj_default_humans", "HUMANS.md"],
-      ["general", "obj_default_scope_config", "config.md"],
-      ["general", "obj_default_scope_index", "_index.md"],
-      ["general", "obj_default_scope_log", "log.md"],
+      ["general", "obj_default_general_scope_config", "config.md"],
+      ["general", "obj_default_general_scope_index", "_index.md"],
+      ["general", "obj_default_general_scope_log", "log.md"],
     ])
   );
   assert.equal(defaultPages.length, 20);
+  assert.equal(new Set(defaultPages.map((page) => page.objectId)).size, defaultPages.length);
   assert.equal(defaultPages.some((page) => page.folderId === "vault-ops"), false);
   assert.match(defaultPages[0].markdown, /Use `fbrain`/);
   assert.match(defaultPages[0].markdown, /LLM Wiki Rules/);
@@ -545,15 +546,16 @@ assert.equal(client.readerPageRows("general", draftPages)[0].label, "Draft Page"
     JSON.stringify([
       ["general", "obj_default_agents", "AGENTS.md"],
       ["general", "obj_default_humans", "HUMANS.md"],
-      ["general", "obj_default_scope_config", "config.md"],
-      ["general", "obj_default_scope_index", "_index.md"],
-      ["general", "obj_default_scope_log", "log.md"],
-      ["product", "obj_default_scope_config", "config.md"],
-      ["product", "obj_default_scope_index", "_index.md"],
-      ["product", "obj_default_scope_log", "log.md"],
+      ["general", "obj_default_general_scope_config", "config.md"],
+      ["general", "obj_default_general_scope_index", "_index.md"],
+      ["general", "obj_default_general_scope_log", "log.md"],
+      ["product", "obj_default_product_scope_config", "config.md"],
+      ["product", "obj_default_product_scope_index", "_index.md"],
+      ["product", "obj_default_product_scope_log", "log.md"],
     ])
   );
   assert.equal(starterWrites.length, 20);
+  assert.equal(new Set(starterWrites.map((write) => write.objectId)).size, starterWrites.length);
   assert.equal(starterWrites.some((write) => write.folderId === "vault-ops"), false);
   const openedAgentsDefault = await client.openFolderObject(orgBootstrapPlan.keyring, {
     vaultId: "org-smoke",

@@ -212,42 +212,42 @@ const DEFAULT_PRIMARY_SCOPE_PAGES: [DefaultVaultPage; 5] = [
     },
     DefaultVaultPage {
         folder_id: "home",
-        object_id: "obj_default_scope_config",
+        object_id: "obj_default_home_scope_config",
         path: "config.md",
         markdown: DEFAULT_SCOPE_CONFIG_MARKDOWN,
     },
     DefaultVaultPage {
         folder_id: "home",
-        object_id: "obj_default_scope_index",
+        object_id: "obj_default_home_scope_index",
         path: "_index.md",
         markdown: DEFAULT_SCOPE_INDEX_MARKDOWN,
     },
     DefaultVaultPage {
         folder_id: "home",
-        object_id: "obj_default_scope_log",
+        object_id: "obj_default_home_scope_log",
         path: "log.md",
         markdown: DEFAULT_SCOPE_LOG_MARKDOWN,
     },
 ];
 
 macro_rules! default_scope_pages {
-    ($folder_id:literal) => {
+    ($folder_id:literal, $object_prefix:literal) => {
         [
             DefaultVaultPage {
                 folder_id: $folder_id,
-                object_id: "obj_default_scope_config",
+                object_id: concat!("obj_default_", $object_prefix, "_scope_config"),
                 path: "config.md",
                 markdown: DEFAULT_SCOPE_CONFIG_MARKDOWN,
             },
             DefaultVaultPage {
                 folder_id: $folder_id,
-                object_id: "obj_default_scope_index",
+                object_id: concat!("obj_default_", $object_prefix, "_scope_index"),
                 path: "_index.md",
                 markdown: DEFAULT_SCOPE_INDEX_MARKDOWN,
             },
             DefaultVaultPage {
                 folder_id: $folder_id,
-                object_id: "obj_default_scope_log",
+                object_id: concat!("obj_default_", $object_prefix, "_scope_log"),
                 path: "log.md",
                 markdown: DEFAULT_SCOPE_LOG_MARKDOWN,
             },
@@ -261,21 +261,21 @@ const PERSONAL_DEFAULT_VAULT_PAGES: [DefaultVaultPage; 20] = [
     DEFAULT_PRIMARY_SCOPE_PAGES[2],
     DEFAULT_PRIMARY_SCOPE_PAGES[3],
     DEFAULT_PRIMARY_SCOPE_PAGES[4],
-    default_scope_pages!("projects")[0],
-    default_scope_pages!("projects")[1],
-    default_scope_pages!("projects")[2],
-    default_scope_pages!("work")[0],
-    default_scope_pages!("work")[1],
-    default_scope_pages!("work")[2],
-    default_scope_pages!("life")[0],
-    default_scope_pages!("life")[1],
-    default_scope_pages!("life")[2],
-    default_scope_pages!("learning")[0],
-    default_scope_pages!("learning")[1],
-    default_scope_pages!("learning")[2],
-    default_scope_pages!("archive")[0],
-    default_scope_pages!("archive")[1],
-    default_scope_pages!("archive")[2],
+    default_scope_pages!("projects", "projects")[0],
+    default_scope_pages!("projects", "projects")[1],
+    default_scope_pages!("projects", "projects")[2],
+    default_scope_pages!("work", "work")[0],
+    default_scope_pages!("work", "work")[1],
+    default_scope_pages!("work", "work")[2],
+    default_scope_pages!("life", "life")[0],
+    default_scope_pages!("life", "life")[1],
+    default_scope_pages!("life", "life")[2],
+    default_scope_pages!("learning", "learning")[0],
+    default_scope_pages!("learning", "learning")[1],
+    default_scope_pages!("learning", "learning")[2],
+    default_scope_pages!("archive", "archive")[0],
+    default_scope_pages!("archive", "archive")[1],
+    default_scope_pages!("archive", "archive")[2],
 ];
 
 const ORGANIZATION_DEFAULT_VAULT_PAGES: [DefaultVaultPage; 20] = [
@@ -293,37 +293,37 @@ const ORGANIZATION_DEFAULT_VAULT_PAGES: [DefaultVaultPage; 20] = [
     },
     DefaultVaultPage {
         folder_id: "general",
-        object_id: "obj_default_scope_config",
+        object_id: "obj_default_general_scope_config",
         path: "config.md",
         markdown: DEFAULT_SCOPE_CONFIG_MARKDOWN,
     },
     DefaultVaultPage {
         folder_id: "general",
-        object_id: "obj_default_scope_index",
+        object_id: "obj_default_general_scope_index",
         path: "_index.md",
         markdown: DEFAULT_SCOPE_INDEX_MARKDOWN,
     },
     DefaultVaultPage {
         folder_id: "general",
-        object_id: "obj_default_scope_log",
+        object_id: "obj_default_general_scope_log",
         path: "log.md",
         markdown: DEFAULT_SCOPE_LOG_MARKDOWN,
     },
-    default_scope_pages!("product")[0],
-    default_scope_pages!("product")[1],
-    default_scope_pages!("product")[2],
-    default_scope_pages!("engineering")[0],
-    default_scope_pages!("engineering")[1],
-    default_scope_pages!("engineering")[2],
-    default_scope_pages!("marketing")[0],
-    default_scope_pages!("marketing")[1],
-    default_scope_pages!("marketing")[2],
-    default_scope_pages!("design")[0],
-    default_scope_pages!("design")[1],
-    default_scope_pages!("design")[2],
-    default_scope_pages!("operations")[0],
-    default_scope_pages!("operations")[1],
-    default_scope_pages!("operations")[2],
+    default_scope_pages!("product", "product")[0],
+    default_scope_pages!("product", "product")[1],
+    default_scope_pages!("product", "product")[2],
+    default_scope_pages!("engineering", "engineering")[0],
+    default_scope_pages!("engineering", "engineering")[1],
+    default_scope_pages!("engineering", "engineering")[2],
+    default_scope_pages!("marketing", "marketing")[0],
+    default_scope_pages!("marketing", "marketing")[1],
+    default_scope_pages!("marketing", "marketing")[2],
+    default_scope_pages!("design", "design")[0],
+    default_scope_pages!("design", "design")[1],
+    default_scope_pages!("design", "design")[2],
+    default_scope_pages!("operations", "operations")[0],
+    default_scope_pages!("operations", "operations")[1],
+    default_scope_pages!("operations", "operations")[2],
 ];
 
 /// Returns the crate name used in workspace status surfaces.
@@ -1934,12 +1934,20 @@ mod tests {
             vec![
                 ("home", "obj_default_agents", "AGENTS.md"),
                 ("home", "obj_default_humans", "HUMANS.md"),
-                ("home", "obj_default_scope_config", "config.md"),
-                ("home", "obj_default_scope_index", "_index.md"),
-                ("home", "obj_default_scope_log", "log.md")
+                ("home", "obj_default_home_scope_config", "config.md"),
+                ("home", "obj_default_home_scope_index", "_index.md"),
+                ("home", "obj_default_home_scope_log", "log.md")
             ]
         );
         assert_eq!(pages.len(), 20);
+        assert_eq!(
+            pages
+                .iter()
+                .map(|page| page.object_id)
+                .collect::<BTreeSet<_>>()
+                .len(),
+            pages.len()
+        );
         assert!(pages.iter().any(|page| page.folder_id == "projects"));
         assert!(pages[0].markdown.contains("Use `fbrain`"));
         assert!(pages[0].markdown.contains("LLM Wiki Rules"));
@@ -1950,6 +1958,14 @@ mod tests {
         );
         let organization_pages = default_vault_pages(VaultKind::Organization);
         assert_eq!(organization_pages.len(), 20);
+        assert_eq!(
+            organization_pages
+                .iter()
+                .map(|page| page.object_id)
+                .collect::<BTreeSet<_>>()
+                .len(),
+            organization_pages.len()
+        );
         assert!(
             organization_pages
                 .iter()
