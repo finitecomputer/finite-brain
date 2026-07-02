@@ -87,8 +87,10 @@ pub(crate) fn visible_vaults_response(vaults: Vec<VisibleVault>) -> VisibleVault
                     VisibleVaultRole::Owner => "owner",
                     VisibleVaultRole::Admin => "admin",
                     VisibleVaultRole::Member => "member",
+                    VisibleVaultRole::Invited => "invited",
                 }
                 .to_owned(),
+                invite_code: vault.invite_code,
             })
             .collect(),
     }

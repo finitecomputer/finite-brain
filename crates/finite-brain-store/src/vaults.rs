@@ -40,36 +40,56 @@ impl BrainStore {
     pub fn list_visible_vaults(&self, actor: &UserId) -> Result<Vec<VisibleVault>, StoreError> {
         let mut stmt = self.conn.prepare(
             r#"
-            SELECT v.id, v.kind, v.name,
-                   CASE
-                       WHEN v.owner_user_id = ?1 THEN 'owner'
-                       WHEN va.user_id IS NOT NULL THEN 'admin'
-                       ELSE 'member'
-                   END AS role
-            FROM vaults v
-            LEFT JOIN vault_admins va
-              ON va.vault_id = v.id AND va.user_id = ?1
-            LEFT JOIN vault_members vm
-              ON vm.vault_id = v.id AND vm.user_id = ?1
-            WHERE v.owner_user_id = ?1 OR vm.user_id IS NOT NULL
+            SELECT id, kind, name, role, invite_code
+            FROM (
+                SELECT v.id, v.kind, v.name,
+                       CASE
+                           WHEN v.owner_user_id = ?1 THEN 'owner'
+                           WHEN va.user_id IS NOT NULL THEN 'admin'
+                           ELSE 'member'
+                       END AS role,
+                       NULL AS invite_code
+                FROM vaults v
+                LEFT JOIN vault_admins va
+                  ON va.vault_id = v.id AND va.user_id = ?1
+                LEFT JOIN vault_members vm
+                  ON vm.vault_id = v.id AND vm.user_id = ?1
+                WHERE v.owner_user_id = ?1 OR vm.user_id IS NOT NULL
+
+                UNION ALL
+
+                SELECT v.id, v.kind, v.name, 'invited' AS role, vi.invite_code
+                FROM vault_invitations vi
+                JOIN vaults v
+                  ON v.id = vi.vault_id
+                LEFT JOIN vault_members vm
+                  ON vm.vault_id = v.id AND vm.user_id = ?1
+                WHERE vi.user_id = ?1
+                  AND vi.status = 'pending'
+                  AND vi.expires_at > ?2
+                  AND v.owner_user_id IS NULL
+                  AND vm.user_id IS NULL
+            )
             ORDER BY
-              CASE v.kind WHEN 'personal' THEN 0 ELSE 1 END,
-              lower(v.name),
-              v.id
+              CASE kind WHEN 'personal' THEN 0 ELSE 1 END,
+              lower(name),
+              id
             "#,
         )?;
-        let rows = stmt.query_map(params![actor.as_str()], |row| {
+        let now = current_timestamp();
+        let rows = stmt.query_map(params![actor.as_str(), now], |row| {
             Ok((
                 row.get::<_, String>(0)?,
                 row.get::<_, String>(1)?,
                 row.get::<_, String>(2)?,
                 row.get::<_, String>(3)?,
+                row.get::<_, Option<String>>(4)?,
             ))
         })?;
 
         let mut vaults = Vec::new();
         for row in rows {
-            let (id, kind, name, role) = row?;
+            let (id, kind, name, role, invite_code) = row?;
             vaults.push(VisibleVault {
                 id: VaultId::new(id)?,
                 kind: parse_vault_kind(&kind)?,
@@ -78,12 +98,14 @@ impl BrainStore {
                     "owner" => VisibleVaultRole::Owner,
                     "admin" => VisibleVaultRole::Admin,
                     "member" => VisibleVaultRole::Member,
+                    "invited" => VisibleVaultRole::Invited,
                     _ => {
                         return Err(StoreError::BrokenInvariant {
                             reason: format!("unknown visible vault role: {role}"),
                         });
                     }
                 },
+                invite_code,
             });
         }
         Ok(vaults)

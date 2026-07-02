@@ -88,6 +88,7 @@ const FiniteBrainProductClient = (() => {
       kind: kind === "personal" ? "personal" : "organization",
       name: vault.name || (kind === "personal" ? "Personal vault" : vaultId),
       role: vault.role || (kind === "personal" ? "owner" : "member"),
+      inviteCode: vault.inviteCode || vault.invite_code || null,
     };
   }
 
@@ -164,7 +165,7 @@ const FiniteBrainProductClient = (() => {
       for (const vault of vaults) {
         const option = document.createElement("option");
         option.value = vault.vaultId;
-        option.textContent =
+      option.textContent =
           vault.kind === "personal" ? vault.name : `${vault.name} - ${vault.role}`;
         group.appendChild(option);
       }
@@ -3967,6 +3968,18 @@ const FiniteBrainProductClient = (() => {
     }
   }
 
+  async function ensureInvitedVaultAcceptedForActiveSelection() {
+    const active = activeVaultOption();
+    if (active.role !== "invited" || !active.inviteCode) return;
+    const invitation = await protectedRequest(vaultInvitationAcceptPath(active.inviteCode), {
+      method: "POST",
+    });
+    state.lastVaultInvitationId = invitation.id;
+    state.lastVaultInvitationCode = invitation.inviteCode;
+    setActiveVaultId(invitation.vaultId, { reset: false });
+    await loadVisibleVaults();
+  }
+
   async function createOrganizationVaultFromInput() {
     const name = $("organizationVaultNameInput").value.trim() || "New organization";
     if (state.signerStatus !== "connected") await connectSigner();
@@ -4026,6 +4039,7 @@ const FiniteBrainProductClient = (() => {
 
   async function loadVaultMetadata() {
     setActiveVaultId(selectedVaultIdFromControls(), { reset: false });
+    await ensureInvitedVaultAcceptedForActiveSelection();
     await ensurePersonalVaultForActiveSelection();
     const path = `/_admin/vaults/${encodeURIComponent(state.activeVaultId)}/metadata`;
     const metadata = await protectedRequest(path);

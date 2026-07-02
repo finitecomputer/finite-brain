@@ -1392,6 +1392,8 @@ mod tests {
     #[tokio::test]
     async fn visible_vaults_lists_personal_and_member_organizations() {
         let keys = Keys::generate();
+        let invited_keys = Keys::generate();
+        let invited_npub = npub(&invited_keys);
         let router = test_router();
         let personal = post_vault(
             router.clone(),
@@ -1417,7 +1419,9 @@ mod tests {
         .await;
         assert_eq!(org.status(), StatusCode::OK);
 
-        let list = authed_request(router, &keys, "GET", "/_admin/vaults", None, TEST_NOW + 2).await;
+        let list =
+            authed_request(router.clone(), &keys, "GET", "/_admin/vaults", None, TEST_NOW + 2)
+                .await;
         assert_eq!(list.status(), StatusCode::OK);
         let list: VisibleVaultsResponse = read_json(list).await;
         assert_eq!(list.vaults.len(), 2);
@@ -1427,6 +1431,44 @@ mod tests {
         assert_eq!(list.vaults[1].vault_id, "acme");
         assert_eq!(list.vaults[1].kind, VaultKind::Organization);
         assert_eq!(list.vaults[1].role, "admin");
+
+        let invite_body = serde_json::json!({
+            "targetNpub": invited_npub,
+            "initialFolderAccess": ["general"],
+            "expiresAt": "2099-06-30T00:00:00.000Z",
+        })
+        .to_string();
+        let invite = authed_request(
+            router.clone(),
+            &keys,
+            "POST",
+            "/_admin/vaults/acme/invitations",
+            Some(invite_body),
+            TEST_NOW + 3,
+        )
+        .await;
+        assert_eq!(invite.status(), StatusCode::OK);
+        let invitation: VaultInvitationResponse = read_json(invite).await;
+
+        let invited_list = authed_request(
+            router,
+            &invited_keys,
+            "GET",
+            "/_admin/vaults",
+            None,
+            TEST_NOW + 4,
+        )
+        .await;
+        assert_eq!(invited_list.status(), StatusCode::OK);
+        let invited_list: VisibleVaultsResponse = read_json(invited_list).await;
+        assert_eq!(invited_list.vaults.len(), 1);
+        assert_eq!(invited_list.vaults[0].vault_id, "acme");
+        assert_eq!(invited_list.vaults[0].kind, VaultKind::Organization);
+        assert_eq!(invited_list.vaults[0].role, "invited");
+        assert_eq!(
+            invited_list.vaults[0].invite_code.as_deref(),
+            Some(invitation.invite_code.as_str())
+        );
     }
 
     #[tokio::test]

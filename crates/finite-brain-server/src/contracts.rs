@@ -58,6 +58,7 @@ pub struct VisibleVaultResponse {
     pub kind: VaultKind,
     pub name: String,
     pub role: String,
+    pub invite_code: Option<String>,
 }
 
 /// Server-visible Folder metadata response.

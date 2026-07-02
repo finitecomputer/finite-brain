@@ -162,6 +162,8 @@ pub struct VisibleVault {
     pub name: String,
     /// Actor's relationship to this Vault.
     pub role: VisibleVaultRole,
+    /// Pending invitation code when the actor has not accepted yet.
+    pub invite_code: Option<String>,
 }
 
 /// Actor relationship used by client Vault switchers.
@@ -173,6 +175,8 @@ pub enum VisibleVaultRole {
     Admin,
     /// Organization Vault member.
     Member,
+    /// Pending Organization Vault invitation.
+    Invited,
 }
 
 /// Accepted sync record type.

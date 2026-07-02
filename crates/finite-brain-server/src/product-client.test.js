@@ -154,6 +154,16 @@ assert.equal(client.accessPanelState("manage", folderRows[0]).title, "General");
 assert.equal(client.accessPanelState("share", folderRows[0]).status, "all members");
 assert.equal(client.personalVaultIdForPubkey("ab".repeat(32)), "personal-abababababababab");
 assert.equal(
+  client.normalizeVisibleVault({
+    vaultId: "acme",
+    kind: "organization",
+    name: "Acme",
+    role: "invited",
+    inviteCode: "invite-acme",
+  }).inviteCode,
+  "invite-acme"
+);
+assert.equal(
   JSON.stringify(client.visibleVaultOptions([
     { vaultId: "acme", kind: "organization", name: "Acme", role: "admin" },
     { vaultId: "personal-ab", kind: "personal", name: "Personal vault", role: "owner" },
