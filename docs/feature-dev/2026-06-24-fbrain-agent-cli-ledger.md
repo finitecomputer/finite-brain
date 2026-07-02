@@ -86,4 +86,4 @@ sync states, activity, and access explanations.
 
 ## Escalations
 
-- Existing `/Users/plebdev/Desktop/Projects/finite/finite-brain` worktree is dirty with Product Client UI work, so this run uses a sibling worktree at `/Users/plebdev/Desktop/Projects/finite/finite-brain-fbrain`.
+- Existing main worktree is dirty with Product Client UI work, so this run uses a sibling worktree.

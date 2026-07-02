@@ -4,7 +4,7 @@
 
 - Run ID: `2026-06-26-fbrain-transport-working-tree-sync`
 - Loop: Feature Dev
-- Target repo: `/Users/plebdev/Desktop/Projects/finite/finite-brain-fbrain`
+- Target repo: sibling `finite-brain` worktree
 - Base branch: `staging`
 - Feature branch: `feature/fbrain-transport-working-tree-sync`
 - Human owner: Austin

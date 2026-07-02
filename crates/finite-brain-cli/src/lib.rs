@@ -74,6 +74,7 @@ where
     let command = args.first().cloned().unwrap_or_else(|| "help".to_owned());
     match command.as_str() {
         "help" | "--help" | "-h" => help(output),
+        "version" | "--version" | "-V" => version(output),
         "doctor" => doctor(&args[1..], &env, json, output),
         "auth" => auth(&args[1..], &env, json, output),
         "signer" => signer(&args[1..], &env, json, output),
@@ -101,6 +102,11 @@ fn help<W: Write>(output: &mut W) -> Result<(), CliError> {
         output,
         "fbrain [--config-dir <path>] doctor\nauth status|login|logout\nsigner status|public-key|sign|encrypt|decrypt\ndaemon status|start|stop|logs|tick|watch\nsync status|now [--summary]\nopen <vault-id> [path]\nstatus [--json]\nunlock [folder|--all]\nconflicts\nresolve <id>\nactivity\naccess explain|list|grant|revoke\nvault create|metadata|export\nfolder create|list\nmount list\npermissions add-member|remove-member|add-admin|remove-admin|grant-folder\ninvites create|show|accept|revoke\nshare link|accept|revoke|source|folder-invite|folder-accept"
     )?;
+    Ok(())
+}
+
+fn version<W: Write>(output: &mut W) -> Result<(), CliError> {
+    writeln!(output, "fbrain {}", env!("CARGO_PKG_VERSION"))?;
     Ok(())
 }
 
@@ -2339,6 +2345,19 @@ mod tests {
         let status = run(&tmp, &["auth", "status", "--json"]);
         let json: Value = serde_json::from_str(&status).unwrap();
         assert_eq!(json["state"], "missing");
+    }
+
+    #[test]
+    fn version_command_prints_cli_package_version() {
+        let tmp = TempDir::new().unwrap();
+        assert_eq!(
+            run(&tmp, &["--version"]).trim(),
+            concat!("fbrain ", env!("CARGO_PKG_VERSION"))
+        );
+        assert_eq!(
+            run(&tmp, &["version"]).trim(),
+            concat!("fbrain ", env!("CARGO_PKG_VERSION"))
+        );
     }
 
     #[test]

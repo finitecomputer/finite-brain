@@ -4,7 +4,7 @@
 
 - Run ID: 2026-06-25-obsidian-product-client-refactor
 - Loop: Feature Dev
-- Target repo: `/Users/plebdev/Desktop/Projects/finite/finite-brain-fbrain`
+- Target repo: sibling `finite-brain` worktree
 - Base branch: `main`
 - Feature branch: local `main` worktree
 - Human owner: Austin

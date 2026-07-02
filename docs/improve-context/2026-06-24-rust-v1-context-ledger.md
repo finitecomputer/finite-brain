@@ -37,10 +37,9 @@ development smoke app.
 
 ## Parked Notes
 
-- The original local checkout at
-  `/Users/plebdev/Desktop/Projects/finite/finite-brain` blocked on working-tree
-  content reads during this run, so the patch was prepared in a fresh temporary
-  clone at `/tmp/finite-brain-context-work`.
+- The main checkout blocked on working-tree content reads during this run, so
+  the patch was prepared in a fresh temporary clone at
+  `/tmp/finite-brain-context-work`.
 - Runtime wording in `crates/finite-brain-app/src/main.rs` still says
   "smoke server"; changing runtime output is implementation work, not this
   documentation-only context patch.
