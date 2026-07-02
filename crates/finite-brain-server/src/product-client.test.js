@@ -474,6 +474,94 @@ assert.equal(client.readerPageRows("general", draftPages)[0].label, "Draft Page"
   });
   assert.equal(boundWrapperGrant.id, "grant-bound-wrapper");
   assert.equal(boundProviderEncryptCalls, 2);
+
+  assert.equal(
+    JSON.stringify(client.defaultVaultBootstrapFolderIds("personal")),
+    JSON.stringify(["home"])
+  );
+  assert.equal(
+    JSON.stringify(client.defaultVaultBootstrapFolderIds("organization")),
+    JSON.stringify(["vault-ops", "general"])
+  );
+  assert.equal(client.defaultVaultPagesFolderId("personal"), "home");
+  assert.equal(client.defaultVaultPagesFolderId("organization"), "general");
+  const defaultPages = client.defaultVaultPages();
+  assert.equal(
+    JSON.stringify(defaultPages.map((page) => [page.objectId, page.path])),
+    JSON.stringify([
+      ["obj_default_agents", "AGENTS.md"],
+      ["obj_default_humans", "HUMANS.md"],
+    ])
+  );
+  assert.match(defaultPages[0].markdown, /Use `fbrain`/);
+  assert.match(defaultPages[0].markdown, /LLM Wiki Rules/);
+  assert.match(defaultPages[1].markdown, /private, encrypted knowledge workspace/);
+
+  let bootstrapSignedIndex = 0;
+  const bootstrapSigner = async (template) => ({
+    ...template,
+    id: `bootstrap-signed-${++bootstrapSignedIndex}`,
+    pubkey: "00".repeat(32),
+    sig: "bootstrap-signature",
+  });
+  const orgBootstrapPlan = await client.buildVaultBootstrapPlan({
+    actorNpub: authorNpub,
+    createdAtUnix: 1780000200,
+    kind: "organization",
+    provider: { signEvent: bootstrapSigner, nip44: { encrypt: fakeEncrypt, decrypt: fakeDecrypt } },
+    rawKeysByFolderId: {
+      "vault-ops": new Uint8Array(32).fill(12),
+      general: new Uint8Array(32).fill(13),
+    },
+    signEvent: bootstrapSigner,
+    vaultId: "org-smoke",
+  });
+  assert.equal(
+    JSON.stringify(orgBootstrapPlan.bootstrapGrants.map((entry) => entry.folderId)),
+    JSON.stringify(["vault-ops", "general"])
+  );
+  assert.equal(orgBootstrapPlan.defaultFolderId, "general");
+  assert.equal(orgBootstrapPlan.keyring.keys.has("org-smoke:vault-ops:1"), true);
+  assert.equal(orgBootstrapPlan.keyring.keys.has("org-smoke:general:1"), true);
+  const starterWrites = await client.buildDefaultVaultPageWrites({
+    actorNpub: authorNpub,
+    createdAtUnix: 1780000300,
+    folderId: orgBootstrapPlan.defaultFolderId,
+    keyring: orgBootstrapPlan.keyring,
+    nonceFactory: (index) => new Uint8Array(12).fill(index + 1),
+    signEvent: bootstrapSigner,
+    vaultId: "org-smoke",
+  });
+  assert.equal(
+    JSON.stringify(
+      starterWrites.map((write) => [write.folderId, write.objectId, write.targetPath])
+    ),
+    JSON.stringify([
+      ["general", "obj_default_agents", "AGENTS.md"],
+      ["general", "obj_default_humans", "HUMANS.md"],
+    ])
+  );
+  const openedAgentsDefault = await client.openFolderObject(orgBootstrapPlan.keyring, {
+    vaultId: "org-smoke",
+    folderId: "general",
+    objectId: "obj_default_agents",
+    revision: 1,
+    ciphertext: starterWrites[0].body.ciphertext,
+  });
+  assert.equal(openedAgentsDefault.status, "ready");
+  assert.equal(openedAgentsDefault.path, "AGENTS.md");
+  assert.match(openedAgentsDefault.text, /FiniteBrain vault/);
+  const openedHumansDefault = await client.openFolderObject(orgBootstrapPlan.keyring, {
+    vaultId: "org-smoke",
+    folderId: "general",
+    objectId: "obj_default_humans",
+    revision: 1,
+    ciphertext: starterWrites[1].body.ciphertext,
+  });
+  assert.equal(openedHumansDefault.status, "ready");
+  assert.equal(openedHumansDefault.path, "HUMANS.md");
+  assert.match(openedHumansDefault.text, /private, encrypted knowledge workspace/);
+
   const wrongRecipientOpen = await client.openFolderKeyGrants(
     client.createSessionKeyring(),
     {

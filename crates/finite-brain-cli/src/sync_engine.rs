@@ -760,18 +760,18 @@ fn submit_change_intent(
     }
 }
 
-struct RevisionEventInput<'a> {
-    actor_npub: &'a str,
-    vault_id: &'a str,
-    folder_id: &'a FolderId,
-    object_id: &'a ObjectId,
-    operation: FolderObjectOperation,
-    base_revision: Option<u64>,
-    key_version: u32,
-    envelope_json: String,
+pub(crate) struct RevisionEventInput<'a> {
+    pub(crate) actor_npub: &'a str,
+    pub(crate) vault_id: &'a str,
+    pub(crate) folder_id: &'a FolderId,
+    pub(crate) object_id: &'a ObjectId,
+    pub(crate) operation: FolderObjectOperation,
+    pub(crate) base_revision: Option<u64>,
+    pub(crate) key_version: u32,
+    pub(crate) envelope_json: String,
 }
 
-fn signed_revision_event(
+pub(crate) fn signed_revision_event(
     keys: &Keys,
     input: RevisionEventInput<'_>,
 ) -> Result<serde_json::Value, CliError> {
@@ -1518,7 +1518,7 @@ fn preserve_conflicted_markdown(result: &mut LocalSyncResult, change: &WorkingTr
     }
 }
 
-fn encode_folder_object_page_plaintext(
+pub(crate) fn encode_folder_object_page_plaintext(
     path: &SafeRelativePath,
     markdown: &str,
 ) -> Result<String, CliError> {

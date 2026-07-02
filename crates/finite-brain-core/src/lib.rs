@@ -25,9 +25,166 @@ const MAX_USER_ID_LEN: usize = 128;
 const MAX_DISPLAY_NAME_LEN: usize = 128;
 const MAX_SAFE_RELATIVE_PATH_LEN: usize = 1024;
 
+/// Default markdown Page materialized in every new Vault.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub struct DefaultVaultPage {
+    /// Stable default object id.
+    pub object_id: &'static str,
+    /// Decrypted Page path.
+    pub path: &'static str,
+    /// Decrypted Page markdown.
+    pub markdown: &'static str,
+}
+
+const DEFAULT_AGENTS_MARKDOWN: &str = r#"# AGENTS.md
+
+This is a FiniteBrain vault. Treat it as an encrypted, syncable LLM wiki.
+
+## Operating Model
+
+FiniteBrain stores encrypted Vault state on the server. Trusted clients and agent runtimes open Folder Key Grants locally, decrypt accessible Pages, edit ordinary markdown files, then sync encrypted changes back.
+
+Agents act as the user. They do not have independent Vault membership, Folder access, or attribution unless explicitly modeled as a separate user.
+
+## Use `fbrain`
+
+Use `fbrain` for identity, sync, access, and daemon state.
+
+Start here:
+
+```sh
+fbrain doctor --server "$SERVER"
+fbrain auth status --json
+fbrain open "$VAULT" "$TREE" --server "$SERVER"
+cd "$TREE"
+fbrain sync now --summary
+fbrain unlock --all
+fbrain sync now --summary
+fbrain conflicts --json
+```
+
+Use an explicit config dir in agent runtimes:
+
+```sh
+fbrain --config-dir "$HOME/.config/finitebrain" auth status --json
+```
+
+Never print or expose Nostr secrets, Folder Keys, grant plaintext, auth files, decrypted sync internals, or rotation bodies.
+
+## Editing Rules
+
+Before editing:
+
+1. Sync.
+2. Unlock readable folders.
+3. Read this file.
+4. Read `HUMANS.md`.
+5. Read `_index.md`, `index.md`, `log.md`, `config.md`, or `SCHEMA.md` when present.
+6. Search before creating new pages.
+
+Only edit readable content. Do not edit `.finitebrain/`, encrypted sync evidence, locked metadata-only folders, generated state files, auth files, or key material.
+
+After editing:
+
+```sh
+fbrain sync now --summary
+fbrain conflicts --json
+```
+
+Resolve conflicts before reporting done.
+
+## LLM Wiki Rules
+
+Use this vault as a durable LLM wiki.
+
+- Keep raw sources immutable under `raw/`.
+- Put synthesized durable knowledge in wiki pages.
+- Prefer updating existing pages over creating duplicates.
+- Use `[[wikilinks]]` for internal relationships.
+- Keep indexes current.
+- Append to `log.md` after meaningful writes.
+- Use `inventory/` for source candidates, open questions, watch items, and next actions.
+- Use `datasets/` for manifests, schemas, samples, and query recipes.
+- Use `output/` for reports, plans, summaries, and deliverables.
+- Archive superseded material instead of deleting it.
+- Answer from compiled wiki pages first; say what is missing when evidence is thin.
+
+## Suggested Layout
+
+```text
+raw/
+wiki/
+inventory/
+datasets/
+output/
+archive/
+_index.md
+log.md
+```
+
+Local folder instructions may override this layout.
+
+## Final Report
+
+When finished, report:
+
+- working tree path
+- acting npub, if relevant
+- folders readable or locked
+- pages or sources created/updated/moved/deleted
+- index/log updates
+- sync summary
+- latest sequence, if available
+- whether conflicts are empty
+"#;
+
+const DEFAULT_HUMANS_MARKDOWN: &str = r#"# HUMANS.md
+
+This vault is your private, encrypted knowledge workspace.
+
+FiniteBrain keeps the server blind to page contents. Your client or agent opens the vault locally, decrypts what you can access, edits markdown, then syncs encrypted changes back.
+
+Use this vault like an LLM wiki:
+
+- `raw/` is for source material.
+- `wiki/` is for durable notes and synthesized understanding.
+- `inventory/` is for things to track or decide later.
+- `datasets/` is for structured references.
+- `output/` is for reports, plans, and finished work.
+- `log.md` records meaningful changes.
+
+Agents should read `AGENTS.md` first, sync before editing, avoid duplicates, preserve sources, and keep the wiki useful for future work.
+"#;
+
+const DEFAULT_VAULT_PAGES: [DefaultVaultPage; 2] = [
+    DefaultVaultPage {
+        object_id: "obj_default_agents",
+        path: "AGENTS.md",
+        markdown: DEFAULT_AGENTS_MARKDOWN,
+    },
+    DefaultVaultPage {
+        object_id: "obj_default_humans",
+        path: "HUMANS.md",
+        markdown: DEFAULT_HUMANS_MARKDOWN,
+    },
+];
+
 /// Returns the crate name used in workspace status surfaces.
 pub fn crate_name() -> &'static str {
     "finite-brain-core"
+}
+
+/// Default encrypted Pages clients should write after new Vault bootstrap.
+pub fn default_vault_pages() -> &'static [DefaultVaultPage] {
+    &DEFAULT_VAULT_PAGES
+}
+
+/// Default Folder that receives starter Pages for a new Vault.
+pub fn default_vault_pages_folder_id(kind: VaultKind) -> &'static str {
+    match kind {
+        VaultKind::Personal => "home",
+        VaultKind::Organization => "general",
+    }
 }
 
 /// Core domain validation errors.
@@ -1549,6 +1706,34 @@ mod tests {
     #[test]
     fn exposes_core_crate_name() {
         assert_eq!(crate_name(), "finite-brain-core");
+    }
+
+    #[test]
+    fn exposes_default_vault_pages() {
+        let pages = default_vault_pages();
+
+        assert_eq!(
+            pages
+                .iter()
+                .map(|page| (page.object_id, page.path))
+                .collect::<Vec<_>>(),
+            vec![
+                ("obj_default_agents", "AGENTS.md"),
+                ("obj_default_humans", "HUMANS.md")
+            ]
+        );
+        assert!(pages[0].markdown.contains("Use `fbrain`"));
+        assert!(pages[0].markdown.contains("LLM Wiki Rules"));
+        assert!(
+            pages[1]
+                .markdown
+                .contains("private, encrypted knowledge workspace")
+        );
+        assert_eq!(default_vault_pages_folder_id(VaultKind::Personal), "home");
+        assert_eq!(
+            default_vault_pages_folder_id(VaultKind::Organization),
+            "general"
+        );
     }
 
     #[test]

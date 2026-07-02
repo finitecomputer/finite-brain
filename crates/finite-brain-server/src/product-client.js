@@ -53,6 +53,138 @@ const FiniteBrainProductClient = (() => {
   const APP_EVENT_KIND = 30078;
   const MAX_OBJECT_ID_ATTEMPTS = 1000;
   const PERSONAL_VAULT_PLACEHOLDER_ID = "personal";
+  const DEFAULT_VAULT_PAGES = Object.freeze([
+    Object.freeze({
+      objectId: "obj_default_agents",
+      path: "AGENTS.md",
+      markdown:
+        [
+          "# AGENTS.md",
+          "",
+          "This is a FiniteBrain vault. Treat it as an encrypted, syncable LLM wiki.",
+          "",
+          "## Operating Model",
+          "",
+          "FiniteBrain stores encrypted Vault state on the server. Trusted clients and agent runtimes open Folder Key Grants locally, decrypt accessible Pages, edit ordinary markdown files, then sync encrypted changes back.",
+          "",
+          "Agents act as the user. They do not have independent Vault membership, Folder access, or attribution unless explicitly modeled as a separate user.",
+          "",
+          "## Use `fbrain`",
+          "",
+          "Use `fbrain` for identity, sync, access, and daemon state.",
+          "",
+          "Start here:",
+          "",
+          "```sh",
+          "fbrain doctor --server \"$SERVER\"",
+          "fbrain auth status --json",
+          "fbrain open \"$VAULT\" \"$TREE\" --server \"$SERVER\"",
+          "cd \"$TREE\"",
+          "fbrain sync now --summary",
+          "fbrain unlock --all",
+          "fbrain sync now --summary",
+          "fbrain conflicts --json",
+          "```",
+          "",
+          "Use an explicit config dir in agent runtimes:",
+          "",
+          "```sh",
+          "fbrain --config-dir \"$HOME/.config/finitebrain\" auth status --json",
+          "```",
+          "",
+          "Never print or expose Nostr secrets, Folder Keys, grant plaintext, auth files, decrypted sync internals, or rotation bodies.",
+          "",
+          "## Editing Rules",
+          "",
+          "Before editing:",
+          "",
+          "1. Sync.",
+          "2. Unlock readable folders.",
+          "3. Read this file.",
+          "4. Read `HUMANS.md`.",
+          "5. Read `_index.md`, `index.md`, `log.md`, `config.md`, or `SCHEMA.md` when present.",
+          "6. Search before creating new pages.",
+          "",
+          "Only edit readable content. Do not edit `.finitebrain/`, encrypted sync evidence, locked metadata-only folders, generated state files, auth files, or key material.",
+          "",
+          "After editing:",
+          "",
+          "```sh",
+          "fbrain sync now --summary",
+          "fbrain conflicts --json",
+          "```",
+          "",
+          "Resolve conflicts before reporting done.",
+          "",
+          "## LLM Wiki Rules",
+          "",
+          "Use this vault as a durable LLM wiki.",
+          "",
+          "- Keep raw sources immutable under `raw/`.",
+          "- Put synthesized durable knowledge in wiki pages.",
+          "- Prefer updating existing pages over creating duplicates.",
+          "- Use `[[wikilinks]]` for internal relationships.",
+          "- Keep indexes current.",
+          "- Append to `log.md` after meaningful writes.",
+          "- Use `inventory/` for source candidates, open questions, watch items, and next actions.",
+          "- Use `datasets/` for manifests, schemas, samples, and query recipes.",
+          "- Use `output/` for reports, plans, summaries, and deliverables.",
+          "- Archive superseded material instead of deleting it.",
+          "- Answer from compiled wiki pages first; say what is missing when evidence is thin.",
+          "",
+          "## Suggested Layout",
+          "",
+          "```text",
+          "raw/",
+          "wiki/",
+          "inventory/",
+          "datasets/",
+          "output/",
+          "archive/",
+          "_index.md",
+          "log.md",
+          "```",
+          "",
+          "Local folder instructions may override this layout.",
+          "",
+          "## Final Report",
+          "",
+          "When finished, report:",
+          "",
+          "- working tree path",
+          "- acting npub, if relevant",
+          "- folders readable or locked",
+          "- pages or sources created/updated/moved/deleted",
+          "- index/log updates",
+          "- sync summary",
+          "- latest sequence, if available",
+          "- whether conflicts are empty",
+        ].join("\n") + "\n",
+    }),
+    Object.freeze({
+      objectId: "obj_default_humans",
+      path: "HUMANS.md",
+      markdown:
+        [
+          "# HUMANS.md",
+          "",
+          "This vault is your private, encrypted knowledge workspace.",
+          "",
+          "FiniteBrain keeps the server blind to page contents. Your client or agent opens the vault locally, decrypts what you can access, edits markdown, then syncs encrypted changes back.",
+          "",
+          "Use this vault like an LLM wiki:",
+          "",
+          "- `raw/` is for source material.",
+          "- `wiki/` is for durable notes and synthesized understanding.",
+          "- `inventory/` is for things to track or decide later.",
+          "- `datasets/` is for structured references.",
+          "- `output/` is for reports, plans, and finished work.",
+          "- `log.md` records meaningful changes.",
+          "",
+          "Agents should read `AGENTS.md` first, sync before editing, avoid duplicates, preserve sources, and keep the wiki useful for future work.",
+        ].join("\n") + "\n",
+    }),
+  ]);
   const BECH32_CHARSET = "qpzry9x8gf2tvdw0s3jn54khce6mua7l";
   const graphViewport = { height: 560, width: 900 };
   const EDITOR_SLASH_COMMANDS = [
@@ -3938,11 +4070,143 @@ const FiniteBrainProductClient = (() => {
     return state.visibleVaults;
   }
 
+  function defaultVaultPages() {
+    return DEFAULT_VAULT_PAGES.map((page) => ({ ...page }));
+  }
+
+  function defaultVaultPagesFolderId(kind) {
+    if (kind === "personal") return "home";
+    if (kind === "organization") return "general";
+    throw new Error(`Unsupported Vault kind: ${kind}`);
+  }
+
+  function defaultVaultBootstrapFolderIds(kind) {
+    if (kind === "personal") return ["home"];
+    if (kind === "organization") return ["vault-ops", "general"];
+    throw new Error(`Unsupported Vault kind: ${kind}`);
+  }
+
+  function configuredRawFolderKey(input, folderId) {
+    const source = input.rawKeysByFolderId;
+    let value = null;
+    if (source instanceof Map && source.has(folderId)) value = source.get(folderId);
+    if (!value && source && Object.prototype.hasOwnProperty.call(source, folderId)) {
+      value = source[folderId];
+    }
+    if (!value) return randomFolderKeyBytes();
+    if (value instanceof Uint8Array) return value;
+    if (Array.isArray(value)) return new Uint8Array(value);
+    if (typeof value === "string") return base64ToBytes(value);
+    throw new Error(`Unsupported raw Folder Key for ${folderId}`);
+  }
+
+  async function buildVaultBootstrapPlan(input) {
+    if (!input?.vaultId) throw new Error("Vault bootstrap needs a Vault id");
+    if (!input?.kind) throw new Error("Vault bootstrap needs a Vault kind");
+    const actorNpub = input.actorNpub || currentActorNpub();
+    const signEvent = input.signEvent || ((event) => window.nostr.signEvent(event));
+    const keyring = input.keyring || createSessionKeyring();
+    const bootstrapGrants = [];
+    const folderKeys = new Map();
+    for (const folderId of defaultVaultBootstrapFolderIds(input.kind)) {
+      const rawKey = configuredRawFolderKey(input, folderId);
+      folderKeys.set(folderId, rawKey);
+      await importFolderKey(keyring, {
+        vaultId: input.vaultId,
+        folderId,
+        keyVersion: 1,
+        folderKey: bytesToBase64(rawKey),
+      });
+      const grant = await buildFolderKeyGrantRequest({
+        createdAtUnix: input.createdAtUnix,
+        issuerNpub: actorNpub,
+        keyVersion: 1,
+        provider: input.provider,
+        rawKey,
+        recipientNpub: actorNpub,
+        signEvent,
+        vaultId: input.vaultId,
+        folderId,
+      });
+      bootstrapGrants.push({ folderId, grant });
+    }
+    return {
+      bootstrapGrants,
+      defaultFolderId: defaultVaultPagesFolderId(input.kind),
+      defaultPages: defaultVaultPages(),
+      folderKeys,
+      keyring,
+    };
+  }
+
+  async function buildDefaultVaultPageWrites(input) {
+    if (!input?.keyring) throw new Error("Default Vault Pages need an opened keyring");
+    if (!input?.vaultId) throw new Error("Default Vault Pages need a Vault id");
+    const folderId = input.folderId || defaultVaultPagesFolderId(input.kind);
+    if (!folderId) throw new Error("Default Vault Pages need a target Folder");
+    const actorNpub = input.actorNpub || currentActorNpub();
+    const signEvent = input.signEvent || ((event) => window.nostr.signEvent(event));
+    const pages = input.pages || defaultVaultPages();
+    const writes = [];
+    let pageIndex = 0;
+    for (const page of pages) {
+      const nonceBytes =
+        typeof input.nonceFactory === "function" ? input.nonceFactory(pageIndex, page) : undefined;
+      const body = await buildPageWriteRequest(input.keyring, {
+        authorNpub: actorNpub,
+        baseRevision: null,
+        createdAtUnix: input.createdAtUnix,
+        folderId,
+        keyVersion: input.keyVersion || 1,
+        nonceBytes,
+        objectId: page.objectId,
+        operation: "create",
+        plaintext: encodeFolderObjectPagePlaintext(page.path, page.markdown),
+        signEvent,
+        vaultId: input.vaultId,
+      });
+      writes.push({
+        body,
+        folderId,
+        objectId: page.objectId,
+        path: `/_admin/vaults/${encodeURIComponent(input.vaultId)}/folders/${encodeURIComponent(
+          folderId
+        )}/objects/${encodeURIComponent(page.objectId)}`,
+        targetPath: page.path,
+      });
+      pageIndex += 1;
+    }
+    return writes;
+  }
+
+  async function writeDefaultVaultPages(input) {
+    const request = input.request || protectedRequest;
+    const writes = await buildDefaultVaultPageWrites(input);
+    for (const write of writes) {
+      await request(write.path, {
+        method: "PUT",
+        body: JSON.stringify(write.body),
+      });
+    }
+    return writes;
+  }
+
   async function createVault(vaultId, kind, name) {
-    return protectedRequest("/_admin/vaults", {
+    const actorNpub = currentActorNpub();
+    const plan = await buildVaultBootstrapPlan({ vaultId, kind, name, actorNpub });
+    const metadata = await protectedRequest("/_admin/vaults", {
       method: "POST",
-      body: JSON.stringify({ vaultId, kind, name }),
+      body: JSON.stringify({ vaultId, kind, name, bootstrapGrants: plan.bootstrapGrants }),
     });
+    await writeDefaultVaultPages({
+      actorNpub,
+      folderId: plan.defaultFolderId,
+      keyring: plan.keyring,
+      signEvent: (event) => window.nostr.signEvent(event),
+      vaultId,
+    });
+    state.keyring = plan.keyring;
+    return metadata;
   }
 
   async function ensurePersonalVaultForActiveSelection() {
@@ -5488,8 +5752,10 @@ const FiniteBrainProductClient = (() => {
     buildPageDeleteRequest,
     buildPageWriteRequest,
     buildAuthEventTemplate,
+    buildDefaultVaultPageWrites,
     buildFolderAccessRemovalRequest,
     buildVaultInvitationRequest,
+    buildVaultBootstrapPlan,
     buildGraphProjection,
     buildReplayFrames,
     canonicalAdminAccessChangePayload,
@@ -5499,6 +5765,9 @@ const FiniteBrainProductClient = (() => {
     createClientProjection,
     createSessionKeyring,
     deriveSignerState,
+    defaultVaultBootstrapFolderIds,
+    defaultVaultPages,
+    defaultVaultPagesFolderId,
     encryptFolderObject,
     editorSlashCommandRows,
     extractPageLinks,

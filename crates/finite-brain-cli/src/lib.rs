@@ -37,16 +37,19 @@ use finite_brain_core::portability::{
     WorkingTreeObjectManifestEntry, WorkingTreeSyncState,
 };
 use finite_brain_core::{
-    AdminAccessAction, FolderKey, bootstrap_organization_vault, bootstrap_personal_vault,
+    AdminAccessAction, FolderKey, FolderObjectAad, FolderObjectOperation, ObjectId,
+    SafeRelativePath, VaultId, VaultKind, bootstrap_organization_vault, bootstrap_personal_vault,
+    default_vault_pages, default_vault_pages_folder_id, encrypt_folder_object,
 };
 use finite_nostr::{NostrPublicKey, decrypt_nip44, encrypt_nip44};
-use nostr::Kind;
+use nostr::{Keys, Kind};
 
 pub(crate) const AUTH_VERSION: &str = "finitebrain-agent-auth-v1";
 pub(crate) const AGENT_STATE_VERSION: &str = "finitebrain-agent-state-v1";
 pub(crate) const VAULT_DIRECTORY_VERSION: &str = "finite-vault-directory-v1";
 pub(crate) const WORKING_TREE_STATE_VERSION: &str = "finite-vault-working-tree-state-v1";
 pub(crate) const APP_SPECIFIC_KIND: u16 = 30_078;
+const CIPHER_AES_256_GCM: &str = "AES-256-GCM";
 
 /// Run `fbrain` using process args and stdout.
 pub fn run_from_process(env: CliEnvironment) -> Result<(), CliError> {
@@ -981,26 +984,38 @@ fn activity<W: Write>(env: &CliEnvironment, json: bool, output: &mut W) -> Resul
     }
 }
 
-fn bootstrap_grants_for_vault_create(
+struct VaultCreateBootstrapPlan {
+    bootstrap_grants: Vec<serde_json::Value>,
+    default_folder_id: String,
+    folder_keys: BTreeMap<(String, u32), FolderKey>,
+}
+
+fn bootstrap_plan_for_vault_create(
     env: &CliEnvironment,
     vault_id: &str,
     kind: &str,
     name: &str,
-) -> Result<Vec<serde_json::Value>, CliError> {
+) -> Result<VaultCreateBootstrapPlan, CliError> {
     let auth = read_auth_required(env)?;
-    let output = match kind {
-        "personal" => bootstrap_personal_vault(vault_id, name, auth.npub.clone()),
-        "organization" => bootstrap_organization_vault(vault_id, name, auth.npub.clone()),
+    let (vault_kind, output) = match kind {
+        "personal" => (
+            VaultKind::Personal,
+            bootstrap_personal_vault(vault_id, name, auth.npub.clone()),
+        ),
+        "organization" => (
+            VaultKind::Organization,
+            bootstrap_organization_vault(vault_id, name, auth.npub.clone()),
+        ),
         other => {
             return Err(CliError::InvalidInput(format!(
                 "unknown vault kind {other}"
             )));
         }
-    }
-    .map_err(|error| CliError::InvalidInput(error.to_string()))?;
+    };
+    let output = output.map_err(|error| CliError::InvalidInput(error.to_string()))?;
 
     let mut folder_keys = BTreeMap::<(String, u32), FolderKey>::new();
-    output
+    let bootstrap_grants = output
         .required_key_grants
         .into_iter()
         .map(|required| {
@@ -1023,7 +1038,82 @@ fn bootstrap_grants_for_vault_create(
                 "grant": grant
             }))
         })
-        .collect()
+        .collect::<Result<Vec<_>, CliError>>()?;
+
+    Ok(VaultCreateBootstrapPlan {
+        bootstrap_grants,
+        default_folder_id: default_vault_pages_folder_id(vault_kind).to_owned(),
+        folder_keys,
+    })
+}
+
+fn write_default_vault_pages_for_create(
+    env: &CliEnvironment,
+    server_url: &str,
+    vault_id: &str,
+    plan: &VaultCreateBootstrapPlan,
+) -> Result<(), CliError> {
+    let auth = read_auth_required(env)?;
+    let keys = Keys::parse(&auth.secret_key)
+        .map_err(|error| CliError::InvalidSigner(error.to_string()))?;
+    let folder_id = finite_brain_core::FolderId::new(plan.default_folder_id.clone())
+        .map_err(|error| CliError::InvalidInput(error.to_string()))?;
+    let key_version = 1;
+    let folder_key = plan
+        .folder_keys
+        .get(&(plan.default_folder_id.clone(), key_version))
+        .ok_or_else(|| {
+            CliError::InvalidInput(format!(
+                "missing generated Folder Key for {}",
+                plan.default_folder_id
+            ))
+        })?;
+
+    for page in default_vault_pages() {
+        let object_id = ObjectId::new(page.object_id)
+            .map_err(|error| CliError::InvalidInput(error.to_string()))?;
+        let page_path = SafeRelativePath::new("page_path", page.path)
+            .map_err(|error| CliError::InvalidInput(error.to_string()))?;
+        let aad = FolderObjectAad {
+            vault_id: VaultId::new(vault_id.to_owned())
+                .map_err(|error| CliError::InvalidInput(error.to_string()))?,
+            folder_id: folder_id.clone(),
+            object_id: object_id.clone(),
+            key_version,
+        };
+        let plaintext = encode_folder_object_page_plaintext(&page_path, page.markdown)?;
+        let envelope = encrypt_folder_object(folder_key, &aad, plaintext)
+            .map_err(|error| CliError::InvalidInput(error.to_string()))?;
+        let envelope_json = envelope.canonical_json();
+        let revision_event = signed_revision_event(
+            &keys,
+            RevisionEventInput {
+                actor_npub: &auth.npub,
+                vault_id,
+                folder_id: &folder_id,
+                object_id: &object_id,
+                operation: FolderObjectOperation::Create,
+                base_revision: None,
+                key_version,
+                envelope_json: envelope_json.clone(),
+            },
+        )?;
+        let body = serde_json::json!({
+            "baseRevision": null,
+            "keyVersion": key_version,
+            "cipher": CIPHER_AES_256_GCM,
+            "ciphertext": envelope_json,
+            "revisionEvent": revision_event
+        });
+        let route = format!(
+            "/_admin/vaults/{vault_id}/folders/{}/objects/{}",
+            folder_id.as_str(),
+            object_id.as_str()
+        );
+        signed_json_request_to_server(env, server_url, "PUT", &route, Some(body))?;
+    }
+
+    Ok(())
 }
 
 fn access<W: Write>(
@@ -1213,15 +1303,23 @@ fn vault<W: Write>(
             let kind = option_value(args, "--kind").unwrap_or_else(|| "personal".to_owned());
             let normalized_kind = normalize_vault_kind(&kind)?;
             let name = option_value(args, "--name").unwrap_or_else(|| vault_id.clone());
-            let bootstrap_grants =
-                bootstrap_grants_for_vault_create(env, vault_id, normalized_kind, &name)?;
+            let bootstrap_plan =
+                bootstrap_plan_for_vault_create(env, vault_id, normalized_kind, &name)?;
             let body = serde_json::json!({
                 "vaultId": vault_id,
                 "kind": normalized_kind,
                 "name": name,
-                "bootstrapGrants": bootstrap_grants
+                "bootstrapGrants": bootstrap_plan.bootstrap_grants
             });
-            let response = signed_json_request(env, args, "POST", "/_admin/vaults", Some(body))?;
+            let server_url = server_url_for_command(env, args)?;
+            let response = signed_json_request_to_server(
+                env,
+                &server_url,
+                "POST",
+                "/_admin/vaults",
+                Some(body),
+            )?;
+            write_default_vault_pages_for_create(env, &server_url, vault_id, &bootstrap_plan)?;
             write_command_response(output, json, &response)
         }
         "metadata" | "status" => {
@@ -1731,6 +1829,7 @@ fn share<W: Write>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use finite_brain_core::{EncryptedFolderObjectEnvelope, FolderObjectAad, open_folder_object};
     use finite_nostr::{
         GiftWrapValidation, NostrPublicKey, decode_http_auth_header, open_gift_wrap,
     };
@@ -2046,6 +2145,28 @@ mod tests {
         plaintext["folderKey"].as_str().unwrap().to_owned()
     }
 
+    fn open_default_page_request(
+        body: &str,
+        vault_id: &str,
+        folder_id: &str,
+        object_id: &str,
+        folder_key: &str,
+    ) -> Value {
+        let body: Value = serde_json::from_str(body).unwrap();
+        let key_version = body["keyVersion"].as_u64().unwrap() as u32;
+        let key = FolderKey::from_base64(folder_key).unwrap();
+        let aad = FolderObjectAad {
+            vault_id: VaultId::new(vault_id).unwrap(),
+            folder_id: finite_brain_core::FolderId::new(folder_id).unwrap(),
+            object_id: ObjectId::new(object_id).unwrap(),
+            key_version,
+        };
+        let envelope =
+            EncryptedFolderObjectEnvelope::from_json(body["ciphertext"].as_str().unwrap()).unwrap();
+        let plaintext = open_folder_object(&key, &aad, &envelope).unwrap();
+        serde_json::from_slice(&plaintext).unwrap()
+    }
+
     fn read_http_request(stream: &mut TcpStream) -> (String, String) {
         stream
             .set_read_timeout(Some(Duration::from_secs(1)))
@@ -2345,6 +2466,109 @@ mod tests {
             grant_plaintext_folder_key(&body, secret, &admin_npub),
             folder_key.to_base64()
         );
+    }
+
+    #[test]
+    fn vault_create_writes_default_pages() {
+        let cases = [
+            (
+                "personal",
+                "personal-defaults",
+                "Personal defaults",
+                vec!["home"],
+                "home",
+            ),
+            (
+                "organization",
+                "org-defaults",
+                "Org defaults",
+                vec!["vault-ops", "general"],
+                "general",
+            ),
+        ];
+
+        for (kind, vault_id, name, expected_grant_folders, default_folder_id) in cases {
+            let tmp = TempDir::new().unwrap();
+            let secret = "0000000000000000000000000000000000000000000000000000000000000001";
+            run(&tmp, &["auth", "login", "--nsec", secret]);
+            let actor_npub = run(&tmp, &["signer", "public-key"]).trim().to_owned();
+            let (server_url, server) = start_ok_capture_server(3);
+
+            let mut output = Vec::new();
+            run_with_env(
+                [
+                    "vault",
+                    "create",
+                    vault_id,
+                    "--kind",
+                    kind,
+                    "--name",
+                    name,
+                    "--server",
+                    &server_url,
+                    "--json",
+                ],
+                env_for(&tmp),
+                &mut output,
+            )
+            .unwrap();
+
+            let response: Value = serde_json::from_slice(&output).unwrap();
+            assert_eq!(response["status"], "ok");
+
+            let requests = server.join().unwrap();
+            assert_eq!(requests.len(), 3);
+            let (_, post_body) = requests
+                .iter()
+                .find(|(request, _)| request.starts_with("POST /_admin/vaults "))
+                .expect("vault create request captured");
+            let post_body: Value = serde_json::from_str(post_body).unwrap();
+            assert_eq!(post_body["vaultId"], vault_id);
+            assert_eq!(post_body["kind"], kind);
+            assert_eq!(post_body["name"], name);
+            assert_eq!(
+                post_body["bootstrapGrants"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|grant| grant["folderId"].as_str().unwrap())
+                    .collect::<Vec<_>>(),
+                expected_grant_folders
+            );
+
+            let default_grant = post_body["bootstrapGrants"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|grant| grant["folderId"] == default_folder_id)
+                .expect("default Folder grant captured");
+            let default_folder_key = grant_plaintext_folder_key(default_grant, secret, &actor_npub);
+
+            for (object_id, page_path) in [
+                ("obj_default_agents", "AGENTS.md"),
+                ("obj_default_humans", "HUMANS.md"),
+            ] {
+                let (request, body) = requests
+                    .iter()
+                    .find(|(request, _)| {
+                        request.starts_with(&format!(
+                            "PUT /_admin/vaults/{vault_id}/folders/{default_folder_id}/objects/{object_id} "
+                        ))
+                    })
+                    .expect("default Page write captured");
+                assert!(request.contains(object_id));
+                let plaintext = open_default_page_request(
+                    body,
+                    vault_id,
+                    default_folder_id,
+                    object_id,
+                    &default_folder_key,
+                );
+                assert_eq!(plaintext["version"], "finite-folder-object-page-v1");
+                assert_eq!(plaintext["path"], page_path);
+                assert!(plaintext["markdown"].as_str().unwrap().starts_with('#'));
+            }
+        }
     }
 
     #[test]
