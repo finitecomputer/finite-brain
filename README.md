@@ -163,7 +163,7 @@ For the internal smoke alpha backup, restore, and old-route cutover handoff, see
 ## Packaged Agent Skill
 
 This repository includes a minimal FiniteBrain agent skill at
-[`skills/finitebrain-agent/SKILL.md`](skills/finitebrain-agent/SKILL.md). Keep
+[`skills/finitebrain/SKILL.md`](skills/finitebrain/SKILL.md). Keep
 it in sync with `fbrain` CLI ergonomics, smoke-agent workflows, and Vault
 Working Tree conventions. It lives here while the agent flow is still changing;
 once stable, move or publish it through the shared `finite-skills` packaging
