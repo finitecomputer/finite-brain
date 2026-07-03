@@ -349,6 +349,16 @@ assert.equal(client.readerPageRows("general", draftPages)[0].label, "Draft Page"
   assert.equal(client.vaultInvitationCreatePath("smoke org"), "/_admin/vaults/smoke%20org/invitations");
   assert.equal(client.vaultInvitationLinkPath("invite/code"), "/_admin/vault-invitation-links/invite%2Fcode");
   assert.equal(client.vaultInvitationAcceptPath("invite/code"), "/_admin/vault-invitation-links/invite%2Fcode/accept");
+  assert.equal(client.vaultInvitationIdentifierHint("invite-0fe6eda60e1bf6e662acb8e2b5c425d9"), null);
+  assert.match(
+    client.vaultInvitationIdentifierHint("invitation-4f82a37c1b82bcdd54973c466cdde914"),
+    /invitation id/
+  );
+  assert.match(client.vaultInvitationIdentifierHint("4f82a37c1b82bcdd54973c466cdde914"), /start with invite-/);
+  assert.match(
+    client.vaultInvitationUnavailableDetail(new Error("vault invitation unavailable")),
+    /Check the Invite Code, active signer/
+  );
   assert.equal(
     client.vaultInvitationRevokePath("smoke org", "invitation/one"),
     "/_admin/vaults/smoke%20org/invitations/invitation%2Fone"
@@ -487,6 +497,8 @@ assert.equal(client.readerPageRows("general", draftPages)[0].label, "Draft Page"
   assert.equal(client.defaultVaultPagesFolderId("personal"), "getting-started");
   assert.equal(client.defaultVaultPagesFolderId("organization"), "getting-started");
   assert.match(htmlSource, /id="vaultInviteFoldersInput"\s+value="getting-started"/);
+  assert.match(htmlSource, />Invite code<\/span>/);
+  assert.doesNotMatch(htmlSource, /Invite code or id/);
   assert.match(htmlSource, /id="pageFolderIdInput" value="getting-started"/);
   assert.match(htmlSource, /id="okfDestinationFolderInput" value="getting-started"/);
   const defaultPages = client.defaultVaultPages("organization");

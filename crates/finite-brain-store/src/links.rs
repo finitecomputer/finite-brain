@@ -26,6 +26,11 @@ impl BrainStore {
                 reason: "vault invitations must be created by a vault admin".to_owned(),
             });
         }
+        if self.member_exists(vault_id, user_id)? {
+            return Err(StoreError::BrokenInvariant {
+                reason: "target is already a vault member".to_owned(),
+            });
+        }
         validate_link_id("vault_invitation_id", id)?;
         validate_link_id("invite_code", invite_code)?;
         validate_link_timestamp("expiresAt", expires_at)?;
@@ -174,6 +179,7 @@ impl BrainStore {
             return Ok(invitation);
         }
         ensure_invitation_available(&invitation, user_id, now)?;
+        let already_member = self.member_exists(&invitation.vault_id, user_id)?;
 
         let tx = self.conn.transaction()?;
         insert_member_if_missing(&tx, &invitation.vault_id, user_id)?;
@@ -187,7 +193,9 @@ impl BrainStore {
         )?;
         tx.commit()?;
 
-        self.load_vault_invitation(&invitation.id)
+        let mut invitation = self.load_vault_invitation(&invitation.id)?;
+        invitation.duplicate_accept = already_member;
+        Ok(invitation)
     }
 
     /// Create one npub-bound singleton Share Link for a restricted Folder.

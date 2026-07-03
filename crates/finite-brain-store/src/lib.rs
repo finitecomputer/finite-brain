@@ -2735,6 +2735,70 @@ mod tests {
     }
 
     #[test]
+    fn vault_invitation_handles_existing_members_without_stale_invites() {
+        let mut store = bootstrapped_org_store();
+        let vault_id = VaultId::new("acme").unwrap();
+        let admin = UserId::new("npub-admin").unwrap();
+        let existing_member = UserId::new("npub-existing-member").unwrap();
+        let stale_target = UserId::new("npub-stale-target").unwrap();
+        let now = "2026-06-23T00:00:00.000Z";
+
+        store.add_member(&vault_id, &existing_member).unwrap();
+        assert_eq!(
+            store
+                .create_vault_invitation(
+                    &vault_id,
+                    "invitation-existing-member",
+                    &existing_member,
+                    "invite-existing-member0123456789abcdef",
+                    "/_admin/vault-invitation-links/invite-existing-member0123456789abcdef/accept",
+                    &[],
+                    &admin,
+                    "2026-06-30T00:00:00.000Z",
+                    now,
+                )
+                .unwrap_err(),
+            StoreError::BrokenInvariant {
+                reason: "target is already a vault member".to_owned()
+            }
+        );
+
+        store
+            .create_vault_invitation(
+                &vault_id,
+                "invitation-stale-member",
+                &stale_target,
+                "invite-stale-member0123456789abcdef",
+                "/_admin/vault-invitation-links/invite-stale-member0123456789abcdef/accept",
+                &[],
+                &admin,
+                "2026-06-30T00:00:00.000Z",
+                now,
+            )
+            .unwrap();
+        store.add_member(&vault_id, &stale_target).unwrap();
+
+        let visible = store.list_visible_vaults(&stale_target).unwrap();
+        assert!(visible.iter().any(|vault| vault.id == vault_id));
+        assert!(!visible.iter().any(|vault| {
+            vault.id == vault_id
+                && vault.role == VisibleVaultRole::Invited
+                && vault.invite_code.is_some()
+        }));
+
+        let accepted = store
+            .accept_vault_invitation_by_code(
+                "invite-stale-member0123456789abcdef",
+                &stale_target,
+                now,
+            )
+            .unwrap();
+        assert_eq!(accepted.status, LinkStatus::Accepted);
+        assert!(accepted.duplicate_accept);
+        assert_eq!(accepted.accepted_at.as_deref(), Some(now));
+    }
+
+    #[test]
     fn share_link_accept_creates_member_access_grant_and_optional_mount_once() {
         let mut store = store_with_strategy_folder();
         let vault_id = VaultId::new("acme").unwrap();

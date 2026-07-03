@@ -100,7 +100,7 @@ where
 fn help<W: Write>(output: &mut W) -> Result<(), CliError> {
     writeln!(
         output,
-        "fbrain [--config-dir <path>] doctor\nauth status|login|logout\nsigner status|public-key|sign|encrypt|decrypt\ndaemon status|start|stop|logs|tick|watch\nsync status|now [--summary]\nopen <vault-id> [path]\nstatus [--json]\nunlock [folder|--all]\nconflicts\nresolve <id>\nactivity\naccess explain|list|grant|revoke\nvault create|metadata|export\nfolder create|list\nmount list\npermissions add-member|remove-member|add-admin|remove-admin|grant-folder\ninvites create|show|accept|revoke\nshare link|accept|revoke|source|folder-invite|folder-accept"
+        "fbrain [--config-dir <path>] doctor\nauth status|login|logout\nsigner status|public-key|sign|encrypt|decrypt\ndaemon status|start|stop|logs|tick|watch\nsync status|now [--summary]\nopen <vault-id> [path]\nstatus [--json]\nunlock [folder|--all]\nconflicts\nresolve <id>\nactivity\naccess explain|list|grant|revoke\nvault create|metadata|export\nfolder create|list\nmount list\npermissions add-member|remove-member|add-admin|remove-admin|grant-folder\ninvites create|show --code invite-...|accept --code invite-...|accept --vault <vault-id> --id invitation-...|revoke\nshare link|accept|revoke|source|folder-invite|folder-accept"
     )?;
     Ok(())
 }
@@ -1665,7 +1665,12 @@ fn invites<W: Write>(
             write_command_response(output, json, &response)
         }
         Some("show") => {
-            let code = required_option_or_positional(args, "--code", 1, "invite-code")?;
+            let code = require_invite_code(required_option_or_positional(
+                args,
+                "--code",
+                1,
+                "invite-code",
+            )?)?;
             let route = format!("/_admin/vault-invitation-links/{code}");
             let response = signed_json_request(env, args, "GET", &route, None)?;
             write_command_response(output, json, &response)
@@ -1674,6 +1679,7 @@ fn invites<W: Write>(
             let route = if let Some(code) =
                 option_value(args, "--code").or_else(|| positional_values(args).get(1).cloned())
             {
+                let code = require_invite_code(code)?;
                 format!("/_admin/vault-invitation-links/{code}/accept")
             } else {
                 let vault_id = command_vault_id(args, env)?;
@@ -1694,6 +1700,17 @@ fn invites<W: Write>(
         Some(other) => Err(CliError::InvalidCommand(format!("invites {other}"))),
         None => Err(CliError::MissingArgument("invites command")),
     }
+}
+
+fn require_invite_code(value: String) -> Result<String, CliError> {
+    let value = value.trim().to_owned();
+    if value.starts_with("invitation-") {
+        return Err(CliError::InvalidInput(
+            "expected an invite code like invite-...; invitation-... is an invitation id. Use `fbrain invites accept --vault <vault-id> --id <invitation-id>` for by-id accept."
+                .to_owned(),
+        ));
+    }
+    Ok(value)
 }
 
 fn share<W: Write>(
@@ -3151,6 +3168,118 @@ mod tests {
         let body: Value = serde_json::from_str(body).unwrap();
         assert_eq!(body["targetNpub"], "npub-target");
         assert_eq!(body["initialFolderAccess"][0], "general");
+    }
+
+    #[test]
+    fn invites_code_commands_reject_invitation_ids_locally() {
+        let tmp = TempDir::new().unwrap();
+        run(
+            &tmp,
+            &[
+                "auth",
+                "login",
+                "--nsec",
+                "0000000000000000000000000000000000000000000000000000000000000001",
+            ],
+        );
+
+        let mut output = Vec::new();
+        let error = run_with_env(
+            [
+                "invites",
+                "accept",
+                "--code",
+                "invitation-4f82a37c1b82bcdd54973c466cdde914",
+                "--server",
+                "http://127.0.0.1:9",
+            ],
+            env_for(&tmp),
+            &mut output,
+        )
+        .unwrap_err();
+
+        assert!(matches!(error, CliError::InvalidInput(_)));
+        assert!(
+            error
+                .to_string()
+                .contains("expected an invite code like invite-")
+        );
+        assert!(error.to_string().contains("--id <invitation-id>"));
+        assert!(output.is_empty());
+
+        let error = run_with_env(
+            [
+                "invites",
+                "show",
+                "--code",
+                "invitation-4f82a37c1b82bcdd54973c466cdde914",
+                "--server",
+                "http://127.0.0.1:9",
+            ],
+            env_for(&tmp),
+            &mut output,
+        )
+        .unwrap_err();
+        assert!(matches!(error, CliError::InvalidInput(_)));
+    }
+
+    #[test]
+    fn invites_accept_routes_codes_and_ids_explicitly() {
+        let tmp = TempDir::new().unwrap();
+        run(
+            &tmp,
+            &[
+                "auth",
+                "login",
+                "--nsec",
+                "0000000000000000000000000000000000000000000000000000000000000001",
+            ],
+        );
+        let (server_url, server) = start_ok_capture_server(2);
+
+        let mut output = Vec::new();
+        run_with_env(
+            [
+                "invites",
+                "accept",
+                "--code",
+                "invite-0fe6eda60e1bf6e662acb8e2b5c425d9",
+                "--server",
+                &server_url,
+                "--json",
+            ],
+            env_for(&tmp),
+            &mut output,
+        )
+        .unwrap();
+        let json: Value = serde_json::from_slice(&output).unwrap();
+        assert_eq!(json["status"], "ok");
+
+        let mut output = Vec::new();
+        run_with_env(
+            [
+                "invites",
+                "accept",
+                "--vault",
+                "bavinck-org",
+                "--id",
+                "invitation-4f82a37c1b82bcdd54973c466cdde914",
+                "--server",
+                &server_url,
+                "--json",
+            ],
+            env_for(&tmp),
+            &mut output,
+        )
+        .unwrap();
+
+        let requests = server.join().unwrap();
+        assert!(requests[0].0.starts_with(
+            "POST /_admin/vault-invitation-links/invite-0fe6eda60e1bf6e662acb8e2b5c425d9/accept"
+        ));
+        assert!(requests[1].0.starts_with(
+            "POST /_admin/vaults/bavinck-org/invitations/invitation-4f82a37c1b82bcdd54973c466cdde914/accept"
+        ));
     }
 
     #[test]

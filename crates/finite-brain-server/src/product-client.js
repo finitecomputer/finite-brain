@@ -3965,17 +3965,22 @@ const FiniteBrainProductClient = (() => {
     const connected = state.signerStatus === "connected";
     const busy = state.accessBusy;
     const organizationVault = state.metadata?.kind === "organization";
-    const codeAvailable = Boolean($("vaultInviteCodeInput").value.trim() || state.lastVaultInvitationCode);
+    const invitationInput = $("vaultInviteCodeInput").value.trim() || state.lastVaultInvitationCode || "";
+    const codeAvailable = Boolean(invitationInput);
+    const codeHint = vaultInvitationIdentifierHint(invitationInput);
+    const inviteCodeUsable = codeAvailable && !codeHint;
     $("createVaultInvitationButton").disabled = !connected || busy || !state.activeVaultId || !organizationVault;
-    $("getVaultInvitationButton").disabled = !connected || busy || !codeAvailable;
-    $("acceptVaultInvitationButton").disabled = !connected || busy || !codeAvailable;
+    $("getVaultInvitationButton").disabled = !connected || busy || !inviteCodeUsable;
+    $("acceptVaultInvitationButton").disabled = !connected || busy || !inviteCodeUsable;
     $("revokeVaultInvitationButton").disabled = !connected || busy || !codeAvailable || !organizationVault;
     if (!connected) {
       setText("vaultInvitationHint", "Connect signer");
+    } else if (codeHint) {
+      setText("vaultInvitationHint", codeHint);
     } else if (state.metadata?.kind === "organization") {
-      setText("vaultInvitationHint", "Organization Vault");
+      setText("vaultInvitationHint", activeSignerInviteDetail());
     } else {
-      setText("vaultInvitationHint", "Accept works from any Vault");
+      setText("vaultInvitationHint", activeSignerInviteDetail());
     }
   }
 
@@ -4716,10 +4721,42 @@ const FiniteBrainProductClient = (() => {
     };
   }
 
-  function currentVaultInvitationCode() {
+  function vaultInvitationIdentifierHint(input) {
+    const value = String(input || "").trim();
+    if (!value) return null;
+    if (value.startsWith("invitation-")) {
+      return "That is an invitation id. Inspect and accept use an Invite Code like invite-...; use Revoke invite or fbrain invites accept --vault <vault-id> --id <invitation-id> for id-based actions.";
+    }
+    if (!value.startsWith("invite-")) {
+      return "Invite Codes start with invite-. Check the copied code and the active signer.";
+    }
+    return null;
+  }
+
+  function currentVaultInvitationInput() {
     const value = $("vaultInviteCodeInput").value.trim() || state.lastVaultInvitationCode;
-    if (!value) throw new Error("Paste an invitation code or id first");
+    if (!value) throw new Error("Paste an Invite Code first");
     return value;
+  }
+
+  function currentVaultInvitationCode() {
+    const value = currentVaultInvitationInput();
+    const hint = vaultInvitationIdentifierHint(value);
+    if (hint) throw new Error(hint);
+    return value;
+  }
+
+  function vaultInvitationUnavailableDetail(error) {
+    const message = error?.message || String(error || "");
+    if (message === "vault invitation unavailable") {
+      return "Vault invitation unavailable. Check the Invite Code, active signer, expiry, or whether the invite was already handled.";
+    }
+    return message;
+  }
+
+  function activeSignerInviteDetail() {
+    if (state.signerStatus !== "connected" || !state.pubkeyHex) return "Connect signer";
+    return `Active signer ${shortKey(npubFromHex(state.pubkeyHex))}. Invites are bound to the target npub.`;
   }
 
   function vaultInvitationCreatePath(vaultId) {
@@ -5242,13 +5279,15 @@ const FiniteBrainProductClient = (() => {
       state.lastVaultInvitationCode = invitation.inviteCode;
       $("vaultInviteCodeInput").value = invitation.inviteCode;
       setAccessResult("ready", "Invitation created", `${shortKey(invitation.userId)} can join ${invitation.vaultId}.`, {
-        code: invitation.inviteCode,
+        inviteCode: invitation.inviteCode,
+        invitationId: invitation.id,
         acceptPath: invitation.acceptPath,
         expiresAt: invitation.expiresAt,
+        "target npub": shortKey(invitation.userId),
       });
       log("Created Vault invitation.", { invitationId: invitation.id, vaultId: invitation.vaultId });
     } catch (error) {
-      setAccessResult("error", "Invite failed", error.message);
+      setAccessResult("error", "Invite failed", vaultInvitationUnavailableDetail(error));
       throw error;
     } finally {
       state.accessBusy = false;
@@ -5270,11 +5309,13 @@ const FiniteBrainProductClient = (() => {
         vaultId: invitation.vaultId,
         invitationId: invitation.id,
         acceptPath: invitation.acceptPath,
+        "target npub": shortKey(invitation.userId),
+        signer: state.pubkeyHex ? shortKey(npubFromHex(state.pubkeyHex)) : "none",
       });
       log("Loaded Vault invitation.", { invitationId: invitation.id, vaultId: invitation.vaultId });
       return invitation;
     } catch (error) {
-      setAccessResult("error", "Inspect failed", error.message);
+      setAccessResult("error", "Inspect failed", vaultInvitationUnavailableDetail(error));
       throw error;
     } finally {
       state.accessBusy = false;
@@ -5304,11 +5345,12 @@ const FiniteBrainProductClient = (() => {
         {
           status: invitation.status,
           "folders granted": (invitation.initialFolderAccess || []).join(", ") || "none",
+          signer: state.pubkeyHex ? shortKey(npubFromHex(state.pubkeyHex)) : "none",
         }
       );
       log("Accepted Vault invitation.", { invitationId: invitation.id, vaultId: invitation.vaultId });
     } catch (error) {
-      setAccessResult("error", "Accept failed", error.message);
+      setAccessResult("error", "Accept failed", vaultInvitationUnavailableDetail(error));
       throw error;
     } finally {
       state.accessBusy = false;
@@ -5317,7 +5359,7 @@ const FiniteBrainProductClient = (() => {
   }
 
   async function revokeVaultInvitationFromPanel() {
-    const value = currentVaultInvitationCode();
+    const value = currentVaultInvitationInput();
     state.accessBusy = true;
     state.accessResult = null;
     render();
@@ -5956,8 +5998,10 @@ const FiniteBrainProductClient = (() => {
     workspaceTabTitle,
     vaultInvitationAcceptPath,
     vaultInvitationCreatePath,
+    vaultInvitationIdentifierHint,
     vaultInvitationLinkPath,
     vaultInvitationRevokePath,
+    vaultInvitationUnavailableDetail,
   };
 })();
 

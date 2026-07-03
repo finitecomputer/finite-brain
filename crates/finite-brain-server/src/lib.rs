@@ -1483,6 +1483,88 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn visible_vaults_does_not_list_pending_invites_for_existing_members() {
+        let admin_keys = Keys::generate();
+        let target_keys = Keys::generate();
+        let target_npub = npub(&target_keys);
+        let state = test_state();
+        let router = router_with_state(state.clone());
+        let create_vault = post_vault(
+            router.clone(),
+            &admin_keys,
+            &create_vault_body("acme", "organization"),
+            TEST_NOW,
+            None,
+            None,
+            None,
+        )
+        .await;
+        assert_eq!(create_vault.status(), StatusCode::OK);
+
+        let invite_body = serde_json::json!({
+            "targetNpub": target_npub,
+            "initialFolderAccess": ["getting-started"],
+            "expiresAt": "2099-06-30T00:00:00.000Z",
+        })
+        .to_string();
+        let invite = authed_request(
+            router.clone(),
+            &admin_keys,
+            "POST",
+            "/_admin/vaults/acme/invitations",
+            Some(invite_body),
+            TEST_NOW + 1,
+        )
+        .await;
+        assert_eq!(invite.status(), StatusCode::OK);
+        let invitation: VaultInvitationResponse = read_json(invite).await;
+
+        {
+            let mut store = state.store.lock().unwrap();
+            store
+                .add_member(
+                    &VaultId::new("acme").unwrap(),
+                    &UserId::new(target_npub.clone()).unwrap(),
+                )
+                .unwrap();
+        }
+
+        let invited_list = authed_request(
+            router.clone(),
+            &target_keys,
+            "GET",
+            "/_admin/vaults",
+            None,
+            TEST_NOW + 2,
+        )
+        .await;
+        assert_eq!(invited_list.status(), StatusCode::OK);
+        let invited_list: VisibleVaultsResponse = read_json(invited_list).await;
+        assert_eq!(invited_list.vaults.len(), 1);
+        assert_eq!(invited_list.vaults[0].vault_id, "acme");
+        assert_eq!(invited_list.vaults[0].role, "member");
+        assert!(invited_list.vaults[0].invite_code.is_none());
+
+        let accept_path = format!(
+            "/_admin/vault-invitation-links/{}/accept",
+            invitation.invite_code
+        );
+        let accept = authed_request(
+            router,
+            &target_keys,
+            "POST",
+            &accept_path,
+            None,
+            TEST_NOW + 3,
+        )
+        .await;
+        assert_eq!(accept.status(), StatusCode::OK);
+        let accepted: VaultInvitationResponse = read_json(accept).await;
+        assert_eq!(accepted.status, "accepted");
+        assert!(accepted.duplicate_accept);
+    }
+
+    #[tokio::test]
     async fn personal_vault_owner_can_create_owner_folder() {
         let keys = Keys::generate();
         let owner_npub = npub(&keys);
@@ -2813,6 +2895,35 @@ mod tests {
         assert_eq!(revoke.status(), StatusCode::OK);
         let revoked: VaultInvitationResponse = read_json(revoke).await;
         assert_eq!(revoked.status, "revoked");
+    }
+
+    #[tokio::test]
+    async fn vault_invitation_create_rejects_existing_members() {
+        let admin_keys = Keys::generate();
+        let admin_npub = npub(&admin_keys);
+        let router = router_with_bootstrapped_org(&admin_keys).await;
+
+        let create_body = serde_json::json!({
+            "targetNpub": admin_npub,
+            "initialFolderAccess": ["getting-started"],
+            "expiresAt": "2026-06-30T00:00:00.000Z",
+        })
+        .to_string();
+        let create = authed_request(
+            router,
+            &admin_keys,
+            "POST",
+            "/_admin/vaults/acme/invitations",
+            Some(create_body),
+            TEST_NOW,
+        )
+        .await;
+        assert_error(
+            create,
+            StatusCode::BAD_REQUEST,
+            "target is already a vault member",
+        )
+        .await;
     }
 
     #[tokio::test]
