@@ -53,6 +53,7 @@ const FiniteBrainProductClient = (() => {
   const APP_EVENT_KIND = 30078;
   const MAX_OBJECT_ID_ATTEMPTS = 1000;
   const PERSONAL_VAULT_PLACEHOLDER_ID = "personal";
+  const DEFAULT_CLIENT_FOLDER_ID = "getting-started";
   const DEFAULT_AGENTS_MARKDOWN =
     [
       "# AGENTS.md",
@@ -1714,7 +1715,7 @@ const FiniteBrainProductClient = (() => {
           sourceFolderId: page.folderId || null,
           sourceObjectId: page.objectId || null,
           sourcePath,
-          folderId: options.destinationFolderId || page.targetFolderId || page.folderId || "general",
+          folderId: options.destinationFolderId || page.targetFolderId || page.folderId || DEFAULT_CLIENT_FOLDER_ID,
           targetPath,
           markdown,
           contentType: page.contentType || "text/markdown",
@@ -1730,7 +1731,7 @@ const FiniteBrainProductClient = (() => {
           sourceFolderId: object.folderId || null,
           sourceObjectId: object.objectId || null,
           sourcePath,
-          folderId: options.destinationFolderId || object.targetFolderId || object.folderId || "general",
+          folderId: options.destinationFolderId || object.targetFolderId || object.folderId || DEFAULT_CLIENT_FOLDER_ID,
           targetPath: normalizeSafeRelativePath(
             object.targetPath || object.pagePath || targetPathFromBundlePath(sourcePath),
             "OKF page target path"
@@ -1747,7 +1748,7 @@ const FiniteBrainProductClient = (() => {
           sourceFolderId: null,
           sourceObjectId: null,
           sourcePath,
-          folderId: options.destinationFolderId || "general",
+          folderId: options.destinationFolderId || DEFAULT_CLIENT_FOLDER_ID,
           targetPath: targetPathFromBundlePath(sourcePath),
           markdown,
           contentType: "text/markdown",
@@ -1764,7 +1765,7 @@ const FiniteBrainProductClient = (() => {
   }
 
   function normalizeExistingPageRecord(record) {
-    const folderId = record.folderId || "general";
+    const folderId = record.folderId || DEFAULT_CLIENT_FOLDER_ID;
     const path =
       record.path ||
       record.pagePath ||
@@ -1885,7 +1886,7 @@ const FiniteBrainProductClient = (() => {
 
     const entries = [];
     for (const page of bundle.pages) {
-      const folderId = page.folderId || options.destinationFolderId || "general";
+      const folderId = page.folderId || options.destinationFolderId || DEFAULT_CLIENT_FOLDER_ID;
       let targetPath = normalizeSafeRelativePath(page.targetPath, "OKF page target path");
       const existing = existingByPath.get(targetKey(folderId, targetPath));
       let action = "create";
@@ -2627,7 +2628,7 @@ const FiniteBrainProductClient = (() => {
   }
 
   function startNewPageDraft(folderIdOverride = null) {
-    const folderId = folderIdOverride || state.selectedFolderId || "general";
+    const folderId = folderIdOverride || state.selectedFolderId || DEFAULT_CLIENT_FOLDER_ID;
     const objectId = nextDraftObjectId();
     const draftKey = pageKey(folderId, objectId);
     const draftText = "# New Page\n\nStart writing here.";
@@ -3224,7 +3225,7 @@ const FiniteBrainProductClient = (() => {
   }
 
   function activePageKeyFromInputs() {
-    const folderId = $("pageFolderIdInput")?.value.trim() || state.selectedFolderId || "general";
+    const folderId = $("pageFolderIdInput")?.value.trim() || state.selectedFolderId || DEFAULT_CLIENT_FOLDER_ID;
     const objectId = $("pageObjectIdInput")?.value.trim() || selectedReaderPage()?.objectId || nextDraftObjectId();
     return { folderId, objectId, key: pageKey(folderId, objectId) };
   }
@@ -4214,8 +4215,8 @@ const FiniteBrainProductClient = (() => {
   }
 
   function defaultVaultPagesFolderId(kind) {
-    if (kind === "personal") return "getting-started";
-    if (kind === "organization") return "getting-started";
+    if (kind === "personal") return DEFAULT_CLIENT_FOLDER_ID;
+    if (kind === "organization") return DEFAULT_CLIENT_FOLDER_ID;
     throw new Error(`Unsupported Vault kind: ${kind}`);
   }
 
@@ -4507,7 +4508,7 @@ const FiniteBrainProductClient = (() => {
     } else if (visualEditorElement()?.getAttribute?.("contenteditable") === "true") {
       syncDraftFromVisualEditor();
     }
-    const folderId = $("pageFolderIdInput").value.trim() || "general";
+    const folderId = $("pageFolderIdInput").value.trim() || DEFAULT_CLIENT_FOLDER_ID;
     const objectId = $("pageObjectIdInput").value.trim() || "obj_000000000001";
     const key = pageKey(folderId, objectId);
     const page = state.projection.pages.get(key);

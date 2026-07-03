@@ -44,6 +44,7 @@ const context = {
 context.globalThis = context;
 
 const source = fs.readFileSync(path.join(__dirname, "product-client.js"), "utf8");
+const htmlSource = fs.readFileSync(path.join(__dirname, "product-client.html"), "utf8");
 vm.runInNewContext(source, context, { filename: "product-client.js" });
 
 const client = context.window.FiniteBrainProductClient;
@@ -328,20 +329,20 @@ assert.equal(client.readerPageRows("general", draftPages)[0].label, "Draft Page"
   assert.equal(accessEvent.content, client.canonicalAdminAccessChangePayload(accessPayload));
 
   assert.equal(
-    JSON.stringify(client.initialVaultInvitationFolders("general vault-ops general")),
-    JSON.stringify(["general", "vault-ops"])
+    JSON.stringify(client.initialVaultInvitationFolders("getting-started restricted getting-started")),
+    JSON.stringify(["getting-started", "restricted"])
   );
   assert.equal(
     JSON.stringify(
       client.buildVaultInvitationRequest({
       targetNpub: otherNpub,
-      initialFolderAccess: "general,vault-ops general",
+      initialFolderAccess: "getting-started,restricted getting-started",
       expiresAt: "2026-07-04T00:00:00.000Z",
       })
     ),
     JSON.stringify({
       targetNpub: otherNpub,
-      initialFolderAccess: ["general", "vault-ops"],
+      initialFolderAccess: ["getting-started", "restricted"],
       expiresAt: "2026-07-04T00:00:00.000Z",
     })
   );
@@ -485,6 +486,9 @@ assert.equal(client.readerPageRows("general", draftPages)[0].label, "Draft Page"
   );
   assert.equal(client.defaultVaultPagesFolderId("personal"), "getting-started");
   assert.equal(client.defaultVaultPagesFolderId("organization"), "getting-started");
+  assert.match(htmlSource, /id="vaultInviteFoldersInput"\s+value="getting-started"/);
+  assert.match(htmlSource, /id="pageFolderIdInput" value="getting-started"/);
+  assert.match(htmlSource, /id="okfDestinationFolderInput" value="getting-started"/);
   const defaultPages = client.defaultVaultPages("organization");
   assert.equal(
     JSON.stringify(defaultPages.slice(0, 5).map((page) => [page.folderId, page.objectId, page.path])),
@@ -1557,6 +1561,11 @@ assert.equal(client.readerPageRows("general", draftPages)[0].label, "Draft Page"
   assert.equal(preparedImport.skipped.length, 0);
   assert.match(preparedImport.writes[0].path, /\/_admin\/vaults\/smoke\/folders\/general\/objects\/obj_/);
   assert.equal(preparedImport.writes[0].body.revisionEvent.kind, 30078);
+
+  const implicitFolderOkf = client.parseOkfBundle({
+    pages: [{ path: "content/Notes/start.md", content: "# Start\n" }],
+  });
+  assert.equal(implicitFolderOkf.pages[0].folderId, "getting-started");
 
   const openedImportedAlpha = await client.openFolderObject(keyring, {
     vaultId: "smoke",
