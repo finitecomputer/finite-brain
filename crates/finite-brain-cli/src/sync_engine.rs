@@ -1345,6 +1345,7 @@ fn materialize_remote_projection(
             .map_err(|error| CliError::InvalidInput(error.to_string()))?,
         vault,
         opened_pages,
+        opened_assets: Vec::new(),
         locked_folders,
         latest_sequence: bootstrap.latest_sequence,
     })
@@ -2285,6 +2286,7 @@ mod tests {
             generated_by_npub: UserId::new("npub-owner").unwrap(),
             vault,
             opened_pages: Vec::new(),
+            opened_assets: Vec::new(),
             locked_folders: Vec::new(),
             latest_sequence: 0,
         })

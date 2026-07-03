@@ -5,6 +5,7 @@ pub fn materialize_vault_working_tree(
     input: WorkingTreeMaterializeInput,
 ) -> Result<WorkingTreeProjection, PortabilityError> {
     let mut files = BTreeMap::new();
+    let mut binary_files = BTreeMap::new();
     let mut folder_roots = BTreeMap::<(Option<VaultId>, FolderId), WorkingTreeFolderRoot>::new();
     let mut objects = Vec::new();
     let mut folder_paths = input
@@ -18,6 +19,12 @@ pub fn materialize_vault_working_tree(
             .opened_pages
             .iter()
             .map(|page| page.folder_display_path.to_string()),
+    );
+    folder_paths.extend(
+        input
+            .opened_assets
+            .iter()
+            .map(|asset| asset.folder_display_path.to_string()),
     );
     folder_paths.extend(
         input
@@ -51,6 +58,39 @@ pub fn materialize_vault_working_tree(
             key_version: page.key_version,
             content_type: page.content_type.clone(),
             content_hash: sha256_hex(page.markdown.as_bytes()),
+        });
+    }
+
+    for asset in &input.opened_assets {
+        folder_roots
+            .entry((asset.source_vault_id.clone(), asset.folder_id.clone()))
+            .or_insert_with(|| WorkingTreeFolderRoot {
+                folder_id: asset.folder_id.to_string(),
+                source_vault_id: asset.source_vault_id.as_ref().map(ToString::to_string),
+                path: asset.folder_display_path.to_string(),
+                can_read: true,
+                metadata_only: false,
+            });
+
+        let full_path = working_tree_page_path(&asset.folder_display_path, &asset.asset_path)?;
+        if folder_paths.contains(&full_path) {
+            return Err(PortabilityError::WorkingTreePathCollision { path: full_path });
+        }
+        insert_working_tree_binary_file(
+            &files,
+            &mut binary_files,
+            &full_path,
+            asset.bytes.clone(),
+        )?;
+        objects.push(WorkingTreeObjectManifestEntry {
+            folder_id: asset.folder_id.to_string(),
+            source_vault_id: asset.source_vault_id.as_ref().map(ToString::to_string),
+            path: asset.asset_path.to_string(),
+            object_id: asset.object_id.as_str().to_owned(),
+            revision: asset.revision,
+            key_version: asset.key_version,
+            content_type: asset.content_type.clone(),
+            content_hash: sha256_hex(&asset.bytes),
         });
     }
 
@@ -190,6 +230,7 @@ pub fn materialize_vault_working_tree(
 
     Ok(WorkingTreeProjection {
         files,
+        binary_files,
         directory,
         state,
     })
@@ -232,6 +273,21 @@ fn insert_working_tree_file(
     let path = path.to_owned();
     if files.insert(path.clone(), content).is_some() {
         return Err(PortabilityError::WorkingTreePathCollision { path });
+    }
+    Ok(())
+}
+
+fn insert_working_tree_binary_file(
+    files: &BTreeMap<String, String>,
+    binary_files: &mut BTreeMap<String, Vec<u8>>,
+    path: &str,
+    bytes: Vec<u8>,
+) -> Result<(), PortabilityError> {
+    validate_working_tree_file_path(path)?;
+    if files.contains_key(path) || binary_files.insert(path.to_owned(), bytes).is_some() {
+        return Err(PortabilityError::WorkingTreePathCollision {
+            path: path.to_owned(),
+        });
     }
     Ok(())
 }

@@ -75,6 +75,29 @@ pub struct OpenedPage {
     pub content_type: String,
 }
 
+/// One decrypted non-Markdown asset that the caller already proved accessible.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct OpenedAsset {
+    /// Folder containing the asset.
+    pub folder_id: FolderId,
+    /// Source Vault for mounted Folders. `None` means the opened Vault.
+    pub source_vault_id: Option<VaultId>,
+    /// Current encrypted object id.
+    pub object_id: ObjectId,
+    /// Display path of the containing Folder in a readable bundle.
+    pub folder_display_path: SafeRelativePath,
+    /// Plaintext path inside the Folder.
+    pub asset_path: SafeRelativePath,
+    /// Decrypted asset bytes.
+    pub bytes: Vec<u8>,
+    /// Current object revision.
+    pub revision: u64,
+    /// Folder Key version used by the current object.
+    pub key_version: u32,
+    /// MIME content type.
+    pub content_type: String,
+}
+
 /// Omitted Folder marker for readable exports.
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct OkfOmittedFolder {
@@ -280,6 +303,8 @@ pub struct WorkingTreeMaterializeInput {
     pub vault: Vault,
     /// Decrypted pages visible to the actor.
     pub opened_pages: Vec<OpenedPage>,
+    /// Decrypted assets visible to the actor.
+    pub opened_assets: Vec<OpenedAsset>,
     /// Folder-level omissions that must not leak Page details.
     pub locked_folders: Vec<OkfOmittedFolder>,
     /// Latest sync sequence observed by the client.
@@ -289,8 +314,10 @@ pub struct WorkingTreeMaterializeInput {
 /// File-map projection of a Vault Working Tree.
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct WorkingTreeProjection {
-    /// Files to write, keyed by safe relative path from the working-tree root.
+    /// UTF-8 text files to write, keyed by safe relative path from the working-tree root.
     pub files: BTreeMap<String, String>,
+    /// Binary files to write, keyed by safe relative path from the working-tree root.
+    pub binary_files: BTreeMap<String, Vec<u8>>,
     /// Parsed Vault Directory manifest.
     pub directory: VaultDirectoryManifest,
     /// Parsed working-tree state manifest.
@@ -661,20 +688,31 @@ mod tests {
 
     #[test]
     fn working_tree_materializes_accessible_pages_and_safe_agent_conventions() {
-        let mut opened = page(
+        let mut opened_page = page(
             "concepts",
             "obj_000000000001",
             "Concepts",
             "compiled/deep/module.md",
             "# Deep Module\n\nOnly accessible text is materialized. #agent",
         );
-        opened.revision = 7;
-        opened.key_version = 3;
+        opened_page.revision = 7;
+        opened_page.key_version = 3;
+        let opened_asset = asset(
+            "concepts",
+            "obj_000000000099",
+            "Concepts",
+            "raw/assets/source.pdf",
+            "application/pdf",
+            b"%PDF-1.7\nasset bytes\n",
+        );
+        let opened_pages = vec![opened_page];
+        let opened_assets = vec![opened_asset];
         let projection = materialize_vault_working_tree(WorkingTreeMaterializeInput {
             generated_at: "2026-06-24T00:00:00.000Z".to_owned(),
             generated_by_npub: UserId::new("npub-admin").unwrap(),
             vault: sample_vault(),
-            opened_pages: vec![opened],
+            opened_pages: opened_pages.clone(),
+            opened_assets,
             locked_folders: vec![OkfOmittedFolder {
                 folder_id: FolderId::new("board").unwrap(),
                 source_vault_id: None,
@@ -726,6 +764,13 @@ mod tests {
                 .unwrap(),
             "# Deep Module\n\nOnly accessible text is materialized. #agent"
         );
+        assert_eq!(
+            projection
+                .binary_files
+                .get("Concepts/raw/assets/source.pdf")
+                .unwrap(),
+            b"%PDF-1.7\nasset bytes\n"
+        );
 
         let concepts = projection
             .state
@@ -745,7 +790,16 @@ mod tests {
         assert!(board.metadata_only);
         assert_eq!(projection.state.objects[0].revision, 7);
         assert_eq!(projection.state.objects[0].key_version, 3);
+        assert_eq!(projection.state.objects.len(), 2);
+        assert_eq!(projection.state.objects[0].path, "compiled/deep/module.md");
+        assert_eq!(projection.state.objects[0].content_type, "text/markdown");
         assert_eq!(projection.state.objects[0].content_hash.len(), 64);
+        assert_eq!(projection.state.objects[1].path, "raw/assets/source.pdf");
+        assert_eq!(projection.state.objects[1].content_type, "application/pdf");
+        assert_eq!(
+            projection.state.objects[1].content_hash,
+            sha256_hex(b"%PDF-1.7\nasset bytes\n")
+        );
         assert_eq!(projection.state.sync.latest_sequence, 42);
         assert_eq!(
             projection.directory.encrypted_sync.path,
@@ -756,6 +810,9 @@ mod tests {
         assert!(!all_materialized_text.contains("secret-plan"));
         assert!(!all_materialized_text.contains("Secret Page"));
         assert!(!all_materialized_text.contains("Board/"));
+        let search_index = build_local_search_index(&opened_pages);
+        assert_eq!(search_index.len(), 1);
+        assert!(!search_index[0].body.contains("asset bytes"));
     }
 
     #[test]
@@ -780,6 +837,7 @@ mod tests {
                     "# Real Folder Index\n\nThis is the canonical folder index.",
                 ),
             ],
+            opened_assets: Vec::new(),
             locked_folders: Vec::new(),
             latest_sequence: 42,
         })
@@ -811,6 +869,7 @@ mod tests {
             generated_by_npub: UserId::new("npub-admin").unwrap(),
             vault: sample_vault(),
             opened_pages: vec![opened],
+            opened_assets: Vec::new(),
             locked_folders: vec![OkfOmittedFolder {
                 folder_id: FolderId::new("board").unwrap(),
                 source_vault_id: None,
@@ -960,6 +1019,27 @@ mod tests {
             revision: 1,
             key_version: 1,
             content_type: "text/markdown".to_owned(),
+        }
+    }
+
+    fn asset(
+        folder_id: &str,
+        object_id: &str,
+        folder_display_path: &str,
+        asset_path: &str,
+        content_type: &str,
+        bytes: &[u8],
+    ) -> OpenedAsset {
+        OpenedAsset {
+            folder_id: FolderId::new(folder_id).unwrap(),
+            source_vault_id: None,
+            object_id: ObjectId::new(object_id).unwrap(),
+            folder_display_path: SafeRelativePath::new("folder_path", folder_display_path).unwrap(),
+            asset_path: SafeRelativePath::new("asset_path", asset_path).unwrap(),
+            bytes: bytes.to_vec(),
+            revision: 1,
+            key_version: 1,
+            content_type: content_type.to_owned(),
         }
     }
 
