@@ -1548,6 +1548,40 @@ assert.equal(client.readerPageRows("general", draftPages)[0].label, "Draft Page"
     { destinationFolderId: "general" }
   );
   assert.equal(explicitAssetOkf.assets[0].targetPath, "raw/assets/photo.png");
+  const assetLinkOkf = client.parseOkfBundle(
+    {
+      pages: [
+        {
+          path: "content/Notes/source.md",
+          content: "# Source\n\n[Photo](../attachments/photo.png)",
+        },
+      ],
+      assets: [
+        {
+          path: "content/attachments/photo.png",
+          bytesBase64: Buffer.from("one").toString("base64"),
+          contentType: "image/png",
+        },
+        {
+          path: "content/more/photo.png",
+          bytesBase64: Buffer.from("two").toString("base64"),
+          contentType: "image/png",
+        },
+      ],
+    },
+    { destinationFolderId: "general" }
+  );
+  const assetLinkPlan = client.planOkfImport(assetLinkOkf, [], { conflictMode: "skip" });
+  const assetLinkPage = assetLinkPlan.entries.find((entry) => entry.kind === "page");
+  const assetLinkTargets = assetLinkPlan.entries
+    .filter((entry) => entry.kind === "asset")
+    .map((entry) => entry.targetPath)
+    .sort();
+  assert.match(assetLinkPage.markdown, /\[Photo\]\(raw\/assets\/photo\.png\)/);
+  assert.equal(
+    JSON.stringify(assetLinkTargets),
+    JSON.stringify(["raw/assets/photo imported.png", "raw/assets/photo.png"])
+  );
 
   const skipPlan = client.planOkfImport(
     parsedOkf,
@@ -1685,6 +1719,7 @@ assert.equal(client.readerPageRows("general", draftPages)[0].label, "Draft Page"
   });
   assert.equal(openedImportedAsset.type, "asset");
   assert.equal(openedImportedAsset.contentType, "application/pdf");
+  assert.equal(openedImportedAsset.contentHash, crypto.createHash("sha256").update("%PDF okf\n").digest("hex"));
   assert.equal(new TextDecoder().decode(openedImportedAsset.bytes), "%PDF okf\n");
 
   const graph = client.buildGraphProjection([

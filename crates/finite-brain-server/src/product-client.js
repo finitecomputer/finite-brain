@@ -2011,6 +2011,7 @@ const FiniteBrainProductClient = (() => {
 
     const existingByPath = new Map();
     const occupiedTargets = new Set();
+    const plannedTargets = new Set();
     const occupiedObjectIds = new Set();
     for (const page of existingPages.map(normalizeExistingPageRecord)) {
       existingByPath.set(targetKey(page.folderId, page.targetPath), page);
@@ -2045,6 +2046,7 @@ const FiniteBrainProductClient = (() => {
         objectId = objectIdForTargetPath(targetPath, occupiedObjectIds);
       }
       occupiedTargets.add(targetKey(folderId, targetPath));
+      plannedTargets.add(targetKey(folderId, targetPath));
       entries.push({
         action,
         baseRevision,
@@ -2062,10 +2064,15 @@ const FiniteBrainProductClient = (() => {
       const folderId = asset.folderId || options.destinationFolderId || DEFAULT_CLIENT_FOLDER_ID;
       let targetPath = normalizeAssetPath(asset.targetPath, "OKF asset target path");
       const existing = existingByPath.get(targetKey(folderId, targetPath));
+      const alreadyPlanned = plannedTargets.has(targetKey(folderId, targetPath));
       let action = "create";
       let objectId = null;
       let baseRevision = null;
-      if (existing) {
+      if (alreadyPlanned) {
+        action = "copy";
+        targetPath = uniqueImportedCopyPath(folderId, targetPath, occupiedTargets);
+        objectId = objectIdForTargetPath(targetPath, occupiedObjectIds);
+      } else if (existing) {
         if (mode === "skip") {
           action = "skip";
           objectId = existing.objectId || null;
@@ -2084,6 +2091,7 @@ const FiniteBrainProductClient = (() => {
         objectId = objectIdForTargetPath(targetPath, occupiedObjectIds);
       }
       occupiedTargets.add(targetKey(folderId, targetPath));
+      plannedTargets.add(targetKey(folderId, targetPath));
       entries.push({
         action,
         baseRevision,
@@ -2100,7 +2108,7 @@ const FiniteBrainProductClient = (() => {
       });
     }
 
-    const sourcePathToEntry = new Map(entries.filter((entry) => entry.kind !== "asset").map((entry) => [entry.sourcePath, entry]));
+    const sourcePathToEntry = new Map(entries.map((entry) => [entry.sourcePath, entry]));
     for (const entry of entries) {
       if (entry.action !== "skip" && entry.kind !== "asset") {
         entry.markdown = rewriteOkfMarkdownLinks(
@@ -5818,9 +5826,11 @@ const FiniteBrainProductClient = (() => {
         type: importedAsset ? "asset" : "page",
       };
       if (importedAsset) {
-        projectionObject.contentHash = importedEntry.contentHash || "";
-        projectionObject.contentType = importedEntry.contentType || "application/octet-stream";
-        projectionObject.size = importedEntry.size;
+        const importedBytes = base64ToBytes(importedEntry?.bytesBase64 || "");
+        projectionObject.bytesBase64 = importedEntry?.bytesBase64 || "";
+        projectionObject.contentHash = await sha256HexBytes(importedBytes);
+        projectionObject.contentType = importedEntry?.contentType || "application/octet-stream";
+        projectionObject.size = importedBytes.length;
       } else {
         const importedText = importedEntry?.markdown || "";
         projectionObject.text = importedText;

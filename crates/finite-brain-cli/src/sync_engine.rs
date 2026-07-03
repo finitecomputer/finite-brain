@@ -5,10 +5,11 @@ use std::path::{Path, PathBuf};
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use finite_brain_core::portability::{
-    OkfOmittedFolder, OpenedAsset, OpenedPage, WorkingTreeChange, WorkingTreeChangeIntent,
-    WorkingTreeFolderRoot, WorkingTreeIntentAction, WorkingTreeIntentContent,
-    WorkingTreeIntentRoute, WorkingTreeMaterializeInput, WorkingTreeObjectManifestEntry,
-    WorkingTreeProjection, materialize_vault_working_tree, plan_working_tree_change_intents,
+    MAX_WORKING_TREE_ASSET_BYTES, OkfOmittedFolder, OpenedAsset, OpenedPage, WorkingTreeChange,
+    WorkingTreeChangeIntent, WorkingTreeFolderRoot, WorkingTreeIntentAction,
+    WorkingTreeIntentContent, WorkingTreeIntentRoute, WorkingTreeMaterializeInput,
+    WorkingTreeObjectManifestEntry, WorkingTreeProjection, materialize_vault_working_tree,
+    plan_working_tree_change_intents,
 };
 use finite_brain_core::{
     DisplayName, EncryptedFolderObjectEnvelope, Folder, FolderAccessMode, FolderId, FolderKey,
@@ -31,6 +32,8 @@ use crate::{
 const CIPHER_AES_256_GCM: &str = "AES-256-GCM";
 const FOLDER_OBJECT_PAGE_VERSION: &str = "finite-folder-object-page-v1";
 const SYNC_RECORDS_PAGE_LIMIT: u64 = 1_000;
+const MAX_WORKING_TREE_FILE_COUNT: usize = 10_000;
+const MAX_WORKING_TREE_RECURSION_DEPTH: usize = 32;
 
 pub(crate) fn run_working_tree_sync(
     env: &CliEnvironment,
@@ -1699,11 +1702,11 @@ fn scan_working_tree_changes(
                     }),
                 }
             } else {
-                let bytes = fs::read(root.join(&relative_path))?;
+                let bytes = read_working_tree_asset_bytes(root, &relative_path)?;
                 let local_asset_path = folder_local_path(&folder.path, &relative_path)?;
                 let has_source_note = markdown_sources
                     .values()
-                    .any(|markdown| markdown.contains(&local_asset_path));
+                    .any(|markdown| markdown_mentions_asset_path(markdown, &local_asset_path));
                 let violates_asset_convention =
                     !local_asset_path.starts_with("raw/assets/") || !has_source_note;
                 if !matches!(
@@ -1753,7 +1756,7 @@ fn collect_working_tree_file_paths(
     folder_root: &Path,
 ) -> Result<Vec<String>, CliError> {
     let mut paths = Vec::new();
-    collect_working_tree_file_paths_inner(root, folder_root, &mut paths)?;
+    collect_working_tree_file_paths_inner(root, folder_root, &mut paths, 0)?;
     paths.sort();
     Ok(paths)
 }
@@ -1762,14 +1765,25 @@ fn collect_working_tree_file_paths_inner(
     root: &Path,
     directory: &Path,
     paths: &mut Vec<String>,
+    depth: usize,
 ) -> Result<(), CliError> {
+    if depth > MAX_WORKING_TREE_RECURSION_DEPTH {
+        return Err(CliError::InvalidInput(format!(
+            "working tree folder depth exceeds limit {MAX_WORKING_TREE_RECURSION_DEPTH}"
+        )));
+    }
     for entry in fs::read_dir(directory)? {
         let entry = entry?;
         let path = entry.path();
         let file_type = entry.file_type()?;
         if file_type.is_dir() {
-            collect_working_tree_file_paths_inner(root, &path, paths)?;
+            collect_working_tree_file_paths_inner(root, &path, paths, depth + 1)?;
         } else if file_type.is_file() {
+            if paths.len() >= MAX_WORKING_TREE_FILE_COUNT {
+                return Err(CliError::InvalidInput(format!(
+                    "working tree file count exceeds limit {MAX_WORKING_TREE_FILE_COUNT}"
+                )));
+            }
             paths.push(relative_path_string(root, &path)?);
         }
     }
@@ -1791,6 +1805,44 @@ fn read_folder_markdown_sources(
         sources.insert(local_path, fs::read_to_string(root.join(relative_path))?);
     }
     Ok(sources)
+}
+
+fn markdown_mentions_asset_path(markdown: &str, asset_path: &str) -> bool {
+    let mut search_start = 0;
+    while let Some(offset) = markdown[search_start..].find(asset_path) {
+        let start = search_start + offset;
+        let end = start + asset_path.len();
+        let before = markdown[..start].chars().next_back();
+        let after = markdown[end..].chars().next();
+        if !is_source_path_char(before) && !is_source_path_char(after) {
+            return true;
+        }
+        search_start = end;
+    }
+    false
+}
+
+fn is_source_path_char(character: Option<char>) -> bool {
+    character.is_some_and(|value| {
+        value.is_ascii_alphanumeric() || matches!(value, '/' | '.' | '_' | '-' | '%' | '+')
+    })
+}
+
+fn read_working_tree_asset_bytes(root: &Path, relative_path: &str) -> Result<Vec<u8>, CliError> {
+    let path = root.join(relative_path);
+    let size = fs::metadata(&path)?.len();
+    if size > MAX_WORKING_TREE_ASSET_BYTES as u64 {
+        return Err(CliError::InvalidInput(format!(
+            "working tree asset {relative_path} exceeds size limit {MAX_WORKING_TREE_ASSET_BYTES}"
+        )));
+    }
+    let bytes = fs::read(path)?;
+    if bytes.len() > MAX_WORKING_TREE_ASSET_BYTES {
+        return Err(CliError::InvalidInput(format!(
+            "working tree asset {relative_path} exceeds size limit {MAX_WORKING_TREE_ASSET_BYTES}"
+        )));
+    }
+    Ok(bytes)
 }
 
 fn is_markdown_path(path: &str) -> bool {
@@ -2084,6 +2136,11 @@ pub(crate) fn encode_folder_object_asset_plaintext(
     bytes: &[u8],
     content_type: &str,
 ) -> Result<String, CliError> {
+    if bytes.len() > MAX_WORKING_TREE_ASSET_BYTES {
+        return Err(CliError::InvalidInput(format!(
+            "folder object asset exceeds size limit {MAX_WORKING_TREE_ASSET_BYTES}"
+        )));
+    }
     let filename = path
         .as_str()
         .rsplit('/')
@@ -2156,9 +2213,21 @@ fn decode_folder_object_plaintext(
             serde_json::from_value(value).map_err(CliError::from)?;
         let asset_path = SafeRelativePath::new("asset_path", asset.path)
             .map_err(|error| CliError::InvalidInput(error.to_string()))?;
+        if asset.size > MAX_WORKING_TREE_ASSET_BYTES as u64
+            || asset.bytes_base64.len() > MAX_WORKING_TREE_ASSET_BYTES * 2
+        {
+            return Err(CliError::InvalidInput(format!(
+                "folder object asset exceeds size limit {MAX_WORKING_TREE_ASSET_BYTES}"
+            )));
+        }
         let bytes = BASE64_STANDARD
             .decode(asset.bytes_base64.as_bytes())
             .map_err(|error| CliError::InvalidInput(error.to_string()))?;
+        if bytes.len() > MAX_WORKING_TREE_ASSET_BYTES {
+            return Err(CliError::InvalidInput(format!(
+                "folder object asset exceeds size limit {MAX_WORKING_TREE_ASSET_BYTES}"
+            )));
+        }
         if asset.size != bytes.len() as u64 {
             return Err(CliError::InvalidInput(
                 "folder object asset size does not match decoded bytes".to_owned(),
@@ -2516,10 +2585,9 @@ mod tests {
             existing.content.as_ref(),
             Some(WorkingTreeIntentContent::AssetBytes {
                 content_type,
-                content_hash,
-                ..
+                bytes,
             }) if content_type == "application/pdf"
-                && content_hash == &sha256_hex(b"changed-pdf")
+                && bytes == b"changed-pdf"
         ));
         assert_eq!(
             by_path.get("General/raw/assets/new.pdf").unwrap().action,
@@ -2541,6 +2609,95 @@ mod tests {
                 ..
             } if reason.contains("raw/assets")
         ));
+    }
+
+    #[test]
+    fn scan_requires_exact_asset_source_note_tokens() {
+        let temp = TempDir::new().unwrap();
+        let root = temp.path();
+        fs::create_dir_all(root.join("General/raw/assets")).unwrap();
+        fs::write(
+            root.join("General/raw/source-note.md"),
+            "# Source Notes\n\n- Almost: raw/assets/file.pdf.bak\n",
+        )
+        .unwrap();
+        fs::write(root.join("General/raw/assets/file.pdf"), b"asset").unwrap();
+        let state = VaultWorkingTreeStateManifest {
+            version: "finite-vault-working-tree-state-v1".to_owned(),
+            folder_roots: vec![WorkingTreeFolderRoot {
+                folder_id: "general".to_owned(),
+                source_vault_id: None,
+                path: "General".to_owned(),
+                can_read: true,
+                metadata_only: false,
+            }],
+            objects: vec![WorkingTreeObjectManifestEntry {
+                folder_id: "general".to_owned(),
+                source_vault_id: None,
+                path: "raw/assets/file.pdf".to_owned(),
+                object_id: "obj_assetfile0000".to_owned(),
+                revision: 1,
+                key_version: 1,
+                content_type: "application/pdf".to_owned(),
+                content_hash: sha256_hex(b"asset"),
+            }],
+            sync: WorkingTreeSyncState { latest_sequence: 1 },
+        };
+
+        let changes = scan_working_tree_changes(root, &state).unwrap();
+        let intents = plan_working_tree_change_intents(&state, &changes);
+        let asset_intent = changes
+            .iter()
+            .zip(intents.iter())
+            .find_map(|(change, intent)| {
+                matches!(
+                    change,
+                    WorkingTreeChange::UpsertAsset { path, .. }
+                        if path.as_str() == "General/raw/assets/file.pdf"
+                )
+                .then_some(intent)
+            })
+            .unwrap();
+
+        assert!(matches!(
+            asset_intent,
+            WorkingTreeChangeIntent {
+                action: WorkingTreeIntentAction::Unresolved,
+                reason: Some(reason),
+                ..
+            } if reason.contains("Source Note")
+        ));
+    }
+
+    #[test]
+    fn scan_rejects_oversized_assets_before_planning() {
+        let temp = TempDir::new().unwrap();
+        let root = temp.path();
+        fs::create_dir_all(root.join("General/raw/assets")).unwrap();
+        fs::write(
+            root.join("General/raw/source-note.md"),
+            "# Source Notes\n\n- Huge: raw/assets/huge.bin\n",
+        )
+        .unwrap();
+        let huge = fs::File::create(root.join("General/raw/assets/huge.bin")).unwrap();
+        huge.set_len((MAX_WORKING_TREE_ASSET_BYTES + 1) as u64)
+            .unwrap();
+        let state = VaultWorkingTreeStateManifest {
+            version: "finite-vault-working-tree-state-v1".to_owned(),
+            folder_roots: vec![WorkingTreeFolderRoot {
+                folder_id: "general".to_owned(),
+                source_vault_id: None,
+                path: "General".to_owned(),
+                can_read: true,
+                metadata_only: false,
+            }],
+            objects: Vec::new(),
+            sync: WorkingTreeSyncState { latest_sequence: 1 },
+        };
+
+        let error = scan_working_tree_changes(root, &state).unwrap_err();
+
+        assert!(error.to_string().contains("size limit"));
     }
 
     #[test]

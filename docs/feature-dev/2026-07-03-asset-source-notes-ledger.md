@@ -9,7 +9,7 @@
 - Feature branch: feature/asset-source-notes
 - Human owner: AustinKelsay
 - Started: 2026-07-03T09:20:32-0500
-- Current status: PR open
+- Current status: local CodeRabbit fixes complete; PR update pending
 - Skill setup status: present; root AGENTS.md, issue tracker docs, triage labels, domain docs, and ADRs exist
 
 ## Goal
@@ -28,7 +28,7 @@ synthesized wiki pages cite the source notes.
 - Agent briefs: finitebrain skill, generated `AGENTS.md`, generated `HUMANS.md`,
   and Folder config templates updated with Asset Source Note rules
 - Review packets: docs/feature-dev/2026-07-03-issue-67-asset-source-notes-convention-review-packet.md; docs/feature-dev/2026-07-03-issue-68-core-asset-model-review-packet.md; docs/feature-dev/2026-07-03-issue-69-fbrain-asset-sync-review-packet.md; docs/feature-dev/2026-07-03-issue-70-product-okf-asset-aware-review-packet.md
-- Local CodeRabbit report: not run; local code-review passes completed
+- Local CodeRabbit report: docs/feature-dev/2026-07-03-asset-source-notes-coderabbit-round.md
 - PR URL: https://github.com/finitecomputer/finite-brain/pull/71
 
 ## Commands
@@ -52,7 +52,7 @@ hard-cut branch. Final PR target: main.
 | #67 | AFK | committed | no findings | none | package checks passed |
 | #68 | AFK | committed | no findings | none | package checks passed |
 | #69 | AFK | committed | no findings | none | package checks passed |
-| #70 | AFK | committed | no findings | none | workspace checks passed |
+| #70 | AFK | committed | CodeRabbit follow-up fixed | none | workspace checks passed |
 
 ## Parked HITL Slices
 

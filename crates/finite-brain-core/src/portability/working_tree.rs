@@ -4,6 +4,12 @@ use super::*;
 pub fn materialize_vault_working_tree(
     input: WorkingTreeMaterializeInput,
 ) -> Result<WorkingTreeProjection, PortabilityError> {
+    if input.opened_assets.len() > MAX_WORKING_TREE_ASSET_COUNT {
+        return Err(PortabilityError::WorkingTreeAssetCountExceeded {
+            count: input.opened_assets.len(),
+            max: MAX_WORKING_TREE_ASSET_COUNT,
+        });
+    }
     let mut files = BTreeMap::new();
     let mut binary_files = BTreeMap::new();
     let mut folder_roots = BTreeMap::<(Option<VaultId>, FolderId), WorkingTreeFolderRoot>::new();
@@ -75,6 +81,13 @@ pub fn materialize_vault_working_tree(
         let full_path = working_tree_page_path(&asset.folder_display_path, &asset.asset_path)?;
         if folder_paths.contains(&full_path) {
             return Err(PortabilityError::WorkingTreePathCollision { path: full_path });
+        }
+        if asset.bytes.len() > MAX_WORKING_TREE_ASSET_BYTES {
+            return Err(PortabilityError::WorkingTreeAssetTooLarge {
+                path: full_path,
+                size: asset.bytes.len(),
+                max: MAX_WORKING_TREE_ASSET_BYTES,
+            });
         }
         insert_working_tree_binary_file(
             &files,
@@ -481,6 +494,9 @@ fn plan_working_tree_asset_upsert(
     if !has_source_note {
         return unresolved_intent("Asset is missing a Markdown Source Note in this Folder");
     }
+    if bytes.len() > MAX_WORKING_TREE_ASSET_BYTES {
+        return unresolved_intent("Asset exceeds the v1 working-tree size limit");
+    }
     let source_vault_id = match source_vault_id_for_root(root) {
         Ok(source_vault_id) => source_vault_id,
         Err(reason) => return unresolved_intent(&reason),
@@ -505,7 +521,6 @@ fn plan_working_tree_asset_upsert(
         content: Some(WorkingTreeIntentContent::AssetBytes {
             bytes: bytes.to_vec(),
             content_type: content_type.to_owned(),
-            content_hash: sha256_hex(bytes),
         }),
         reason: None,
     }

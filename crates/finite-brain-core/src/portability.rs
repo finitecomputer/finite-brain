@@ -11,6 +11,11 @@ use crate::{
     CoreError, FolderAccessMode, FolderId, ObjectId, SafeRelativePath, UserId, Vault, VaultId,
 };
 
+/// Maximum single Asset payload size handled by the v1 working-tree pipeline.
+pub const MAX_WORKING_TREE_ASSET_BYTES: usize = 512 * 1024;
+/// Maximum Asset payload count handled in one working-tree projection.
+pub const MAX_WORKING_TREE_ASSET_COUNT: usize = 1_000;
+
 /// Portability-layer errors.
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub enum PortabilityError {
@@ -24,6 +29,14 @@ pub enum PortabilityError {
     OverwriteRequiresConfirmation,
     /// A readable working-tree path collided with another materialized path.
     WorkingTreePathCollision { path: String },
+    /// A readable Asset payload exceeded the v1 working-tree limit.
+    WorkingTreeAssetTooLarge {
+        path: String,
+        size: usize,
+        max: usize,
+    },
+    /// A readable Asset batch exceeded the v1 working-tree count limit.
+    WorkingTreeAssetCountExceeded { count: usize, max: usize },
 }
 
 impl fmt::Display for PortabilityError {
@@ -39,6 +52,18 @@ impl fmt::Display for PortabilityError {
             }
             Self::WorkingTreePathCollision { path } => {
                 write!(f, "working tree path collision: {path}")
+            }
+            Self::WorkingTreeAssetTooLarge { path, size, max } => {
+                write!(
+                    f,
+                    "working tree asset exceeds size limit: {path} is {size} bytes, max {max}"
+                )
+            }
+            Self::WorkingTreeAssetCountExceeded { count, max } => {
+                write!(
+                    f,
+                    "working tree asset batch exceeds count limit: {count} assets, max {max}"
+                )
             }
         }
     }
@@ -483,8 +508,6 @@ pub enum WorkingTreeIntentContent {
         bytes: Vec<u8>,
         /// MIME content type.
         content_type: String,
-        /// SHA-256 of plaintext bytes.
-        content_hash: String,
     },
 }
 
@@ -840,6 +863,70 @@ mod tests {
         let search_index = build_local_search_index(&opened_pages);
         assert_eq!(search_index.len(), 1);
         assert!(!search_index[0].body.contains("asset bytes"));
+    }
+
+    #[test]
+    fn working_tree_rejects_oversized_asset_materialization() {
+        let opened_asset = asset(
+            "concepts",
+            "obj_000000000099",
+            "Concepts",
+            "raw/assets/huge.bin",
+            "application/octet-stream",
+            &vec![7; MAX_WORKING_TREE_ASSET_BYTES + 1],
+        );
+
+        let error = materialize_vault_working_tree(WorkingTreeMaterializeInput {
+            generated_at: "2026-06-24T00:00:00.000Z".to_owned(),
+            generated_by_npub: UserId::new("npub-admin").unwrap(),
+            vault: sample_vault(),
+            opened_pages: Vec::new(),
+            opened_assets: vec![opened_asset],
+            locked_folders: Vec::new(),
+            latest_sequence: 1,
+        })
+        .unwrap_err();
+
+        assert!(matches!(
+            error,
+            PortabilityError::WorkingTreeAssetTooLarge { size, max, .. }
+                if size == MAX_WORKING_TREE_ASSET_BYTES + 1
+                    && max == MAX_WORKING_TREE_ASSET_BYTES
+        ));
+    }
+
+    #[test]
+    fn working_tree_rejects_oversized_asset_batches() {
+        let opened_assets = (0..=MAX_WORKING_TREE_ASSET_COUNT)
+            .map(|index| {
+                asset(
+                    "concepts",
+                    &format!("obj_asset_{index:012}"),
+                    "Concepts",
+                    &format!("raw/assets/{index}.bin"),
+                    "application/octet-stream",
+                    b"x",
+                )
+            })
+            .collect::<Vec<_>>();
+
+        let error = materialize_vault_working_tree(WorkingTreeMaterializeInput {
+            generated_at: "2026-06-24T00:00:00.000Z".to_owned(),
+            generated_by_npub: UserId::new("npub-admin").unwrap(),
+            vault: sample_vault(),
+            opened_pages: Vec::new(),
+            opened_assets,
+            locked_folders: Vec::new(),
+            latest_sequence: 1,
+        })
+        .unwrap_err();
+
+        assert!(matches!(
+            error,
+            PortabilityError::WorkingTreeAssetCountExceeded { count, max }
+                if count == MAX_WORKING_TREE_ASSET_COUNT + 1
+                    && max == MAX_WORKING_TREE_ASSET_COUNT
+        ));
     }
 
     #[test]
