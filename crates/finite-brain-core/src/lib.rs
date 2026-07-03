@@ -104,6 +104,10 @@ Resolve conflicts before reporting done.
 
 Use each readable Folder as a durable LLM wiki scope.
 
+- The default `getting-started` Folder is the shared orientation scope for users
+  and agents.
+- The default `restricted` Folder is the starter tighter-boundary scope for
+  sensitive work.
 - Keep raw sources immutable under that Folder's `raw/`.
 - Store non-Markdown source files under that Folder's `raw/assets/`.
 - Pair every Asset with a Markdown Source Note that records provenance, content type, hash or extraction status when known.
@@ -117,7 +121,7 @@ Use each readable Folder as a durable LLM wiki scope.
 - Use `datasets/` for manifests, schemas, samples, and query recipes.
 - Use `output/` for reports, plans, summaries, and deliverables.
 - Archive superseded material instead of deleting it.
-- Answer from compiled wiki pages first; say what is missing when evidence is thin.
+- Answer from curated wiki pages first; say what is missing when evidence is thin.
 - Never summarize restricted Folder contents into a less-restricted Folder,
   index, log, or output.
 
@@ -173,6 +177,10 @@ Inside a Folder:
 - `output/` holds reports, plans, and finished work.
 - `log.md` records meaningful changes for that Folder only.
 
+The default `getting-started` Folder is for orientation and shared operating
+rules. The default `restricted` Folder demonstrates a tighter access boundary
+for private work.
+
 Agents should read `AGENTS.md` first, sync before editing, avoid duplicates, preserve sources, create Source Notes for assets, and keep the wiki useful for future work.
 "#;
 
@@ -210,17 +218,28 @@ const DEFAULT_GETTING_STARTED_README_MARKDOWN: &str = r#"# Getting Started
 
 This Folder explains the default FiniteBrain vault layout.
 
-Use this Folder for orientation, operating rules, and shared notes about how
-the vault should be maintained. Keep durable knowledge inside Folder-scoped
-wiki pages, and keep private or sensitive work inside a Folder with an equal
-or tighter access boundary.
+Default Folders:
+
+- `getting-started` is the shared orientation scope for users and agents. Keep
+  operating rules, onboarding notes, and vault-level guidance here.
+- `restricted` is the starter tighter-boundary scope for sensitive work. Do not
+  copy restricted titles, summaries, source notes, assets, or logs back here
+  unless the intended audience is allowed to read them.
+
+Inside any Folder, keep non-Markdown source files as encrypted Assets under
+`raw/assets/`. Pair each Asset with a Markdown Source Note in the same Folder.
+Agents and synthesized wiki pages cite the Source Note; the Asset preserves the
+original bytes.
+
+Keep durable knowledge inside Folder-scoped `wiki/` pages, and keep private or
+sensitive work inside a Folder with an equal or tighter access boundary.
 "#;
 
 const DEFAULT_HOW_FINITEBRAIN_WORKS_MARKDOWN: &str = r#"# How FiniteBrain Works
 
 FiniteBrain stores encrypted Vault data on the server. The client or agent
-opens Folder Keys locally, decrypts the Pages it can access, edits markdown,
-and syncs encrypted updates back.
+opens Folder Keys locally, decrypts the Pages and Assets it can access, edits
+ordinary files, and syncs encrypted updates back.
 
 Non-Markdown source files are encrypted as Assets and kept under `raw/assets/`.
 Agents use Markdown Source Notes to describe those Assets before synthesizing
@@ -235,13 +254,13 @@ const DEFAULT_ACCESS_AND_FOLDERS_MARKDOWN: &str = r#"# Access And Folders
 
 Access is Folder-scoped.
 
-- Open folders are intended for everyone who belongs in that vault.
-- Restricted folders are for material that should only be visible to approved
+- `getting-started` is the default shared orientation Folder.
+- `restricted` is the default example of a tighter access boundary.
+- Open Folders are intended for everyone who belongs in that Vault.
+- Restricted Folders are for material that should only be visible to approved
   people.
-- Do not copy restricted titles, summaries, sources, or log entries into a
-  less-restricted Folder.
-
-Use the `restricted` Folder as the default example of a tighter access boundary.
+- Do not copy restricted titles, summaries, Source Notes, Assets, or log entries
+  into a less-restricted Folder.
 "#;
 
 const DEFAULT_RESTRICTED_EXAMPLE_MARKDOWN: &str = r#"# Restricted Folder Example
@@ -1949,6 +1968,17 @@ mod tests {
             pages.len()
         );
         assert!(pages.iter().any(|page| page.path == "README.md"));
+        let getting_started_readme = pages
+            .iter()
+            .find(|page| page.path == "README.md")
+            .expect("getting-started README exists");
+        assert!(getting_started_readme.markdown.contains("Default Folders"));
+        assert!(
+            getting_started_readme
+                .markdown
+                .contains("encrypted Assets under")
+        );
+        assert!(getting_started_readme.markdown.contains("Source Note"));
         assert!(
             pages
                 .iter()

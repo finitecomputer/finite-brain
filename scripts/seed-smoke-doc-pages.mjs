@@ -106,10 +106,33 @@ It is organized around the Portable v1 model:
 
 - Vaults are the top-level privacy container.
 - Folders are independent access and crypto boundaries.
-- Pages are encrypted Folder Objects.
+- Pages and Assets are encrypted Folder Objects.
+- Asset Source Notes make non-Markdown source files usable by agents.
 - The Product Client opens Folder Key Grants, decrypts readable Pages, and builds local views.
 
-Start with [[Vault Model]], [[Product Client]], [[Folder Keys]], and [[Sync Append Log]].
+Start with [[Vault Model]], [[Product Client]], [[Asset Source Notes]], [[Folder Keys]], and [[Sync Append Log]].
+`,
+  },
+  {
+    folderId: "general",
+    objectId: "fb_asset_source_notes_0001",
+    path: "asset-source-notes.md",
+    title: "Asset Source Notes",
+    text: `# Asset Source Notes
+
+FiniteBrain keeps the LLM wiki Markdown-first while preserving original evidence.
+
+The rule is simple:
+
+- put non-Markdown source files under the containing Folder's raw/assets/ path;
+- store those files as encrypted Assets, not plaintext server blobs;
+- create a Markdown Source Note in the same Folder for each Asset;
+- record provenance, content type, hash or extraction status, and useful notes;
+- cite Source Notes from synthesized wiki/ pages instead of citing blob bytes directly.
+
+This gives users a durable evidence trail and gives agents something readable to search, link, summarize, and verify.
+
+Related pages: [[OKF and Agent Wiki]], [[Working Tree Projection]], and [[Graph View Visibility]].
 `,
   },
   {
@@ -121,13 +144,12 @@ Start with [[Vault Model]], [[Product Client]], [[Folder Keys]], and [[Sync Appe
 
 A Vault is the top-level container for a personal or organization knowledge space.
 
-Organization Vaults start with:
+New default Vaults start with:
 
-- vault-ops for admin-only operational material;
-- general for all-member material;
-- optional extra Folders for product domains, projects, or shared work.
+- getting-started for shared user and agent orientation;
+- restricted as the starter tighter-boundary scope.
 
-Personal Vaults have an owner-controlled home Folder.
+Smoke/demo Vaults may add extra Folders like general, agent-wiki, graph-smoke, and vault-ops so local testing has enough content to inspect.
 
 Folder access is binary in Portable v1. A member either has access to a Folder or they do not. There are no read-only or editor roles yet.
 
@@ -264,12 +286,14 @@ Read [[Vault Invites]], [[Shared Folder Mounts]], and [[Mounted Folder Routing]]
 
 OKF is the readable import/export format for accessible content.
 
-The agent wiki layer is the local working-tree shape agents use after the client decrypts Pages:
+The agent wiki layer is the local working-tree shape agents use after the client decrypts Pages and Assets:
 
 - AGENTS.md for operating instructions;
 - _index.md for folder summaries;
-- _wiki/ for generated durable summaries;
-- raw, compiled, and output areas for workflows.
+- raw/ for captured source material;
+- raw/assets/ for non-Markdown Assets;
+- wiki/ for durable synthesized pages;
+- inventory/, datasets/, and output/ for workflow material.
 
 The server remains blind to readable OKF and wiki content unless a trusted client encrypts it back into Folder Objects.
 `,
@@ -555,14 +579,16 @@ Related pages: [[OKF Import Conflicts]], [[Working Tree Projection]], and [[Back
     title: "Working Tree Projection",
     text: `# Working Tree Projection
 
-The working-tree projection turns accessible decrypted Pages into a local folder/files view.
+The working-tree projection turns accessible decrypted Pages and Assets into a local folder/files view.
 
 Conventions include:
 
 - AGENTS.md for agent instructions;
 - _index.md for folder summaries;
-- _wiki/ for generated wiki material;
-- raw, compiled, and output areas for agent workflows.
+- raw/ for captured source material;
+- raw/assets/ for non-Markdown Assets;
+- wiki/ for durable synthesized pages;
+- inventory/, datasets/, and output/ for agent workflows.
 
 The projection is a client-side convenience. Authoritative server sync remains encrypted and ordered through the Vault Record Index.
 `,
@@ -580,7 +606,7 @@ Good discovery rules:
 
 - start with AGENTS.md when present;
 - read _index.md for folder intent;
-- prefer curated _wiki/ material before raw dumps;
+- prefer curated wiki/ material before raw dumps;
 - avoid assuming inaccessible Folders are empty;
 - keep generated reports separate from source notes.
 
@@ -598,10 +624,10 @@ Generated reports are useful smoke-test content because they exercise search, gr
 
 Expected report areas:
 
-- _wiki/ for durable generated summaries;
+- wiki/ for durable synthesized pages;
 - output/ for one-off run artifacts;
-- compiled/ for bundled context;
 - raw/ for source material that should remain easy to audit.
+- raw/assets/ for non-Markdown Assets that need Source Notes.
 
 Reports should link back to source Pages like [[Rust Workspace Architecture]] and [[Folder Object Crypto]].
 `,
@@ -1067,7 +1093,8 @@ A useful AGENTS.md should tell an agent:
 - what this Folder is for;
 - which local conventions matter;
 - where raw source material lives;
-- where compiled or generated output should go;
+- where Assets and Source Notes live;
+- where synthesized wiki pages and generated output should go;
 - what not to infer from inaccessible Folders.
 
 This is client-side generated context over decrypted Pages, not server-side policy.
@@ -1085,10 +1112,14 @@ Agent-facing wiki folders use a predictable shape.
 Common paths:
 
 - _index.md for a human and agent summary;
-- _wiki/ for durable generated summaries;
 - raw/ for captured source material;
-- compiled/ for bundled context;
+- raw/assets/ for non-Markdown Assets;
+- wiki/ for durable synthesized pages;
+- inventory/ for source candidates, open questions, and next actions;
+- datasets/ for manifests, schemas, samples, and query recipes;
 - output/ for run artifacts and reports.
+
+Every Asset should have a Markdown Source Note in the same Folder before an agent cites it from synthesized work.
 
 These paths are conventions inside an accessible working tree. The encrypted server state remains Folder Objects and sync records.
 `,
@@ -1188,7 +1219,8 @@ Required expectations:
 
 - create every demo Folder with a current Folder Key;
 - create Folder Key Grants for every seeded Folder;
-- seed encrypted Pages through the same crypto helper path the client uses;
+- seed encrypted Pages and Assets through the same crypto helper path the client uses;
+- include Source Notes when a seed adds non-Markdown Assets;
 - avoid hidden browser keyring state;
 - keep test-only content clearly marked or omit it from reusable fixtures.
 

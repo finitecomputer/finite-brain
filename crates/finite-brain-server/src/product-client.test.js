@@ -516,6 +516,10 @@ assert.equal(client.readerPageRows("general", draftPages)[0].label, "Draft Page"
   assert.equal(new Set(defaultPages.map((page) => page.objectId)).size, defaultPages.length);
   assert.equal(defaultPages.some((page) => page.folderId === "vault-ops"), false);
   assert.equal(defaultPages.some((page) => page.folderId === "product"), false);
+  const gettingStartedReadme = defaultPages.find((page) => page.path === "README.md");
+  assert.match(gettingStartedReadme?.markdown || "", /Default Folders/);
+  assert.match(gettingStartedReadme?.markdown || "", /encrypted Assets under/);
+  assert.match(gettingStartedReadme?.markdown || "", /Source Note/);
   const restrictedExamplePage = defaultPages.find((page) => page.path === "wiki/restricted-folder-example.md");
   assert.equal(restrictedExamplePage?.folderId, "restricted");
   assert.match(defaultPages[0].markdown, /Use `fbrain`/);

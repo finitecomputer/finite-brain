@@ -1529,7 +1529,7 @@ fn add_empty_readable_folders(
         projection.files.insert(
             format!("{}/AGENTS.md", folder_path),
             format!(
-                "# Folder Agent Instructions\n\nFolder id: `{}`\n\nUse `raw/` for source captures, `raw/assets/` for non-Markdown Assets, `compiled/` for curated wiki pages, and `output/` for generated artifacts. Pair every Asset with a Markdown Source Note before citing it from synthesized work.\n",
+                "# Folder Agent Instructions\n\nFolder id: `{}`\n\nUse `raw/` for source captures, `raw/assets/` for non-Markdown Assets, `wiki/` for durable synthesized pages, `inventory/` for source candidates and open questions, `datasets/` for manifests and query recipes, and `output/` for generated artifacts. Pair every Asset with a Markdown Source Note before citing it from synthesized work.\n",
                 folder.id
             ),
         );
@@ -1537,14 +1537,14 @@ fn add_empty_readable_folders(
             format!("{}/_index.md", folder_path),
             format!("# {}\n\n", folder_path),
         );
-        projection.files.insert(
-            format!("{}/_wiki/index.md", folder_path),
-            format!(
-                "# Folder Wiki\n\nFolder: {}\nReadable Objects: 0\n",
-                folder_path
-            ),
-        );
-        for convention in ["raw", "raw/assets", "compiled", "output"] {
+        for convention in [
+            "raw",
+            "raw/assets",
+            "wiki",
+            "inventory",
+            "datasets",
+            "output",
+        ] {
             projection.files.insert(
                 format!("{}/{convention}/.keep", folder_path),
                 format!(
@@ -1912,6 +1912,9 @@ fn is_generated_folder_file(folder_path: &str, relative_path: &str) -> bool {
         || local == "raw/.keep"
         || local == "raw/assets/.keep"
         || local == "compiled/.keep"
+        || local == "wiki/.keep"
+        || local == "inventory/.keep"
+        || local == "datasets/.keep"
         || local == "output/.keep"
 }
 
@@ -2901,12 +2904,22 @@ mod tests {
         assert!(projection.files.contains_key("home/AGENTS.md"));
         assert!(projection.files.contains_key("home/raw/.keep"));
         assert!(projection.files.contains_key("home/raw/assets/.keep"));
+        assert!(projection.files.contains_key("home/wiki/.keep"));
+        assert!(projection.files.contains_key("home/inventory/.keep"));
+        assert!(projection.files.contains_key("home/datasets/.keep"));
         assert!(
             projection
                 .files
                 .get("home/AGENTS.md")
                 .unwrap()
                 .contains("Source Note")
+        );
+        assert!(
+            projection
+                .files
+                .get("home/AGENTS.md")
+                .unwrap()
+                .contains("wiki/")
         );
     }
 

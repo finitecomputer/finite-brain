@@ -165,12 +165,8 @@ Personal Vault:
 
 - Has exactly one owner identity in `ownerUserId`.
 - Starts with Folder-scoped wiki roots:
-  - `home`: role `personal_home`, access `owner`
-  - `projects`: role `folder`, access `owner`
-  - `work`: role `folder`, access `owner`
-  - `life`: role `folder`, access `owner`
-  - `learning`: role `folder`, access `owner`
-  - `archive`: role `folder`, access `owner`
+  - `getting-started`: role `personal_home`, access `owner`
+  - `restricted`: role `folder`, access `owner`
 - Does not use ordinary organization membership/admin lists for the owner.
 - May contain limited members only when sharing a source Folder.
 
@@ -180,16 +176,11 @@ Organization Vault:
 - Has Vault Admins.
 - Every Vault Admin MUST also be a Vault Member.
 - A new organization Vault starts with:
-  - `vault-ops`: role `vault_ops`, access `admin_only`
-  - `general`: role `general`, access `all_members`
-  - `product`: role `folder`, access `all_members`
-  - `engineering`: role `folder`, access `all_members`
-  - `marketing`: role `folder`, access `all_members`
-  - `design`: role `folder`, access `all_members`
-  - `operations`: role `folder`, access `all_members`
-- Sensitive or limited-audience org knowledge SHOULD be created as additional
-  `restricted` Folders rather than hidden local directories inside an
-  `all_members` Folder.
+  - `getting-started`: role `general`, access `all_members`
+  - `restricted`: role `folder`, access `restricted`
+- Additional team or domain knowledge SHOULD be created as explicit Folders.
+- Sensitive or limited-audience org knowledge SHOULD be created as restricted
+  Folders rather than hidden local directories inside an all-member Folder.
 - Organization Vaults MUST keep at least one Vault Admin.
 
 ### 4.2 Vault Member
@@ -461,24 +452,27 @@ Personal Vault bootstrap:
 - Create the default personal wiki scope Folders from Section 4.1 with current
   key version `1` and Folder Key Grants for the owner.
 - Seed ordinary encrypted Folder Objects for default Pages:
-  - `AGENTS.md` and `HUMANS.md` in `home`
-  - `config.md`, `_index.md`, and `log.md` in each default personal knowledge
-    Folder
+  - `AGENTS.md`, `HUMANS.md`, `README.md`, and orientation Pages in
+    `getting-started`
+  - `config.md`, `_index.md`, and `log.md` in each default personal Folder
+  - a restricted example Page in `restricted`
 
 Organization Vault bootstrap:
 
 - Create one Vault with `kind: "organization"`.
 - Add the acting User as both Vault Member and Vault Admin.
-- Create `vault-ops` with role `vault_ops`, access `admin_only`, current key
-  version `1`, and grants for all initial admins.
 - Create the default organization wiki scope Folders from Section 4.1 with
   current key version `1` and grants for all initial members/admins.
 - Seed ordinary encrypted Folder Objects for default Pages:
-  - `AGENTS.md` and `HUMANS.md` in `general`
-  - `config.md`, `_index.md`, and `log.md` in each default organization
-    knowledge Folder
-- `vault-ops` is an admin/control Folder and is not seeded as a knowledge wiki
-  by default.
+  - `AGENTS.md`, `HUMANS.md`, `README.md`, and orientation Pages in
+    `getting-started`
+  - `config.md`, `_index.md`, and `log.md` in each default organization Folder
+  - a restricted example Page in `restricted`
+
+Default starter Pages MUST explain the Asset Source Note convention:
+non-Markdown source files are Assets under `raw/assets/`, and every Asset
+SHOULD have a Markdown Source Note in the same Folder before agents cite it
+from synthesized `wiki/` pages.
 
 Smoke/demo bootstrap:
 
@@ -1808,24 +1802,22 @@ Conventions:
 ```text
 AGENTS.md
 _index.md
-_wiki/
-  index.md
-  backlinks.md
-  orphans.md
-  stale.md
-  tags.md
 raw/
   assets/
-compiled/
+wiki/
+inventory/
+datasets/
 output/
 ```
 
 - `AGENTS.md` gives local agent instructions for the Vault or Folder subtree.
 - `_index.md` is a human/agent navigation page for a Folder or bundle.
-- `_wiki/` contains generated reports and derived navigation artifacts.
 - `raw/` contains source captures or immutable imported references.
 - `raw/assets/` contains non-Markdown source Assets.
-- `compiled/` contains curated synthesized wiki pages.
+- `wiki/` contains curated synthesized wiki pages.
+- `inventory/` contains source candidates, open questions, watch items, and
+  next actions.
+- `datasets/` contains manifests, schemas, samples, and query recipes.
 - `output/` contains generated artifacts, reports, exports, or task outputs.
 
 Agent discovery rules:
@@ -1841,12 +1833,13 @@ Agent discovery rules:
   status when known, and links to synthesized Pages.
 - Agents SHOULD query and cite Source Notes before treating an Asset blob as
   knowledge.
-- Generated reports in `_wiki/` SHOULD state when they were generated, by which
+- Generated reports in `output/` SHOULD state when they were generated, by which
   acting npub, and from which accessible Folder scope.
 - Reports MUST NOT include Page titles, Page paths, excerpts, backlinks, or
   tags from inaccessible Folders.
-- `raw/`, `raw/assets/`, `compiled/`, and `output/` are ordinary paths inside
-  accessible Folders. They do not imply special Folder Access semantics.
+- `raw/`, `raw/assets/`, `wiki/`, `inventory/`, `datasets/`, and `output/` are
+  ordinary paths inside accessible Folders. They do not imply special Folder
+  Access semantics.
 
 ## 14. Server Route Surface
 
@@ -2119,8 +2112,8 @@ A compatible implementation in another language should implement, in order:
     - OKF Import conflict modes.
 12. LLM Wiki and agent layer:
     - `AGENTS.md` discovery.
-    - `_index.md`, `_wiki/`, `raw/`, `raw/assets/`, `compiled/`, and `output/`
-      conventions.
+    - `_index.md`, `raw/`, `raw/assets/`, `wiki/`, `inventory/`, `datasets/`,
+      and `output/` conventions.
     - Generated report visibility filtering.
 13. Operations and compatibility:
     - Backup/restore of SQLite metadata, sync, grants, sharing, and mounts.

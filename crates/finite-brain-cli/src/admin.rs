@@ -253,7 +253,15 @@ pub(crate) fn update_local_folder_after_create(
             .sort_by(|left, right| left.path.cmp(&right.path));
         write_json_file(&root.join(".finitebrain/working-tree-state.json"), &tree)?;
     }
-    for subdir in ["", "raw", "raw/assets", "compiled", "output"] {
+    for subdir in [
+        "",
+        "raw",
+        "raw/assets",
+        "wiki",
+        "inventory",
+        "datasets",
+        "output",
+    ] {
         fs::create_dir_all(root.join(path).join(subdir))?;
     }
     mutate_agent_state(env, |state, now| {

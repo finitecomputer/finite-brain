@@ -20,6 +20,14 @@ The repo-packaged FiniteBrain agent skill lives at `skills/finitebrain/SKILL.md`
 Keep it aligned with `fbrain` CLI ergonomics and Vault Working Tree conventions
 until it moves into the shared `finite-skills` packaging path.
 
+### Asset source notes
+
+FiniteBrain's LLM wiki surface is Markdown-first. Store non-Markdown source
+files as encrypted Assets under the containing Folder's `raw/assets/`, and pair
+each Asset with a Markdown Source Note in the same Folder. Agents should cite
+Source Notes from synthesized `wiki/` pages instead of treating blob bytes as
+the primary knowledge surface.
+
 ## Engineering Style
 
 FiniteBrain Rust follows the Finite engineering style:

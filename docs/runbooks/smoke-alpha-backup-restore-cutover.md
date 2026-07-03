@@ -116,6 +116,27 @@ ok
 Take one backup immediately before cutover and one backup immediately after the
 post-cutover smoke checks pass.
 
+## Reset Smoke Defaults
+
+When default Getting Started or Smoke documentation changes, prefer a
+non-destructive reset over deleting Vault data. Back up first, then reseed only
+the deterministic Smoke fixture Pages:
+
+```sh
+set -euo pipefail
+
+export FINITE_BRAIN_DB=/var/lib/finitebrain/finite-brain.sqlite3
+export FINITE_BRAIN_SMOKE_KEYS=/var/lib/finitebrain/finite-brain-smoke-vault-keys.json
+export FINITE_BRAIN_SMOKE_VAULT=smoke
+
+node scripts/seed-smoke-doc-pages.mjs
+```
+
+The seed script replaces only the known Smoke fixture object ids and preserves
+unrelated Vault records. It should be run from the same release checkout that
+the Smoke service is serving so seeded Pages match the deployed Product Client
+and agent conventions.
+
 ## Restore
 
 Restore into an isolated path first when possible. For emergency service
@@ -229,4 +250,3 @@ scripts/verify-smoke-alpha-backup-restore.sh
 The script creates a temporary SQLite database, backs it up with `.backup`,
 restores it, checks integrity, compares data, and runs the store backup test
 unless `SKIP_CARGO_STORE_BACKUP_TEST=1` is set.
-

@@ -73,7 +73,7 @@ Folder-scoped LLM wikis. Treat each readable FiniteBrain Folder as an
 independent access-scoped LLM wiki root unless its local instructions say
 otherwise. The wiki is Markdown-first: Markdown sources become immutable `raw/`
 notes, non-Markdown source files become Assets under `raw/assets/`, synthesized
-knowledge becomes cross-linked articles, and outputs build on the compiled wiki
+knowledge becomes cross-linked articles, and outputs build on the curated wiki
 instead of re-deriving context from scratch.
 
 The LLM Wiki topic model maps to a FiniteBrain Folder. Folder Keys and Folder
@@ -130,7 +130,7 @@ Core wiki rules:
   deliverables that should compound future work.
 - Archive quietly instead of deleting superseded topics. Prefer `.archive/` or
   the local Folder convention, update indexes, and log the archive.
-- When querying, answer from compiled wiki pages first. If the wiki lacks enough
+- When querying, answer from curated wiki pages first. If the wiki lacks enough
   evidence, say what is missing and suggest what source to ingest.
 - Chunk large article or output writes into small edits so agent tool streams do
   not stall.
