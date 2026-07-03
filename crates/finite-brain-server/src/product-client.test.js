@@ -825,6 +825,55 @@ assert.equal(client.readerPageRows("general", draftPages)[0].label, "Draft Page"
   assert.equal(openedCliPage.path, "compiled/hermes-agent-overview.md");
   assert.equal(openedCliPage.text, "# Hermes Agent Overview\n\nAgent-authored docs.");
 
+  const assetPlaintext = await client.encodeFolderObjectAssetPlaintext(
+    "raw/assets/source.pdf",
+    new TextEncoder().encode("%PDF asset\n"),
+    "application/pdf"
+  );
+  const assetWrite = await client.buildPageWriteRequest(keyring, {
+    authorNpub,
+    baseRevision: null,
+    createdAtUnix: 1780000000,
+    folderId: "general",
+    keyVersion: 1,
+    nonceBytes: new Uint8Array(12).fill(3),
+    objectId: "obj_cli_asset001",
+    plaintext: assetPlaintext,
+    signEvent: async (template) => ({
+      ...template,
+      id: "asset-revision-event-id",
+      pubkey: "00".repeat(32),
+      sig: "revision-signature",
+    }),
+    vaultId: "smoke",
+  });
+  const openedAsset = await client.openFolderObject(keyring, {
+    vaultId: "smoke",
+    folderId: "general",
+    objectId: "obj_cli_asset001",
+    revision: 1,
+    ciphertext: assetWrite.ciphertext,
+  });
+  assert.equal(openedAsset.status, "ready");
+  assert.equal(openedAsset.type, "asset");
+  assert.equal(openedAsset.path, "raw/assets/source.pdf");
+  assert.equal(openedAsset.contentType, "application/pdf");
+  assert.equal(new TextDecoder().decode(openedAsset.bytes), "%PDF asset\n");
+  assert.equal(openedAsset.text, undefined);
+  assert.equal(client.buildGraphProjection([openedAsset]).nodes.length, 0);
+  assert.equal(client.searchPageRows("source", [openedAsset]).length, 0);
+  assert.equal(client.buildReplayFrames([{ sequence: 1, page: openedAsset }])[0].nodeCount, 0);
+  assert.equal(client.readerPageRows("general", [openedAsset]).length, 0);
+  await assert.rejects(
+    () =>
+      client.encodeFolderObjectAssetPlaintext(
+        "attachments/source.pdf",
+        new TextEncoder().encode("%PDF asset\n"),
+        "application/pdf"
+      ),
+    /raw\/assets/
+  );
+
   const openedCliSync = await client.openSyncObjects(keyring, {
     objects: [
       {
@@ -1457,22 +1506,48 @@ assert.equal(client.readerPageRows("general", draftPages)[0].label, "Draft Page"
           contentType: "text/markdown",
           contentHash: "hash-beta",
         },
+        {
+          folderId: "source-concepts",
+          objectId: "obj_source_asset1",
+          path: "content/Concepts/raw/assets/source.pdf",
+          contentType: "application/pdf",
+          contentHash: "hash-pdf",
+        },
       ],
       omissions: [{ folderId: "secret", displayPath: "Secret", reason: "inaccessible" }],
     },
     files: {
-      "content/Concepts/alpha.md": "# Alpha\n\nSee [Beta](beta.md) and [[Loose Wiki]].",
+      "content/Concepts/alpha.md": "# Alpha\n\nSee [Beta](beta.md), [[Loose Wiki]], and raw/assets/source.pdf.",
       "content/Concepts/beta.md": "# Beta\n\nImported target.",
+      "content/Concepts/raw/assets/source.pdf": {
+        bytesBase64: Buffer.from("%PDF okf\n").toString("base64"),
+      },
     },
   };
   const parsedOkf = client.parseOkfBundle(JSON.stringify(okfInput), {
     destinationFolderId: "general",
   });
   assert.equal(parsedOkf.pages.length, 2);
+  assert.equal(parsedOkf.assets.length, 1);
   assert.equal(parsedOkf.pages[0].folderId, "general");
   assert.equal(parsedOkf.pages[0].targetPath, "alpha.md");
   assert.deepEqual(Array.from(parsedOkf.pages[0].links), ["loose wiki", "beta"]);
+  assert.equal(parsedOkf.assets[0].targetPath, "raw/assets/source.pdf");
+  assert.equal(parsedOkf.assets[0].contentType, "application/pdf");
   assert.equal(parsedOkf.omissions[0].reason, "inaccessible");
+  const explicitAssetOkf = client.parseOkfBundle(
+    {
+      assets: [
+        {
+          path: "attachments/photo.png",
+          bytesBase64: Buffer.from("png").toString("base64"),
+          contentType: "image/png",
+        },
+      ],
+    },
+    { destinationFolderId: "general" }
+  );
+  assert.equal(explicitAssetOkf.assets[0].targetPath, "raw/assets/photo.png");
 
   const skipPlan = client.planOkfImport(
     parsedOkf,
@@ -1493,7 +1568,8 @@ assert.equal(client.readerPageRows("general", draftPages)[0].label, "Draft Page"
     { conflictMode: "skip" }
   );
   assert.equal(skipPlan.summary.skip, 2);
-  assert.equal(skipPlan.entries.every((entry) => entry.action === "skip"), true);
+  assert.equal(skipPlan.summary.create, 1);
+  assert.equal(skipPlan.entries.filter((entry) => entry.kind === "page").every((entry) => entry.action === "skip"), true);
 
   const copyPlan = client.planOkfImport(
     parsedOkf,
@@ -1509,9 +1585,11 @@ assert.equal(client.readerPageRows("general", draftPages)[0].label, "Draft Page"
   );
   const copyAlpha = copyPlan.entries.find((entry) => entry.targetPath === "alpha.md");
   const copyBeta = copyPlan.entries.find((entry) => entry.action === "copy");
-  assert.equal(copyPlan.summary.create, 1);
+  const copyAsset = copyPlan.entries.find((entry) => entry.kind === "asset");
+  assert.equal(copyPlan.summary.create, 2);
   assert.equal(copyPlan.summary.copy, 1);
   assert.equal(copyBeta.targetPath, "beta imported.md");
+  assert.equal(copyAsset.targetPath, "raw/assets/source.pdf");
   assert.match(copyAlpha.markdown, /\[Beta\]\(beta imported\.md\)/);
 
   const saturatedObjectIdBase = objectIdCandidateBaseForTest("beta imported.md");
@@ -1577,7 +1655,7 @@ assert.equal(client.readerPageRows("general", draftPages)[0].label, "Draft Page"
     }),
     vaultId: "smoke",
   });
-  assert.equal(preparedImport.writes.length, 2);
+  assert.equal(preparedImport.writes.length, 3);
   assert.equal(preparedImport.skipped.length, 0);
   assert.match(preparedImport.writes[0].path, /\/_admin\/vaults\/smoke\/folders\/general\/objects\/obj_/);
   assert.equal(preparedImport.writes[0].body.revisionEvent.kind, 30078);
@@ -1597,6 +1675,17 @@ assert.equal(client.readerPageRows("general", draftPages)[0].label, "Draft Page"
   assert.equal(openedImportedAlpha.status, "ready");
   assert.equal(openedImportedAlpha.path, preparedImport.writes[0].targetPath);
   assert.match(openedImportedAlpha.text, /\[Beta\]\(beta imported\.md\)/);
+  const importedAssetWrite = preparedImport.writes.find((write) => write.targetPath === "raw/assets/source.pdf");
+  const openedImportedAsset = await client.openFolderObject(keyring, {
+    vaultId: "smoke",
+    folderId: importedAssetWrite.folderId,
+    objectId: importedAssetWrite.objectId,
+    revision: 1,
+    ciphertext: importedAssetWrite.body.ciphertext,
+  });
+  assert.equal(openedImportedAsset.type, "asset");
+  assert.equal(openedImportedAsset.contentType, "application/pdf");
+  assert.equal(new TextDecoder().decode(openedImportedAsset.bytes), "%PDF okf\n");
 
   const graph = client.buildGraphProjection([
     {

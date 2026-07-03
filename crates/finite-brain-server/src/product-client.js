@@ -1153,35 +1153,75 @@ const FiniteBrainProductClient = (() => {
       key.cryptoKey,
       base64ToBytes(envelope.ciphertext)
     );
-    const page = decodeFolderObjectPagePlaintext(
+    const opened = decodeFolderObjectPlaintext(
       new TextDecoder().decode(plaintext),
       input.path || `${input.objectId}.md`
     );
+    if (opened.type === "asset") {
+      return {
+        bytes: opened.bytes,
+        bytesBase64: opened.bytesBase64,
+        contentHash: opened.contentHash,
+        contentType: opened.contentType,
+        filename: opened.filename,
+        folderId: input.folderId,
+        objectId: input.objectId,
+        path: opened.path,
+        revision: input.revision,
+        status: "ready",
+        type: "asset",
+      };
+    }
     return {
       folderId: input.folderId,
       objectId: input.objectId,
-      path: page.path,
+      path: opened.path,
       revision: input.revision,
       status: "ready",
-      text: page.markdown,
+      text: opened.markdown,
+      type: "page",
     };
   }
 
   function decodeFolderObjectPagePlaintext(plaintext, fallbackPath) {
+    const opened = decodeFolderObjectPlaintext(plaintext, fallbackPath);
+    if (opened.type !== "page") throw new Error(`Folder object ${opened.path} is an Asset, not a Page`);
+    return { path: opened.path, markdown: opened.markdown };
+  }
+
+  function decodeFolderObjectPlaintext(plaintext, fallbackPath) {
     const fallback = normalizeSafeRelativePath(fallbackPath || "page.md", "Page path");
     try {
-      const page = JSON.parse(String(plaintext || ""));
+      const object = JSON.parse(String(plaintext || ""));
+      if (object?.type === "asset") {
+        const path = normalizeAssetPath(object.path, "Asset path");
+        const bytesBase64 = String(object.bytesBase64 || "");
+        const bytes = base64ToBytes(bytesBase64);
+        const size = Number(object.size ?? bytes.length);
+        if (size !== bytes.length) throw new Error("Asset size does not match decoded bytes");
+        return {
+          bytes,
+          bytesBase64,
+          contentHash: String(object.contentHash || ""),
+          contentType: String(object.contentType || "application/octet-stream"),
+          filename: String(object.filename || path.split("/").at(-1) || "asset"),
+          path,
+          size,
+          type: "asset",
+        };
+      }
+      const page = object;
       if (page?.version === FOLDER_OBJECT_PAGE_VERSION) {
         const path = normalizeSafeRelativePath(page.path, "Page path");
         if (!path.toLowerCase().endsWith(".md")) throw new Error("Page path must end in .md");
         if (typeof page.markdown !== "string") throw new Error("Page markdown must be a string");
-        return { path, markdown: page.markdown };
+        return { path, markdown: page.markdown, type: "page" };
       }
     } catch (error) {
-      if (error instanceof SyntaxError) return { path: fallback, markdown: String(plaintext || "") };
+      if (error instanceof SyntaxError) return { path: fallback, markdown: String(plaintext || ""), type: "page" };
       throw error;
     }
-    return { path: fallback, markdown: String(plaintext || "") };
+    return { path: fallback, markdown: String(plaintext || ""), type: "page" };
   }
 
   function encodeFolderObjectPagePlaintext(path, markdown) {
@@ -1191,6 +1231,21 @@ const FiniteBrainProductClient = (() => {
       version: FOLDER_OBJECT_PAGE_VERSION,
       path: safePath,
       markdown: String(markdown || ""),
+    });
+  }
+
+  async function encodeFolderObjectAssetPlaintext(path, bytes, contentType = "application/octet-stream") {
+    const safePath = normalizeAssetPath(path || "raw/assets/asset.bin", "Asset path");
+    const rawBytes = bytes instanceof Uint8Array ? bytes : base64ToBytes(String(bytes || ""));
+    const filename = safePath.split("/").at(-1) || "asset";
+    return JSON.stringify({
+      type: "asset",
+      path: safePath,
+      filename,
+      contentType: String(contentType || "application/octet-stream"),
+      size: rawBytes.length,
+      contentHash: await sha256HexBytes(rawBytes),
+      bytesBase64: bytesToBase64(rawBytes),
     });
   }
 
@@ -1696,12 +1751,25 @@ const FiniteBrainProductClient = (() => {
     return safePath;
   }
 
+  function normalizeAssetPath(value, label = "Asset path") {
+    const safePath = normalizeSafeRelativePath(value || "raw/assets/asset.bin", label);
+    if (!safePath.startsWith("raw/assets/")) throw new Error(`${label} must live under raw/assets/`);
+    return safePath;
+  }
+
+  function assetTargetPathFromBundlePath(path) {
+    const safePath = targetPathFromBundlePath(path);
+    if (safePath.startsWith("raw/assets/")) return safePath;
+    const filename = safePath.split("/").filter(Boolean).pop() || "asset";
+    return normalizeAssetPath(`raw/assets/${filename}`, "OKF asset target path");
+  }
+
   function parseOkfBundle(input, options = {}) {
     const source = typeof input === "string" ? JSON.parse(input) : input;
     if (!source || typeof source !== "object") throw new Error("OKF bundle must be a JSON object");
 
-    const files = new Map();
     const sourceFiles = source.files || source;
+    const files = new Map();
     for (const [path, content] of Object.entries(sourceFiles || {})) {
       if (typeof content === "string" && (path.endsWith(".md") || path === "okf-vault.json")) {
         files.set(normalizeSafeRelativePath(path, "OKF file path"), content);
@@ -1712,6 +1780,7 @@ const FiniteBrainProductClient = (() => {
       source.manifest ||
       (files.has("okf-vault.json") ? JSON.parse(files.get("okf-vault.json")) : null);
     const pages = [];
+    const assets = [];
     if (Array.isArray(source.pages)) {
       source.pages.forEach((page, index) => {
         const sourcePath = normalizeSafeRelativePath(
@@ -1735,24 +1804,73 @@ const FiniteBrainProductClient = (() => {
           links: extractPageLinks(markdown),
         });
       });
+    }
+    if (Array.isArray(source.assets)) {
+      source.assets.forEach((asset, index) => {
+        const sourcePath = normalizeSafeRelativePath(
+          asset.sourcePath || asset.path || asset.targetPath || `attachments/asset-${index + 1}`,
+          "OKF asset source path"
+        );
+        const targetPath = normalizeAssetPath(
+          asset.targetPath || asset.assetPath || assetTargetPathFromBundlePath(asset.path || sourcePath),
+          "OKF asset target path"
+        );
+        const bytesBase64 = String(asset.bytesBase64 || "");
+        assets.push({
+          sourceFolderId: asset.folderId || null,
+          sourceObjectId: asset.objectId || null,
+          sourcePath,
+          folderId: options.destinationFolderId || asset.targetFolderId || asset.folderId || DEFAULT_CLIENT_FOLDER_ID,
+          targetPath,
+          bytesBase64,
+          contentHash: asset.contentHash || "",
+          contentType: asset.contentType || "application/octet-stream",
+          size: asset.size === undefined ? base64ToBytes(bytesBase64).length : Number(asset.size),
+        });
+      });
     } else if (manifest?.objects) {
       for (const object of manifest.objects) {
         const sourcePath = normalizeSafeRelativePath(object.path, "OKF manifest object path");
-        const markdown = files.get(sourcePath);
-        if (typeof markdown !== "string") throw new Error(`OKF file missing for ${sourcePath}`);
-        pages.push({
-          sourceFolderId: object.folderId || null,
-          sourceObjectId: object.objectId || null,
-          sourcePath,
-          folderId: options.destinationFolderId || object.targetFolderId || object.folderId || DEFAULT_CLIENT_FOLDER_ID,
-          targetPath: normalizeSafeRelativePath(
-            object.targetPath || object.pagePath || targetPathFromBundlePath(sourcePath),
-            "OKF page target path"
-          ),
-          markdown,
-          contentType: object.contentType || "text/markdown",
-          links: extractPageLinks(markdown),
-        });
+        const contentType = object.contentType || "text/markdown";
+        if (contentType === "text/markdown" && !Array.isArray(source.pages)) {
+          const markdown = files.get(sourcePath);
+          if (typeof markdown !== "string") throw new Error(`OKF file missing for ${sourcePath}`);
+          pages.push({
+            sourceFolderId: object.folderId || null,
+            sourceObjectId: object.objectId || null,
+            sourcePath,
+            folderId: options.destinationFolderId || object.targetFolderId || object.folderId || DEFAULT_CLIENT_FOLDER_ID,
+            targetPath: normalizeSafeRelativePath(
+              object.targetPath || object.pagePath || targetPathFromBundlePath(sourcePath),
+              "OKF page target path"
+            ),
+            markdown,
+            contentType,
+            links: extractPageLinks(markdown),
+          });
+        } else {
+          const rawAsset = sourceFiles?.[sourcePath];
+          const bytesBase64 =
+            typeof object.bytesBase64 === "string"
+              ? object.bytesBase64
+              : typeof rawAsset === "string"
+                ? rawAsset
+                : String(rawAsset?.bytesBase64 || "");
+          assets.push({
+            sourceFolderId: object.folderId || null,
+            sourceObjectId: object.objectId || null,
+            sourcePath,
+            folderId: options.destinationFolderId || object.targetFolderId || object.folderId || DEFAULT_CLIENT_FOLDER_ID,
+            targetPath: normalizeAssetPath(
+              object.targetPath || object.assetPath || assetTargetPathFromBundlePath(sourcePath),
+              "OKF asset target path"
+            ),
+            bytesBase64,
+            contentHash: object.contentHash || rawAsset?.contentHash || "",
+            contentType,
+            size: object.size === undefined ? base64ToBytes(bytesBase64).length : Number(object.size),
+          });
+        }
       }
     } else {
       for (const [sourcePath, markdown] of files.entries()) {
@@ -1772,6 +1890,7 @@ const FiniteBrainProductClient = (() => {
 
     return {
       version: manifest?.version || source.version || "finite-okf-vault-import-v1",
+      assets,
       pages,
       omissions: manifest?.omissions || source.omissions || [],
     };
@@ -1827,9 +1946,11 @@ const FiniteBrainProductClient = (() => {
 
   function uniqueImportedCopyPath(folderId, targetPath, occupiedTargets) {
     const safePath = normalizeSafeRelativePath(targetPath, "copy target path");
-    const [stem, extension] = safePath.toLowerCase().endsWith(".md")
-      ? [safePath.slice(0, -3), ".md"]
-      : [safePath, ""];
+    const slash = safePath.lastIndexOf("/");
+    const dot = safePath.lastIndexOf(".");
+    const hasExtension = dot > slash;
+    const stem = hasExtension ? safePath.slice(0, dot) : safePath;
+    const extension = hasExtension ? safePath.slice(dot) : "";
     for (let index = 1; index <= 1000; index += 1) {
       const suffix = index === 1 ? " imported" : ` imported ${index}`;
       const candidate = normalizeSafeRelativePath(`${stem}${suffix}${extension}`, "copy target path");
@@ -1929,6 +2050,7 @@ const FiniteBrainProductClient = (() => {
         baseRevision,
         contentType: page.contentType || "text/markdown",
         folderId,
+        kind: "page",
         links: [...(page.links || extractPageLinks(page.markdown))],
         markdown: page.markdown,
         objectId,
@@ -1936,10 +2058,51 @@ const FiniteBrainProductClient = (() => {
         targetPath,
       });
     }
+    for (const asset of bundle.assets || []) {
+      const folderId = asset.folderId || options.destinationFolderId || DEFAULT_CLIENT_FOLDER_ID;
+      let targetPath = normalizeAssetPath(asset.targetPath, "OKF asset target path");
+      const existing = existingByPath.get(targetKey(folderId, targetPath));
+      let action = "create";
+      let objectId = null;
+      let baseRevision = null;
+      if (existing) {
+        if (mode === "skip") {
+          action = "skip";
+          objectId = existing.objectId || null;
+        }
+        if (mode === "copy") {
+          action = "copy";
+          targetPath = uniqueImportedCopyPath(folderId, targetPath, occupiedTargets);
+          objectId = objectIdForTargetPath(targetPath, occupiedObjectIds);
+        }
+        if (mode === "overwrite") {
+          action = "overwrite";
+          objectId = existing.objectId;
+          baseRevision = existing.revision;
+        }
+      } else {
+        objectId = objectIdForTargetPath(targetPath, occupiedObjectIds);
+      }
+      occupiedTargets.add(targetKey(folderId, targetPath));
+      entries.push({
+        action,
+        baseRevision,
+        bytesBase64: asset.bytesBase64 || "",
+        contentHash: asset.contentHash || "",
+        contentType: asset.contentType || "application/octet-stream",
+        folderId,
+        kind: "asset",
+        links: [],
+        objectId,
+        size: asset.size,
+        sourcePath: asset.sourcePath,
+        targetPath,
+      });
+    }
 
-    const sourcePathToEntry = new Map(entries.map((entry) => [entry.sourcePath, entry]));
+    const sourcePathToEntry = new Map(entries.filter((entry) => entry.kind !== "asset").map((entry) => [entry.sourcePath, entry]));
     for (const entry of entries) {
-      if (entry.action !== "skip") {
+      if (entry.action !== "skip" && entry.kind !== "asset") {
         entry.markdown = rewriteOkfMarkdownLinks(
           entry.markdown,
           entry.sourcePath,
@@ -1995,6 +2158,14 @@ const FiniteBrainProductClient = (() => {
       const nonceBytes =
         typeof options.nonceFactory === "function" ? options.nonceFactory(nonceIndex, entry) : undefined;
       nonceIndex += 1;
+      const plaintext =
+        entry.kind === "asset"
+          ? await encodeFolderObjectAssetPlaintext(
+              entry.targetPath,
+              base64ToBytes(entry.bytesBase64 || ""),
+              entry.contentType || "application/octet-stream"
+            )
+          : encodeFolderObjectPagePlaintext(entry.targetPath, entry.markdown);
       const body = await buildPageWriteRequest(keyring, {
         authorNpub: options.authorNpub,
         baseRevision: entry.baseRevision,
@@ -2004,7 +2175,7 @@ const FiniteBrainProductClient = (() => {
         nonceBytes,
         objectId: entry.objectId,
         operation: entry.action === "overwrite" ? "update" : "create",
-        plaintext: encodeFolderObjectPagePlaintext(entry.targetPath, entry.markdown),
+        plaintext,
         signEvent: options.signEvent,
         vaultId: options.vaultId,
       });
@@ -2025,7 +2196,7 @@ const FiniteBrainProductClient = (() => {
 
   function buildGraphProjection(pages, filterText = "") {
     const filter = normalizePageReference(filterText);
-    const visiblePages = [...pages].filter((page) => page.status === "ready");
+    const visiblePages = [...pages].filter(isReadablePage);
     const nodes = visiblePages.map((page) => {
       const id = pageKey(page.folderId, page.objectId);
       const title = pageTitleForPage(page);
@@ -2334,8 +2505,12 @@ const FiniteBrainProductClient = (() => {
     return page?.text !== undefined && page?.text !== null;
   }
 
+  function isAssetObject(page) {
+    return page?.type === "asset";
+  }
+
   function isReadablePage(page) {
-    return page?.status === "ready" && pageTextIsPresent(page);
+    return page?.status === "ready" && !isAssetObject(page) && pageTextIsPresent(page);
   }
 
   function readablePages() {
@@ -2346,6 +2521,7 @@ const FiniteBrainProductClient = (() => {
     const pageCounts = new Map();
     const readableCounts = new Map();
     for (const page of pages) {
+      if (isAssetObject(page)) continue;
       pageCounts.set(page.folderId, (pageCounts.get(page.folderId) || 0) + 1);
       if (isReadablePage(page)) {
         readableCounts.set(page.folderId, (readableCounts.get(page.folderId) || 0) + 1);
@@ -2361,6 +2537,7 @@ const FiniteBrainProductClient = (() => {
   function readerPageRows(folderId, pages = projectionPages()) {
     return pages
       .filter((page) => !folderId || page.folderId === folderId)
+      .filter((page) => !isAssetObject(page))
       .map((page) => {
         const title = pageTitleForPage(page);
         return {
@@ -2508,7 +2685,7 @@ const FiniteBrainProductClient = (() => {
 
   function commandPaletteRows(query, pages = readablePages()) {
     const needle = String(query || "").trim().toLowerCase();
-    const pageRows = pages.map((page) => ({
+    const pageRows = pages.filter(isReadablePage).map((page) => ({
       detail: pagePathLabel(page),
       id: page.key || pageKey(page.folderId, page.objectId),
       kind: "page",
@@ -2528,6 +2705,7 @@ const FiniteBrainProductClient = (() => {
     const needle = String(query || "").trim().toLowerCase();
     if (!needle) return [];
     return pages
+      .filter(isReadablePage)
       .filter((page) => {
         const haystack = [page.title, page.path, page.folderId, page.text].filter(Boolean).join("\n").toLowerCase();
         return haystack.includes(needle);
@@ -4154,6 +4332,10 @@ const FiniteBrainProductClient = (() => {
 
   async function sha256Hex(text) {
     const bytes = new TextEncoder().encode(text);
+    return sha256HexBytes(bytes);
+  }
+
+  async function sha256HexBytes(bytes) {
     const digest = await crypto.subtle.digest("SHA-256", bytes);
     return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
   }
@@ -5625,18 +5807,26 @@ const FiniteBrainProductClient = (() => {
         method: "PUT",
         body: JSON.stringify(write.body),
       });
-      state.projection.pages.set(pageKey(write.folderId, write.objectId), {
+      const importedEntry = state.okfPlan.entries.find((entry) => entry.objectId === write.objectId);
+      const importedAsset = importedEntry?.kind === "asset";
+      const projectionObject = {
         folderId: write.folderId,
         objectId: write.objectId,
         path: write.targetPath,
         revision: result.revision,
         status: "ready",
-        text: state.okfPlan.entries.find((entry) => entry.objectId === write.objectId)?.markdown || "",
-        title: pageTitleFromText(
-          state.okfPlan.entries.find((entry) => entry.objectId === write.objectId)?.markdown || "",
-          write.targetPath
-        ),
-      });
+        type: importedAsset ? "asset" : "page",
+      };
+      if (importedAsset) {
+        projectionObject.contentHash = importedEntry.contentHash || "";
+        projectionObject.contentType = importedEntry.contentType || "application/octet-stream";
+        projectionObject.size = importedEntry.size;
+      } else {
+        const importedText = importedEntry?.markdown || "";
+        projectionObject.text = importedText;
+        projectionObject.title = pageTitleFromText(importedText, write.targetPath);
+      }
+      state.projection.pages.set(pageKey(write.folderId, write.objectId), projectionObject);
       results.push({ ...result, targetPath: write.targetPath });
     }
     state.okfPlan = null;
@@ -5963,7 +6153,10 @@ const FiniteBrainProductClient = (() => {
     defaultVaultBootstrapFolderIds,
     defaultVaultPages,
     defaultVaultPagesFolderId,
+    decodeFolderObjectPlaintext,
     encryptFolderObject,
+    encodeFolderObjectAssetPlaintext,
+    encodeFolderObjectPagePlaintext,
     editorSlashCommandRows,
     extractPageLinks,
     graphEmptyStateCopy,
