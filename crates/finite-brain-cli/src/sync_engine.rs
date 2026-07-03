@@ -2,11 +2,13 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use base64::Engine;
+use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use finite_brain_core::portability::{
-    OkfOmittedFolder, OpenedPage, WorkingTreeChange, WorkingTreeChangeIntent,
-    WorkingTreeFolderRoot, WorkingTreeIntentAction, WorkingTreeIntentRoute,
-    WorkingTreeMaterializeInput, WorkingTreeObjectManifestEntry, WorkingTreeProjection,
-    materialize_vault_working_tree, plan_working_tree_change_intents,
+    OkfOmittedFolder, OpenedAsset, OpenedPage, WorkingTreeChange, WorkingTreeChangeIntent,
+    WorkingTreeFolderRoot, WorkingTreeIntentAction, WorkingTreeIntentContent,
+    WorkingTreeIntentRoute, WorkingTreeMaterializeInput, WorkingTreeObjectManifestEntry,
+    WorkingTreeProjection, materialize_vault_working_tree, plan_working_tree_change_intents,
 };
 use finite_brain_core::{
     DisplayName, EncryptedFolderObjectEnvelope, Folder, FolderAccessMode, FolderId, FolderKey,
@@ -80,7 +82,11 @@ pub(crate) fn run_working_tree_sync(
         &mounted_materializations,
         &local_result.path_overrides,
     )?;
-    restore_conflicted_markdown(&root, &local_result.conflicted_markdown)?;
+    restore_conflicted_files(
+        &root,
+        &local_result.conflicted_markdown,
+        &local_result.conflicted_assets,
+    )?;
 
     let applied_tree_state = read_working_tree_state(&root)?;
     let remote_changes = sync_record_reports(
@@ -615,9 +621,10 @@ fn write_sync_evidence(
     Ok(())
 }
 
-fn restore_conflicted_markdown(
+fn restore_conflicted_files(
     root: &Path,
     conflicted_markdown: &BTreeMap<String, String>,
+    conflicted_assets: &BTreeMap<String, Vec<u8>>,
 ) -> Result<(), CliError> {
     for (relative_path, markdown) in conflicted_markdown {
         let path = root.join(relative_path);
@@ -625,6 +632,13 @@ fn restore_conflicted_markdown(
             fs::create_dir_all(parent)?;
         }
         fs::write(path, markdown)?;
+    }
+    for (relative_path, bytes) in conflicted_assets {
+        let path = root.join(relative_path);
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        fs::write(path, bytes)?;
     }
     Ok(())
 }
@@ -841,7 +855,7 @@ fn push_local_working_tree_changes(
             }
             Ok(SubmitIntentOutcome::Conflict(reason)) => {
                 result.conflict_count += 1;
-                preserve_conflicted_markdown(&mut result, change);
+                preserve_conflicted_content(&mut result, change);
                 result.changes.push(sync_change_report(
                     change,
                     intent,
@@ -852,7 +866,7 @@ fn push_local_working_tree_changes(
             }
             Err(error) if is_http_conflict(&error) => {
                 result.conflict_count += 1;
-                preserve_conflicted_markdown(&mut result, change);
+                preserve_conflicted_content(&mut result, change);
                 result.changes.push(sync_change_report(
                     change,
                     intent,
@@ -893,9 +907,9 @@ fn sync_change_report(
     reason: Option<String>,
 ) -> SyncChangeReport {
     let (path, from_path) = match change {
-        WorkingTreeChange::Upsert { path, .. } | WorkingTreeChange::Delete { path } => {
-            (Some(path.to_string()), None)
-        }
+        WorkingTreeChange::Upsert { path, .. }
+        | WorkingTreeChange::UpsertAsset { path, .. }
+        | WorkingTreeChange::Delete { path } => (Some(path.to_string()), None),
         WorkingTreeChange::Rename { from_path, to_path } => {
             (Some(to_path.to_string()), Some(from_path.to_string()))
         }
@@ -1018,8 +1032,8 @@ fn submit_change_intent(
         WorkingTreeIntentAction::Create
         | WorkingTreeIntentAction::Update
         | WorkingTreeIntentAction::Move => {
-            let markdown = intent.markdown.as_deref().ok_or_else(|| {
-                CliError::InvalidInput("write intent is missing markdown".to_owned())
+            let content = intent.content.as_ref().ok_or_else(|| {
+                CliError::InvalidInput("write intent is missing plaintext content".to_owned())
             })?;
             let target_path = intent.target_path.as_ref().ok_or_else(|| {
                 CliError::InvalidInput("write intent is missing target path".to_owned())
@@ -1034,7 +1048,16 @@ fn submit_change_intent(
                 object_id: object_id.clone(),
                 key_version: local_key.key_version,
             };
-            let plaintext = encode_folder_object_page_plaintext(target_path, markdown)?;
+            let plaintext = match content {
+                WorkingTreeIntentContent::PageMarkdown(markdown) => {
+                    encode_folder_object_page_plaintext(target_path, markdown)?
+                }
+                WorkingTreeIntentContent::AssetBytes {
+                    bytes,
+                    content_type,
+                    ..
+                } => encode_folder_object_asset_plaintext(target_path, bytes, content_type)?,
+            };
             let envelope = encrypt_folder_object(&key, &aad, &plaintext)
                 .map_err(|error| CliError::InvalidInput(error.to_string()))?;
             let envelope_json = envelope.canonical_json();
@@ -1275,18 +1298,20 @@ fn materialize_remote_projection(
         prior_paths.insert(key.clone(), path.clone());
     }
     let mut opened_pages = Vec::new();
+    let mut opened_assets = Vec::new();
     let mut readable_folder_routes = BTreeSet::new();
     {
-        let mut append_context = OpenedPagesAppendContext {
+        let mut append_context = OpenedObjectsAppendContext {
             local_keys: &local_keys,
             prior_paths: &prior_paths,
             opened_pages: &mut opened_pages,
+            opened_assets: &mut opened_assets,
             readable_folder_routes: &mut readable_folder_routes,
         };
 
-        append_opened_pages_from_bootstrap(export, bootstrap, None, None, &mut append_context)?;
+        append_opened_objects_from_bootstrap(export, bootstrap, None, None, &mut append_context)?;
         for mounted in mounted_folders {
-            append_opened_pages_from_bootstrap(
+            append_opened_objects_from_bootstrap(
                 &mounted.export,
                 &mounted.bootstrap,
                 Some(&mounted.mount.source_folder_id),
@@ -1345,7 +1370,7 @@ fn materialize_remote_projection(
             .map_err(|error| CliError::InvalidInput(error.to_string()))?,
         vault,
         opened_pages,
-        opened_assets: Vec::new(),
+        opened_assets,
         locked_folders,
         latest_sequence: bootstrap.latest_sequence,
     })
@@ -1361,23 +1386,24 @@ fn materialize_remote_projection(
         )?;
     }
     remove_stale_object_files(root, &prior_state.objects, &projection.state.objects)?;
-    write_projection_files(root, &projection.files)?;
+    write_projection_files(root, &projection.files, &projection.binary_files)?;
     Ok(())
 }
 
-struct OpenedPagesAppendContext<'a> {
+struct OpenedObjectsAppendContext<'a> {
     local_keys: &'a BTreeMap<(String, String, u32), LocalFolderKey>,
     prior_paths: &'a BTreeMap<(String, String, String), String>,
     opened_pages: &'a mut Vec<OpenedPage>,
+    opened_assets: &'a mut Vec<OpenedAsset>,
     readable_folder_routes: &'a mut BTreeSet<(String, String)>,
 }
 
-fn append_opened_pages_from_bootstrap(
+fn append_opened_objects_from_bootstrap(
     export: &CliEncryptedVaultExport,
     bootstrap: &CliSyncBootstrap,
     only_folder_id: Option<&str>,
     display_path_override: Option<&str>,
-    context: &mut OpenedPagesAppendContext<'_>,
+    context: &mut OpenedObjectsAppendContext<'_>,
 ) -> Result<(), CliError> {
     let source_vault_id = VaultId::new(export.vault.id.clone())
         .map_err(|error| CliError::InvalidInput(error.to_string()))?;
@@ -1410,7 +1436,7 @@ fn append_opened_pages_from_bootstrap(
             .iter()
             .find(|folder| folder.id == object.folder_id)
             .ok_or_else(|| CliError::NotFound(format!("folder {}", object.folder_id)))?;
-        let fallback_page_path = context
+        let fallback_object_path = context
             .prior_paths
             .get(&(
                 export.vault.id.clone(),
@@ -1419,29 +1445,52 @@ fn append_opened_pages_from_bootstrap(
             ))
             .cloned()
             .unwrap_or_else(|| format!("{}.md", object.object_id));
-        let (page_path, markdown) =
-            decode_folder_object_page_plaintext(plaintext, fallback_page_path)?;
         context
             .readable_folder_routes
             .insert((export.vault.id.clone(), object.folder_id.clone()));
-        context.opened_pages.push(OpenedPage {
-            folder_id: FolderId::new(object.folder_id.clone())
-                .map_err(|error| CliError::InvalidInput(error.to_string()))?,
-            source_vault_id: display_path_override.map(|_| source_vault_id.clone()),
-            object_id: ObjectId::new(object.object_id.clone())
-                .map_err(|error| CliError::InvalidInput(error.to_string()))?,
-            folder_display_path: SafeRelativePath::new(
-                "folder_path",
-                display_path_override.unwrap_or(&folder.path).to_owned(),
-            )
-            .map_err(|error| CliError::InvalidInput(error.to_string()))?,
-            page_path: SafeRelativePath::new("page_path", page_path)
-                .map_err(|error| CliError::InvalidInput(error.to_string()))?,
-            markdown,
-            revision: object.revision,
-            key_version: envelope.key_version,
-            content_type: "text/markdown".to_owned(),
-        });
+        let folder_id = FolderId::new(object.folder_id.clone())
+            .map_err(|error| CliError::InvalidInput(error.to_string()))?;
+        let object_id = ObjectId::new(object.object_id.clone())
+            .map_err(|error| CliError::InvalidInput(error.to_string()))?;
+        let folder_display_path = SafeRelativePath::new(
+            "folder_path",
+            display_path_override.unwrap_or(&folder.path).to_owned(),
+        )
+        .map_err(|error| CliError::InvalidInput(error.to_string()))?;
+        match decode_folder_object_plaintext(plaintext, fallback_object_path)? {
+            CliDecodedFolderObjectPlaintext::Page { path, markdown } => {
+                context.opened_pages.push(OpenedPage {
+                    folder_id,
+                    source_vault_id: display_path_override.map(|_| source_vault_id.clone()),
+                    object_id,
+                    folder_display_path,
+                    page_path: SafeRelativePath::new("page_path", path)
+                        .map_err(|error| CliError::InvalidInput(error.to_string()))?,
+                    markdown,
+                    revision: object.revision,
+                    key_version: envelope.key_version,
+                    content_type: "text/markdown".to_owned(),
+                });
+            }
+            CliDecodedFolderObjectPlaintext::Asset {
+                path,
+                bytes,
+                content_type,
+            } => {
+                context.opened_assets.push(OpenedAsset {
+                    folder_id,
+                    source_vault_id: display_path_override.map(|_| source_vault_id.clone()),
+                    object_id,
+                    folder_display_path,
+                    asset_path: SafeRelativePath::new("asset_path", path)
+                        .map_err(|error| CliError::InvalidInput(error.to_string()))?,
+                    bytes,
+                    revision: object.revision,
+                    key_version: envelope.key_version,
+                    content_type,
+                });
+            }
+        }
     }
     Ok(())
 }
@@ -1488,7 +1537,7 @@ fn add_empty_readable_folders(
         projection.files.insert(
             format!("{}/_wiki/index.md", folder_path),
             format!(
-                "# Folder Wiki\n\nFolder: {}\nReadable Pages: 0\n",
+                "# Folder Wiki\n\nFolder: {}\nReadable Objects: 0\n",
                 folder_path
             ),
         );
@@ -1632,20 +1681,44 @@ fn scan_working_tree_changes(
         if !folder_root.exists() {
             continue;
         }
-        let markdown_paths = collect_markdown_paths(root, &folder_root)?;
-        for relative_path in markdown_paths {
+        let file_paths = collect_working_tree_file_paths(root, &folder_root)?;
+        let markdown_sources = read_folder_markdown_sources(root, &folder.path, &file_paths)?;
+        for relative_path in file_paths {
             if is_generated_folder_file(&folder.path, &relative_path) {
                 continue;
             }
             seen.insert(relative_path.clone());
-            let body = fs::read_to_string(root.join(&relative_path))?;
-            match known.get(&relative_path) {
-                Some(object) if object.content_hash == sha256_hex(body.as_bytes()) => {}
-                _ => changes.push(WorkingTreeChange::Upsert {
-                    path: SafeRelativePath::new("change_path", relative_path)
-                        .map_err(|error| CliError::InvalidInput(error.to_string()))?,
-                    markdown: body,
-                }),
+            if is_markdown_path(&relative_path) {
+                let body = fs::read_to_string(root.join(&relative_path))?;
+                match known.get(&relative_path) {
+                    Some(object) if object.content_hash == sha256_hex(body.as_bytes()) => {}
+                    _ => changes.push(WorkingTreeChange::Upsert {
+                        path: SafeRelativePath::new("change_path", relative_path)
+                            .map_err(|error| CliError::InvalidInput(error.to_string()))?,
+                        markdown: body,
+                    }),
+                }
+            } else {
+                let bytes = fs::read(root.join(&relative_path))?;
+                let local_asset_path = folder_local_path(&folder.path, &relative_path)?;
+                let has_source_note = markdown_sources
+                    .values()
+                    .any(|markdown| markdown.contains(&local_asset_path));
+                let violates_asset_convention =
+                    !local_asset_path.starts_with("raw/assets/") || !has_source_note;
+                if !matches!(
+                    known.get(&relative_path),
+                    Some(object) if object.content_hash == sha256_hex(&bytes)
+                        && !violates_asset_convention
+                ) {
+                    changes.push(WorkingTreeChange::UpsertAsset {
+                        path: SafeRelativePath::new("change_path", relative_path)
+                            .map_err(|error| CliError::InvalidInput(error.to_string()))?,
+                        bytes,
+                        content_type: content_type_for_path(&local_asset_path).to_owned(),
+                        has_source_note,
+                    });
+                }
             }
         }
     }
@@ -1675,14 +1748,17 @@ fn folder_path_for_object(
         .map(|folder| folder.path.clone())
 }
 
-fn collect_markdown_paths(root: &Path, folder_root: &Path) -> Result<Vec<String>, CliError> {
+fn collect_working_tree_file_paths(
+    root: &Path,
+    folder_root: &Path,
+) -> Result<Vec<String>, CliError> {
     let mut paths = Vec::new();
-    collect_markdown_paths_inner(root, folder_root, &mut paths)?;
+    collect_working_tree_file_paths_inner(root, folder_root, &mut paths)?;
     paths.sort();
     Ok(paths)
 }
 
-fn collect_markdown_paths_inner(
+fn collect_working_tree_file_paths_inner(
     root: &Path,
     directory: &Path,
     paths: &mut Vec<String>,
@@ -1692,12 +1768,72 @@ fn collect_markdown_paths_inner(
         let path = entry.path();
         let file_type = entry.file_type()?;
         if file_type.is_dir() {
-            collect_markdown_paths_inner(root, &path, paths)?;
-        } else if file_type.is_file() && path.extension().is_some_and(|ext| ext == "md") {
+            collect_working_tree_file_paths_inner(root, &path, paths)?;
+        } else if file_type.is_file() {
             paths.push(relative_path_string(root, &path)?);
         }
     }
     Ok(())
+}
+
+fn read_folder_markdown_sources(
+    root: &Path,
+    folder_path: &str,
+    file_paths: &[String],
+) -> Result<BTreeMap<String, String>, CliError> {
+    let mut sources = BTreeMap::new();
+    for relative_path in file_paths {
+        if is_generated_folder_file(folder_path, relative_path) || !is_markdown_path(relative_path)
+        {
+            continue;
+        }
+        let local_path = folder_local_path(folder_path, relative_path)?;
+        sources.insert(local_path, fs::read_to_string(root.join(relative_path))?);
+    }
+    Ok(sources)
+}
+
+fn is_markdown_path(path: &str) -> bool {
+    Path::new(path)
+        .extension()
+        .and_then(|extension| extension.to_str())
+        == Some("md")
+}
+
+fn folder_local_path(folder_path: &str, relative_path: &str) -> Result<String, CliError> {
+    relative_path
+        .strip_prefix(folder_path)
+        .and_then(|rest| rest.strip_prefix('/'))
+        .map(ToOwned::to_owned)
+        .ok_or_else(|| {
+            CliError::InvalidInput(format!(
+                "path {relative_path} is outside Folder root {folder_path}"
+            ))
+        })
+}
+
+fn content_type_for_path(path: &str) -> &'static str {
+    match Path::new(path)
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .map(|extension| extension.to_ascii_lowercase())
+        .as_deref()
+    {
+        Some("pdf") => "application/pdf",
+        Some("png") => "image/png",
+        Some("jpg") | Some("jpeg") => "image/jpeg",
+        Some("gif") => "image/gif",
+        Some("webp") => "image/webp",
+        Some("svg") => "image/svg+xml",
+        Some("csv") => "text/csv",
+        Some("json") => "application/json",
+        Some("txt") => "text/plain",
+        Some("mp3") => "audio/mpeg",
+        Some("wav") => "audio/wav",
+        Some("mp4") => "video/mp4",
+        Some("mov") => "video/quicktime",
+        _ => "application/octet-stream",
+    }
 }
 
 fn relative_path_string(root: &Path, path: &Path) -> Result<String, CliError> {
@@ -1718,7 +1854,13 @@ fn is_generated_folder_file(folder_path: &str, relative_path: &str) -> bool {
     else {
         return true;
     };
-    local == "AGENTS.md" || local == "_index.md" || local.starts_with("_wiki/")
+    local == "AGENTS.md"
+        || local == "_index.md"
+        || local.starts_with("_wiki/")
+        || local == "raw/.keep"
+        || local == "raw/assets/.keep"
+        || local == "compiled/.keep"
+        || local == "output/.keep"
 }
 
 fn remove_stale_object_files(
@@ -1777,13 +1919,24 @@ fn folder_path_for_removed_object(
         .map(|folder| PathBuf::from(&folder.path)))
 }
 
-fn write_projection_files(root: &Path, files: &BTreeMap<String, String>) -> Result<(), CliError> {
+fn write_projection_files(
+    root: &Path,
+    files: &BTreeMap<String, String>,
+    binary_files: &BTreeMap<String, Vec<u8>>,
+) -> Result<(), CliError> {
     for (relative_path, body) in files {
         let path = root.join(relative_path);
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
         }
         fs::write(path, body)?;
+    }
+    for (relative_path, bytes) in binary_files {
+        let path = root.join(relative_path);
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        fs::write(path, bytes)?;
     }
     Ok(())
 }
@@ -1795,9 +1948,9 @@ fn conflict_for_change(
     created_at: String,
 ) -> ConflictEntry {
     let path = match change {
-        WorkingTreeChange::Upsert { path, .. } | WorkingTreeChange::Delete { path } => {
-            Some(path.to_string())
-        }
+        WorkingTreeChange::Upsert { path, .. }
+        | WorkingTreeChange::UpsertAsset { path, .. }
+        | WorkingTreeChange::Delete { path } => Some(path.to_string()),
         WorkingTreeChange::Rename { from_path, to_path } => {
             Some(format!("{from_path} -> {to_path}"))
         }
@@ -1842,6 +1995,7 @@ struct LocalSyncResult {
     changes: Vec<SyncChangeReport>,
     path_overrides: BTreeMap<(String, String, String), String>,
     conflicted_markdown: BTreeMap<String, String>,
+    conflicted_assets: BTreeMap<String, Vec<u8>>,
 }
 
 #[derive(Debug)]
@@ -1897,11 +2051,19 @@ enum SubmitIntentOutcome {
     Conflict(String),
 }
 
-fn preserve_conflicted_markdown(result: &mut LocalSyncResult, change: &WorkingTreeChange) {
-    if let WorkingTreeChange::Upsert { path, markdown } = change {
-        result
-            .conflicted_markdown
-            .insert(path.to_string(), markdown.clone());
+fn preserve_conflicted_content(result: &mut LocalSyncResult, change: &WorkingTreeChange) {
+    match change {
+        WorkingTreeChange::Upsert { path, markdown } => {
+            result
+                .conflicted_markdown
+                .insert(path.to_string(), markdown.clone());
+        }
+        WorkingTreeChange::UpsertAsset { path, bytes, .. } => {
+            result
+                .conflicted_assets
+                .insert(path.to_string(), bytes.clone());
+        }
+        WorkingTreeChange::Rename { .. } | WorkingTreeChange::Delete { .. } => {}
     }
 }
 
@@ -1917,30 +2079,119 @@ pub(crate) fn encode_folder_object_page_plaintext(
     .map_err(CliError::from)
 }
 
+pub(crate) fn encode_folder_object_asset_plaintext(
+    path: &SafeRelativePath,
+    bytes: &[u8],
+    content_type: &str,
+) -> Result<String, CliError> {
+    let filename = path
+        .as_str()
+        .rsplit('/')
+        .next()
+        .unwrap_or(path.as_str())
+        .to_owned();
+    serde_json::to_string(&CliFolderObjectAssetPlaintext {
+        object_type: "asset".to_owned(),
+        path: path.as_str().to_owned(),
+        filename,
+        content_type: content_type.to_owned(),
+        size: bytes.len() as u64,
+        content_hash: sha256_hex(bytes),
+        bytes_base64: BASE64_STANDARD.encode(bytes),
+    })
+    .map_err(CliError::from)
+}
+
+#[cfg(test)]
 fn decode_folder_object_page_plaintext(
     plaintext: Vec<u8>,
     fallback_path: String,
 ) -> Result<(String, String), CliError> {
+    match decode_folder_object_plaintext(plaintext, fallback_path)? {
+        CliDecodedFolderObjectPlaintext::Page { path, markdown } => Ok((path, markdown)),
+        CliDecodedFolderObjectPlaintext::Asset { path, .. } => Err(CliError::InvalidInput(
+            format!("folder object asset plaintext is not a Markdown Page: {path}"),
+        )),
+    }
+}
+
+fn decode_folder_object_plaintext(
+    plaintext: Vec<u8>,
+    fallback_path: String,
+) -> Result<CliDecodedFolderObjectPlaintext, CliError> {
     let text =
         String::from_utf8(plaintext).map_err(|error| CliError::InvalidInput(error.to_string()))?;
-    let Ok(page) = serde_json::from_str::<CliFolderObjectPagePlaintext>(&text) else {
-        return Ok((fallback_path, text));
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) else {
+        return Ok(CliDecodedFolderObjectPlaintext::Page {
+            path: fallback_path,
+            markdown: text,
+        });
     };
-    if page.version != FOLDER_OBJECT_PAGE_VERSION {
-        return Ok((fallback_path, text));
-    }
-    let page_path = SafeRelativePath::new("page_path", page.path)
-        .map_err(|error| CliError::InvalidInput(error.to_string()))?;
-    if Path::new(page_path.as_str())
-        .extension()
-        .and_then(|extension| extension.to_str())
-        != Some("md")
+    if value.get("version").and_then(|version| version.as_str()) == Some(FOLDER_OBJECT_PAGE_VERSION)
     {
-        return Err(CliError::InvalidInput(
-            "folder object page path must end in .md".to_owned(),
-        ));
+        let page: CliFolderObjectPagePlaintext =
+            serde_json::from_value(value).map_err(CliError::from)?;
+        let page_path = SafeRelativePath::new("page_path", page.path)
+            .map_err(|error| CliError::InvalidInput(error.to_string()))?;
+        if Path::new(page_path.as_str())
+            .extension()
+            .and_then(|extension| extension.to_str())
+            != Some("md")
+        {
+            return Err(CliError::InvalidInput(
+                "folder object page path must end in .md".to_owned(),
+            ));
+        }
+        return Ok(CliDecodedFolderObjectPlaintext::Page {
+            path: page_path.to_string(),
+            markdown: page.markdown,
+        });
     }
-    Ok((page_path.to_string(), page.markdown))
+    if value
+        .get("type")
+        .and_then(|object_type| object_type.as_str())
+        == Some("asset")
+    {
+        let asset: CliFolderObjectAssetPlaintext =
+            serde_json::from_value(value).map_err(CliError::from)?;
+        let asset_path = SafeRelativePath::new("asset_path", asset.path)
+            .map_err(|error| CliError::InvalidInput(error.to_string()))?;
+        let bytes = BASE64_STANDARD
+            .decode(asset.bytes_base64.as_bytes())
+            .map_err(|error| CliError::InvalidInput(error.to_string()))?;
+        if asset.size != bytes.len() as u64 {
+            return Err(CliError::InvalidInput(
+                "folder object asset size does not match decoded bytes".to_owned(),
+            ));
+        }
+        let actual_hash = sha256_hex(&bytes);
+        if asset.content_hash != actual_hash {
+            return Err(CliError::InvalidInput(
+                "folder object asset hash does not match decoded bytes".to_owned(),
+            ));
+        }
+        return Ok(CliDecodedFolderObjectPlaintext::Asset {
+            path: asset_path.to_string(),
+            bytes,
+            content_type: asset.content_type,
+        });
+    }
+    Ok(CliDecodedFolderObjectPlaintext::Page {
+        path: fallback_path,
+        markdown: text,
+    })
+}
+
+enum CliDecodedFolderObjectPlaintext {
+    Page {
+        path: String,
+        markdown: String,
+    },
+    Asset {
+        path: String,
+        bytes: Vec<u8>,
+        content_type: String,
+    },
 }
 
 #[derive(Debug, Deserialize, serde::Serialize)]
@@ -1949,6 +2200,19 @@ struct CliFolderObjectPagePlaintext {
     version: String,
     path: String,
     markdown: String,
+}
+
+#[derive(Debug, Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CliFolderObjectAssetPlaintext {
+    #[serde(rename = "type")]
+    object_type: String,
+    path: String,
+    filename: String,
+    content_type: String,
+    size: u64,
+    content_hash: String,
+    bytes_base64: String,
 }
 
 #[derive(Debug, Clone, Deserialize, serde::Serialize)]
@@ -2145,6 +2409,141 @@ mod tests {
     }
 
     #[test]
+    fn scan_detects_asset_pairs_and_reports_invalid_assets() {
+        let temp = TempDir::new().unwrap();
+        let root = temp.path();
+        fs::create_dir_all(root.join("General/raw/assets")).unwrap();
+        let source_note =
+            "# Source Notes\n\n- Existing: raw/assets/existing.pdf\n- New: raw/assets/new.pdf\n";
+        fs::write(root.join("General/raw/source-note.md"), source_note).unwrap();
+        fs::write(root.join("General/raw/assets/existing.pdf"), b"changed-pdf").unwrap();
+        fs::write(root.join("General/raw/assets/new.pdf"), b"new-pdf").unwrap();
+        fs::write(
+            root.join("General/raw/assets/missing-note.pdf"),
+            b"missing-note",
+        )
+        .unwrap();
+        fs::write(root.join("General/stray.bin"), b"stray").unwrap();
+        fs::write(root.join("General/raw/assets/.keep"), "# generated\n").unwrap();
+        let state = VaultWorkingTreeStateManifest {
+            version: "finite-vault-working-tree-state-v1".to_owned(),
+            folder_roots: vec![WorkingTreeFolderRoot {
+                folder_id: "general".to_owned(),
+                source_vault_id: None,
+                path: "General".to_owned(),
+                can_read: true,
+                metadata_only: false,
+            }],
+            objects: vec![
+                WorkingTreeObjectManifestEntry {
+                    folder_id: "general".to_owned(),
+                    source_vault_id: None,
+                    path: "raw/source-note.md".to_owned(),
+                    object_id: "obj_sourcenote000".to_owned(),
+                    revision: 1,
+                    key_version: 1,
+                    content_type: "text/markdown".to_owned(),
+                    content_hash: sha256_hex(source_note.as_bytes()),
+                },
+                WorkingTreeObjectManifestEntry {
+                    folder_id: "general".to_owned(),
+                    source_vault_id: None,
+                    path: "raw/assets/existing.pdf".to_owned(),
+                    object_id: "obj_assetexisting".to_owned(),
+                    revision: 2,
+                    key_version: 1,
+                    content_type: "application/pdf".to_owned(),
+                    content_hash: sha256_hex(b"old-pdf"),
+                },
+                WorkingTreeObjectManifestEntry {
+                    folder_id: "general".to_owned(),
+                    source_vault_id: None,
+                    path: "raw/assets/missing-note.pdf".to_owned(),
+                    object_id: "obj_missingnote00".to_owned(),
+                    revision: 1,
+                    key_version: 1,
+                    content_type: "application/pdf".to_owned(),
+                    content_hash: sha256_hex(b"missing-note"),
+                },
+            ],
+            sync: WorkingTreeSyncState { latest_sequence: 1 },
+        };
+
+        let changes = scan_working_tree_changes(root, &state).unwrap();
+
+        assert_eq!(changes.len(), 4);
+        assert!(changes.iter().any(|change| matches!(
+            change,
+            WorkingTreeChange::UpsertAsset {
+                path,
+                bytes,
+                content_type,
+                has_source_note
+            } if path.as_str() == "General/raw/assets/existing.pdf"
+                && bytes == b"changed-pdf"
+                && content_type == "application/pdf"
+                && *has_source_note
+        )));
+        assert!(changes.iter().any(|change| matches!(
+            change,
+            WorkingTreeChange::UpsertAsset {
+                path,
+                bytes,
+                content_type,
+                has_source_note
+            } if path.as_str() == "General/raw/assets/new.pdf"
+                && bytes == b"new-pdf"
+                && content_type == "application/pdf"
+                && *has_source_note
+        )));
+        let intents = plan_working_tree_change_intents(&state, &changes);
+        let by_path = changes
+            .iter()
+            .zip(intents.iter())
+            .map(|(change, intent)| {
+                let path = match change {
+                    WorkingTreeChange::UpsertAsset { path, .. } => path.to_string(),
+                    other => panic!("unexpected change in asset scan test: {other:?}"),
+                };
+                (path, intent)
+            })
+            .collect::<BTreeMap<_, _>>();
+
+        let existing = by_path.get("General/raw/assets/existing.pdf").unwrap();
+        assert_eq!(existing.action, WorkingTreeIntentAction::Update);
+        assert_eq!(existing.base_revision, Some(2));
+        assert!(matches!(
+            existing.content.as_ref(),
+            Some(WorkingTreeIntentContent::AssetBytes {
+                content_type,
+                content_hash,
+                ..
+            }) if content_type == "application/pdf"
+                && content_hash == &sha256_hex(b"changed-pdf")
+        ));
+        assert_eq!(
+            by_path.get("General/raw/assets/new.pdf").unwrap().action,
+            WorkingTreeIntentAction::Create
+        );
+        assert!(matches!(
+            by_path.get("General/raw/assets/missing-note.pdf").unwrap(),
+            WorkingTreeChangeIntent {
+                action: WorkingTreeIntentAction::Unresolved,
+                reason: Some(reason),
+                ..
+            } if reason.contains("Source Note")
+        ));
+        assert!(matches!(
+            by_path.get("General/stray.bin").unwrap(),
+            WorkingTreeChangeIntent {
+                action: WorkingTreeIntentAction::Unresolved,
+                reason: Some(reason),
+                ..
+            } if reason.contains("raw/assets")
+        ));
+    }
+
+    #[test]
     fn signed_revision_events_validate_against_core_contract() {
         let keys = Keys::parse("0000000000000000000000000000000000000000000000000000000000000001")
             .unwrap();
@@ -2236,7 +2635,9 @@ mod tests {
             target_path: Some(SafeRelativePath::new("page_path", "page.md").unwrap()),
             from_path: None,
             base_revision: None,
-            markdown: Some("# Page\n".to_owned()),
+            content: Some(WorkingTreeIntentContent::PageMarkdown(
+                "# Page\n".to_owned(),
+            )),
             reason: None,
         };
 
@@ -2259,6 +2660,28 @@ mod tests {
                 .unwrap_err();
 
         assert!(error.to_string().contains("must end in .md"));
+    }
+
+    #[test]
+    fn asset_plaintext_round_trips_with_hash_and_content_type() {
+        let path = SafeRelativePath::new("asset_path", "raw/assets/source.pdf").unwrap();
+        let plaintext =
+            encode_folder_object_asset_plaintext(&path, b"%PDF test\n", "application/pdf").unwrap();
+
+        match decode_folder_object_plaintext(plaintext.into_bytes(), "fallback.md".to_owned())
+            .unwrap()
+        {
+            CliDecodedFolderObjectPlaintext::Asset {
+                path,
+                bytes,
+                content_type,
+            } => {
+                assert_eq!(path, "raw/assets/source.pdf");
+                assert_eq!(bytes, b"%PDF test\n");
+                assert_eq!(content_type, "application/pdf");
+            }
+            CliDecodedFolderObjectPlaintext::Page { .. } => panic!("expected asset plaintext"),
+        }
     }
 
     #[test]

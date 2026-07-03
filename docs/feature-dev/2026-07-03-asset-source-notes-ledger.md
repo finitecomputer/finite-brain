@@ -9,7 +9,7 @@
 - Feature branch: feature/asset-source-notes
 - Human owner: AustinKelsay
 - Started: 2026-07-03T09:20:32-0500
-- Current status: issue #68 local review passed
+- Current status: issue #69 local review passed
 - Skill setup status: present; root AGENTS.md, issue tracker docs, triage labels, domain docs, and ADRs exist
 
 ## Goal
@@ -24,9 +24,9 @@ synthesized wiki pages cite the source notes.
 - ADRs: docs/adr/0008-store-assets-with-markdown-source-notes.md
 - PRD issue: https://github.com/finitecomputer/finite-brain/issues/66
 - Slice issues: #67, #68, #69, #70
-- Issue sessions: docs/feature-dev/2026-07-03-issue-67-asset-source-notes-convention-session.md; docs/feature-dev/2026-07-03-issue-68-core-asset-model-session.md
+- Issue sessions: docs/feature-dev/2026-07-03-issue-67-asset-source-notes-convention-session.md; docs/feature-dev/2026-07-03-issue-68-core-asset-model-session.md; docs/feature-dev/2026-07-03-issue-69-fbrain-asset-sync-session.md
 - Agent briefs: pending
-- Review packets: docs/feature-dev/2026-07-03-issue-67-asset-source-notes-convention-review-packet.md; docs/feature-dev/2026-07-03-issue-68-core-asset-model-review-packet.md
+- Review packets: docs/feature-dev/2026-07-03-issue-67-asset-source-notes-convention-review-packet.md; docs/feature-dev/2026-07-03-issue-68-core-asset-model-review-packet.md; docs/feature-dev/2026-07-03-issue-69-fbrain-asset-sync-review-packet.md
 - Local CodeRabbit report: pending
 - PR URL: pending
 
@@ -49,8 +49,8 @@ hard-cut branch. Final PR target will be recorded before push.
 | Issue | Type | Status | Review thread | Fixes needed | Verified |
 | --- | --- | --- | --- | --- | --- |
 | #67 | AFK | committed | no findings | none | package checks passed |
-| #68 | AFK | local review passed | no findings | none | package checks passed |
-| #69 | AFK | ready-for-agent | pending | pending | pending |
+| #68 | AFK | committed | no findings | none | package checks passed |
+| #69 | AFK | local review passed | no findings | none | package checks passed |
 | #70 | AFK | ready-for-agent | pending | pending | pending |
 
 ## Parked HITL Slices
@@ -64,8 +64,8 @@ hard-cut branch. Final PR target will be recorded before push.
 | Issue | Fixed point | Worker session | Commit | Review result | Checks |
 | --- | --- | --- | --- | --- | --- |
 | #67 | 578b68c948533d1b5b297737b4eb87e6a2880c22 | current thread | de1ec24 | local review passed, no findings | node --check product-client.js; git diff --check; cargo fmt --check; cargo test -p finite-brain-core exposes_default_vault_pages; cargo test -p finite-brain-core working_tree_materializes_accessible_pages_and_safe_agent_conventions; cargo test -p finite-brain-cli empty_readable_folders_stay_materialized; node product-client.test.js; cargo test -p finite-brain-core; cargo test -p finite-brain-cli; cargo test -p finite-brain-server |
-| #68 | de1ec24 | current thread | pending | local review passed, no findings | cargo fmt --check; git diff --check; cargo test -p finite-brain-core working_tree_materializes_accessible_pages_and_safe_agent_conventions; cargo test -p finite-brain-core; cargo test -p finite-brain-cli |
-| #69 | pending | pending | pending | pending | pending |
+| #68 | de1ec24 | current thread | 1f80c57 | local review passed, no findings | cargo fmt --check; git diff --check; cargo test -p finite-brain-core working_tree_materializes_accessible_pages_and_safe_agent_conventions; cargo test -p finite-brain-core; cargo test -p finite-brain-cli |
+| #69 | 1f80c57 | current thread | pending | local review passed, no findings | cargo fmt --check; git diff --check; cargo test -p finite-brain-cli scan_detects_asset_pairs_and_reports_invalid_assets; cargo test -p finite-brain-cli asset_plaintext_round_trips_with_hash_and_content_type; cargo test -p finite-brain-cli scan_detects_markdown_create_update_and_delete; cargo test -p finite-brain-core working_tree_change_intents_use_encrypted_product_client_routes; cargo test -p finite-brain-core; cargo test -p finite-brain-cli |
 | #70 | pending | pending | pending | pending | pending |
 
 ## Open Questions

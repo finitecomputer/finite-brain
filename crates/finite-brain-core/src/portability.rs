@@ -447,6 +447,17 @@ pub enum WorkingTreeChange {
         /// New Markdown contents.
         markdown: String,
     },
+    /// Create or update a non-Markdown asset file.
+    UpsertAsset {
+        /// Working-tree relative path.
+        path: SafeRelativePath,
+        /// New asset bytes.
+        bytes: Vec<u8>,
+        /// MIME content type.
+        content_type: String,
+        /// Whether a Markdown Source Note in the same Folder cites this asset.
+        has_source_note: bool,
+    },
     /// Rename or move a plaintext file.
     Rename {
         /// Source working-tree relative path.
@@ -458,6 +469,22 @@ pub enum WorkingTreeChange {
     Delete {
         /// Working-tree relative path.
         path: SafeRelativePath,
+    },
+}
+
+/// Plaintext payload for an encrypted object write intent.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub enum WorkingTreeIntentContent {
+    /// Markdown Page plaintext.
+    PageMarkdown(String),
+    /// Asset plaintext bytes plus MIME metadata.
+    AssetBytes {
+        /// Asset bytes.
+        bytes: Vec<u8>,
+        /// MIME content type.
+        content_type: String,
+        /// SHA-256 of plaintext bytes.
+        content_hash: String,
     },
 }
 
@@ -508,8 +535,8 @@ pub struct WorkingTreeChangeIntent {
     pub from_path: Option<SafeRelativePath>,
     /// Base revision for update/move/delete when known.
     pub base_revision: Option<u64>,
-    /// Plaintext markdown for create/update. The Product Client encrypts it before upload.
-    pub markdown: Option<String>,
+    /// Plaintext content for create/update. The Product Client encrypts it before upload.
+    pub content: Option<WorkingTreeIntentContent>,
     /// Reason when unresolved.
     pub reason: Option<String>,
 }
