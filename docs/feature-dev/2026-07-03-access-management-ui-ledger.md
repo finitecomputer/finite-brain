@@ -9,7 +9,7 @@
 - Feature branch: feature/access-management-ui
 - Human owner: Austin
 - Started: 2026-07-03
-- Current status: locally verified, PR/deploy handoff pending
+- Current status: stacked PR open against `feature/asset-source-notes`
 - Skill setup status: present (`docs/agents/issue-tracker.md`, `triage-labels.md`, `domain.md`)
 
 ## Goal
@@ -26,7 +26,7 @@ Make the Product Client Access sidebar simple enough to understand at a glance. 
 - Agent briefs: none
 - Review packets: this ledger plus local browser captures
 - Local CodeRabbit report: attempted; blocked by free CLI rate limit, fallback in-thread review completed
-- PR URL: pending
+- PR URL: https://github.com/finitecomputer/finite-brain/pull/72
 
 ## Commands
 
@@ -63,7 +63,7 @@ Make the Product Client Access sidebar simple enough to understand at a glance. 
 
 ## Open Questions
 
-- PR target/base decision remains. The screenshot/live Smoke surface exists on `feature/asset-source-notes`, not the older `origin/staging` branch. This branch was reset onto `feature/asset-source-notes` before implementation so the fix applies to the actual UI the human is testing.
+- PR target/base decision resolved as a stacked PR. The screenshot/live Smoke surface exists on `feature/asset-source-notes`, so PR #72 targets that branch and should land after/with #71 instead of dragging the whole stack into a UI-only review.
 - Recommended design direction implemented: keep the Access panel focused on one selected Folder, expose the three jobs as segmented modes (`Overview`, `People`, `Links`), move Vault invitations into a separate compact block, and make the Folder list a secondary selector rather than competing with the primary task.
 
 ## Verification Notes
