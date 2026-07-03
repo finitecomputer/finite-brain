@@ -255,6 +255,7 @@ _index.md
 log.md
 inbox/
 raw/
+  assets/
 wiki/
 inventory/
 datasets/
@@ -271,6 +272,10 @@ Scope rules:
   or source hints from Folders the active User cannot access.
 - Trusted clients and Agent Runtimes MUST filter by Folder access before
   reading, querying, compiling, indexing, or answering with content.
+- Non-Markdown source material SHOULD be captured as an Asset under
+  `raw/assets/` and paired with a Markdown Source Note in the same Folder.
+- Agents SHOULD cite and reason over Source Notes and synthesized wiki Pages,
+  not over opaque asset bytes directly.
 - Content from a more-restricted Folder MUST NOT be synthesized into a
   less-restricted Folder, index, log, output, or public summary unless the User
   explicitly chooses a destination Folder whose audience is allowed to see the
@@ -321,7 +326,11 @@ Object ids MUST be path-safe base names with no file extension.
 
 ### 4.5 Folder Object Plaintext
 
-After decryption, a Folder Object plaintext has this shape:
+After decryption, trusted clients and Agent Runtimes normalize Folder Object
+plaintext into a typed local object model. The server stores opaque ciphertext
+and MUST NOT parse this plaintext.
+
+Canonical Page plaintext has this shape:
 
 ```json
 {
@@ -335,8 +344,38 @@ After decryption, a Folder Object plaintext has this shape:
 }
 ```
 
-The current client primarily creates `type: "page"` with
-`contentType: "text/markdown"`, but the type field is extensible.
+Asset plaintext has this shape:
+
+```json
+{
+  "type": "asset",
+  "path": "raw/assets/source.pdf",
+  "filename": "source.pdf",
+  "contentType": "application/pdf",
+  "size": 12345,
+  "contentHash": "<sha256 hex of plaintext bytes>",
+  "bytesBase64": "<base64 plaintext asset bytes>"
+}
+```
+
+Rules:
+
+- Canonical Page plaintext uses `type: "page"` and
+  `contentType: "text/markdown"`.
+- The current hard-cut client also recognizes the versioned Markdown Page
+  envelope `{ "version": "finite-folder-object-page-v1", "path": "...",
+  "markdown": "..." }` and normalizes it to a Page.
+- Asset plaintext MUST use `type: "asset"` and a non-Markdown `contentType`.
+- Asset plaintext paths SHOULD live under `raw/assets/` inside the containing
+  Folder.
+- Every non-Markdown source Asset SHOULD have a Markdown Source Note Page in the
+  same Folder. The Source Note records provenance, content type, hash or
+  extraction status when known, and links to any synthesized wiki Pages.
+- Search, graph, and LLM Wiki synthesis SHOULD index Source Notes and Markdown
+  Pages first. Asset bytes are preserved evidence, not the primary knowledge
+  surface.
+- Compatible clients MUST tolerate future plaintext types they do not
+  understand by preserving encrypted records and avoiding lossy rewrites.
 
 ### 4.6 Vault Metadata Response
 
@@ -974,6 +1013,15 @@ A Vault Directory is the portable local directory shape:
       "keyVersion": 1,
       "contentType": "text/markdown",
       "contentHash": "<sha256 hex>"
+    },
+    {
+      "folderId": "strategy",
+      "path": "raw/assets/source.pdf",
+      "objectId": "obj_asset_0123456789",
+      "revision": 1,
+      "keyVersion": 1,
+      "contentType": "application/pdf",
+      "contentHash": "<sha256 hex>"
     }
   ],
   "sync": {
@@ -985,6 +1033,10 @@ A Vault Directory is the portable local directory shape:
 Materialization rules:
 
 - Accessible Folders are materialized as normal directories.
+- Accessible Pages are materialized as UTF-8 Markdown files. Accessible Assets
+  are materialized as ordinary files at their decrypted object path.
+- Non-Markdown files under `raw/assets/` SHOULD have a sibling or nearby
+  Markdown Source Note that explains provenance and extraction status.
 - Inaccessible ancestor Folders may be materialized as metadata-only containers
   to make accessible Child Folders reachable.
 - Inaccessible ciphertext may be stored under `.finitebrain/encrypted-sync`.
@@ -1621,8 +1673,9 @@ Opening an export:
 ### 13.1 Readable OKF Export
 
 Readable OKF Export is separate from Encrypted Vault Export. It contains
-decrypted Markdown for accessible Folders and intentionally excludes Folder
-Keys, Folder Key Grants, encrypted sync state, and inaccessible ciphertext.
+decrypted Markdown Pages and readable asset files for accessible Folders and
+intentionally excludes Folder Keys, Folder Key Grants, encrypted sync state, and
+inaccessible ciphertext.
 
 An OKF bundle has this shape:
 
@@ -1762,6 +1815,7 @@ _wiki/
   stale.md
   tags.md
 raw/
+  assets/
 compiled/
 output/
 ```
@@ -1770,6 +1824,7 @@ output/
 - `_index.md` is a human/agent navigation page for a Folder or bundle.
 - `_wiki/` contains generated reports and derived navigation artifacts.
 - `raw/` contains source captures or immutable imported references.
+- `raw/assets/` contains non-Markdown source Assets.
 - `compiled/` contains curated synthesized wiki pages.
 - `output/` contains generated artifacts, reports, exports, or task outputs.
 
@@ -1781,11 +1836,16 @@ Agent discovery rules:
 - Agent writes are User writes. They are signed, encrypted, synced, and audited
   as the acting User.
 - Agents MUST NOT write decrypted content into `.finitebrain/encrypted-sync`.
+- Agents SHOULD store non-Markdown source files under `raw/assets/` and create
+  Markdown Source Notes that record provenance, content type, hash or extraction
+  status when known, and links to synthesized Pages.
+- Agents SHOULD query and cite Source Notes before treating an Asset blob as
+  knowledge.
 - Generated reports in `_wiki/` SHOULD state when they were generated, by which
   acting npub, and from which accessible Folder scope.
 - Reports MUST NOT include Page titles, Page paths, excerpts, backlinks, or
   tags from inaccessible Folders.
-- `raw/`, `compiled/`, and `output/` are ordinary Page paths/directories inside
+- `raw/`, `raw/assets/`, `compiled/`, and `output/` are ordinary paths inside
   accessible Folders. They do not imply special Folder Access semantics.
 
 ## 14. Server Route Surface
@@ -2059,7 +2119,7 @@ A compatible implementation in another language should implement, in order:
     - OKF Import conflict modes.
 12. LLM Wiki and agent layer:
     - `AGENTS.md` discovery.
-    - `_index.md`, `_wiki/`, `raw/`, `compiled/`, and `output/`
+    - `_index.md`, `_wiki/`, `raw/`, `raw/assets/`, `compiled/`, and `output/`
       conventions.
     - Generated report visibility filtering.
 13. Operations and compatibility:

@@ -174,7 +174,7 @@ pub fn materialize_vault_working_tree(
             &format!("{}/_wiki/index.md", root.path),
             || folder_wiki_index(root, &input.generated_at, &input.generated_by_npub, &state),
         );
-        for convention in ["raw", "compiled", "output"] {
+        for convention in ["raw", "raw/assets", "compiled", "output"] {
             insert_working_tree_file_if_absent(
                 &mut files,
                 &format!("{}/{convention}/.keep", root.path),
@@ -272,13 +272,13 @@ fn safe_locked_reason(reason: &str) -> &'static str {
 
 fn root_agents_file(actor: &UserId) -> String {
     format!(
-        "# FiniteBrain Agent Workspace\n\nActing user: {actor}\n\n- Read and write only materialized accessible Folders.\n- Do not write decrypted content into `.finitebrain/encrypted-sync`.\n- Changes must be returned through the Product Client encrypted sync path.\n"
+        "# FiniteBrain Agent Workspace\n\nActing user: {actor}\n\n- Read and write only materialized accessible Folders.\n- Store non-Markdown sources under a Folder's `raw/assets/` and pair each Asset with a Markdown Source Note.\n- Do not write decrypted content into `.finitebrain/encrypted-sync`.\n- Changes must be returned through the Product Client encrypted sync path.\n"
     )
 }
 
 fn folder_agents_file(folder_id: &str) -> String {
     format!(
-        "# Folder Agent Instructions\n\nFolder id: `{folder_id}`\n\nUse `raw/` for source captures, `compiled/` for curated wiki pages, and `output/` for generated artifacts.\n"
+        "# Folder Agent Instructions\n\nFolder id: `{folder_id}`\n\nUse `raw/` for source captures, `raw/assets/` for non-Markdown Assets, `compiled/` for curated wiki pages, and `output/` for generated artifacts. Pair every Asset with a Markdown Source Note before citing it from synthesized work.\n"
     )
 }
 

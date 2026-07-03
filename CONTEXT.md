@@ -53,6 +53,25 @@ define who can read it. Folder-local `_index.md`, `config.md`, and `log.md`
 describe only that Folder. Root/global indexes must not leak private Folder
 titles, summaries, sources, or activity.
 
+### Asset
+
+An encrypted non-Markdown source file stored inside a Folder, such as a PDF,
+image, audio file, or other blob. An Asset is evidence or source material; it
+is not the primary LLM Wiki knowledge surface.
+
+### Source Note
+
+A Markdown Page that describes one captured source with provenance, extraction
+status, and human or agent-readable notes. Source Notes are the readable handles
+that LLM Wiki pages cite when synthesizing knowledge from raw material.
+
+### Asset Source Note Pair
+
+The expected pairing for non-Markdown source material: one Asset under
+`raw/assets/` plus one Source Note that explains and cites that Asset. The
+Asset preserves the original evidence, while the Source Note lets humans,
+agents, search, and graph flows reason over it.
+
 ### Graph View
 
 A Product Client view over the active User's decrypted accessible Pages. It

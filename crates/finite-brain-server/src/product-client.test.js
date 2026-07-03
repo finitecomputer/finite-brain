@@ -520,7 +520,12 @@ assert.equal(client.readerPageRows("general", draftPages)[0].label, "Draft Page"
   assert.equal(restrictedExamplePage?.folderId, "restricted");
   assert.match(defaultPages[0].markdown, /Use `fbrain`/);
   assert.match(defaultPages[0].markdown, /LLM Wiki Rules/);
+  assert.match(defaultPages[0].markdown, /raw\/assets\//);
+  assert.match(defaultPages[0].markdown, /Source Note/);
   assert.match(defaultPages[1].markdown, /private, encrypted knowledge workspace/);
+  assert.match(defaultPages[1].markdown, /Source Notes/);
+  assert.match(defaultPages[2].markdown, /raw\/assets\//);
+  assert.match(defaultPages[2].markdown, /Source Note/);
 
   let bootstrapSignedIndex = 0;
   const bootstrapSigner = async (template) => ({
@@ -585,6 +590,8 @@ assert.equal(client.readerPageRows("general", draftPages)[0].label, "Draft Page"
   assert.equal(openedAgentsDefault.status, "ready");
   assert.equal(openedAgentsDefault.path, "AGENTS.md");
   assert.match(openedAgentsDefault.text, /FiniteBrain vault/);
+  assert.match(openedAgentsDefault.text, /raw\/assets\//);
+  assert.match(openedAgentsDefault.text, /Source Note/);
   const openedHumansDefault = await client.openFolderObject(orgBootstrapPlan.keyring, {
     vaultId: "org-smoke",
     folderId: "getting-started",
@@ -595,6 +602,7 @@ assert.equal(client.readerPageRows("general", draftPages)[0].label, "Draft Page"
   assert.equal(openedHumansDefault.status, "ready");
   assert.equal(openedHumansDefault.path, "HUMANS.md");
   assert.match(openedHumansDefault.text, /private, encrypted knowledge workspace/);
+  assert.match(openedHumansDefault.text, /Source Notes/);
 
   const wrongRecipientOpen = await client.openFolderKeyGrants(
     client.createSessionKeyring(),

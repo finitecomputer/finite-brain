@@ -45,7 +45,7 @@ syncable LLM wiki scope.
 
 ## Operating Model
 
-FiniteBrain stores encrypted Vault state on the server. Trusted clients and agent runtimes open Folder Key Grants locally, decrypt accessible Pages, edit ordinary markdown files, then sync encrypted changes back.
+FiniteBrain stores encrypted Vault state on the server. Trusted clients and agent runtimes open Folder Key Grants locally, decrypt accessible Pages and Assets, edit ordinary files, then sync encrypted changes back.
 
 Agents act as the user. They do not have independent Vault membership, Folder access, or attribution unless explicitly modeled as a separate user.
 
@@ -105,6 +105,9 @@ Resolve conflicts before reporting done.
 Use each readable Folder as a durable LLM wiki scope.
 
 - Keep raw sources immutable under that Folder's `raw/`.
+- Store non-Markdown source files under that Folder's `raw/assets/`.
+- Pair every Asset with a Markdown Source Note that records provenance, content type, hash or extraction status when known.
+- Cite Source Notes from synthesized wiki pages; do not make the blob itself the knowledge surface.
 - Put synthesized durable knowledge in that Folder's `wiki/`.
 - Prefer updating existing pages over creating duplicates.
 - Use `[[wikilinks]]` for internal relationships.
@@ -126,6 +129,7 @@ _index.md
 log.md
 inbox/
 raw/
+  assets/
 wiki/
 inventory/
 datasets/
@@ -153,7 +157,7 @@ const DEFAULT_HUMANS_MARKDOWN: &str = r#"# HUMANS.md
 
 This vault is your private, encrypted knowledge workspace.
 
-FiniteBrain keeps the server blind to page contents. Your client or agent opens the vault locally, decrypts what you can access, edits markdown, then syncs encrypted changes back.
+FiniteBrain keeps the server blind to page and asset contents. Your client or agent opens the vault locally, decrypts what you can access, edits ordinary files, then syncs encrypted changes back.
 
 A FiniteBrain vault is a namespace of wiki scopes. Each top-level Folder is its
 own LLM wiki with its own `_index.md`, `config.md`, and `log.md`.
@@ -161,22 +165,27 @@ own LLM wiki with its own `_index.md`, `config.md`, and `log.md`.
 Inside a Folder:
 
 - `raw/` is source material.
+- `raw/assets/` is non-Markdown source files such as PDFs, images, audio, video, and datasets.
+- Source Notes are Markdown pages that explain those files and make them usable by agents.
 - `wiki/` is durable notes and synthesized understanding.
 - `inventory/` tracks things to revisit.
 - `datasets/` indexes structured references.
 - `output/` holds reports, plans, and finished work.
 - `log.md` records meaningful changes for that Folder only.
 
-Agents should read `AGENTS.md` first, sync before editing, avoid duplicates, preserve sources, and keep the wiki useful for future work.
+Agents should read `AGENTS.md` first, sync before editing, avoid duplicates, preserve sources, create Source Notes for assets, and keep the wiki useful for future work.
 "#;
 
 const DEFAULT_SCOPE_CONFIG_MARKDOWN: &str = r#"# Wiki Scope Config
 
 This Folder is an independent FiniteBrain LLM wiki scope.
 
-Use this Folder's `raw/`, `wiki/`, `inventory/`, `datasets/`, and `output/`
+Use this Folder's `raw/`, `raw/assets/`, `wiki/`, `inventory/`, `datasets/`, and `output/`
 directories for knowledge that belongs inside this access boundary. Keep this
 Folder's `_index.md` and `log.md` scoped only to pages in this Folder.
+
+Store non-Markdown source files in `raw/assets/` and pair each one with a
+Markdown Source Note in this Folder.
 
 Do not summarize restricted sibling Folder contents here unless the user
 explicitly chooses this Folder as an equal-or-more-restricted destination.
@@ -186,7 +195,7 @@ const DEFAULT_SCOPE_INDEX_MARKDOWN: &str = r#"# Folder Index
 
 This index maps this Folder's local wiki scope.
 
-Add durable pages, sources, outputs, and open questions here as this Folder
+Add durable pages, Source Notes, outputs, and open questions here as this Folder
 grows. Do not list private titles, summaries, or activity from sibling Folders.
 "#;
 
@@ -212,6 +221,10 @@ const DEFAULT_HOW_FINITEBRAIN_WORKS_MARKDOWN: &str = r#"# How FiniteBrain Works
 FiniteBrain stores encrypted Vault data on the server. The client or agent
 opens Folder Keys locally, decrypts the Pages it can access, edits markdown,
 and syncs encrypted updates back.
+
+Non-Markdown source files are encrypted as Assets and kept under `raw/assets/`.
+Agents use Markdown Source Notes to describe those Assets before synthesizing
+durable wiki pages from them.
 
 Each top-level Folder is an LLM wiki scope. A Folder has its own `config.md`,
 `_index.md`, and `log.md`, so activity and summaries stay inside the same
@@ -1944,11 +1957,16 @@ mod tests {
         assert!(pages.iter().any(|page| page.folder_id == "restricted"));
         assert!(pages[0].markdown.contains("Use `fbrain`"));
         assert!(pages[0].markdown.contains("LLM Wiki Rules"));
+        assert!(pages[0].markdown.contains("raw/assets/"));
+        assert!(pages[0].markdown.contains("Source Note"));
         assert!(
             pages[1]
                 .markdown
                 .contains("private, encrypted knowledge workspace")
         );
+        assert!(pages[1].markdown.contains("Source Notes"));
+        assert!(pages[2].markdown.contains("raw/assets/"));
+        assert!(pages[2].markdown.contains("Source Note"));
         let organization_pages = default_vault_pages(VaultKind::Organization);
         assert_eq!(organization_pages.len(), 12);
         assert_eq!(

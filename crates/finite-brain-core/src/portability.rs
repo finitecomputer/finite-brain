@@ -702,8 +702,23 @@ mod tests {
         assert!(projection.files.contains_key("Concepts/_index.md"));
         assert!(projection.files.contains_key("Concepts/_wiki/index.md"));
         assert!(projection.files.contains_key("Concepts/raw/.keep"));
+        assert!(projection.files.contains_key("Concepts/raw/assets/.keep"));
         assert!(projection.files.contains_key("Concepts/compiled/.keep"));
         assert!(projection.files.contains_key("Concepts/output/.keep"));
+        assert!(
+            projection
+                .files
+                .get("AGENTS.md")
+                .unwrap()
+                .contains("raw/assets/")
+        );
+        assert!(
+            projection
+                .files
+                .get("Concepts/AGENTS.md")
+                .unwrap()
+                .contains("Source Note")
+        );
         assert_eq!(
             projection
                 .files

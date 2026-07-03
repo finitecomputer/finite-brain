@@ -1476,7 +1476,7 @@ fn add_empty_readable_folders(
         projection.files.insert(
             format!("{}/AGENTS.md", folder_path),
             format!(
-                "# Folder Agent Instructions\n\nFolder id: `{}`\n\nUse `raw/` for source captures, `compiled/` for curated wiki pages, and `output/` for generated artifacts.\n",
+                "# Folder Agent Instructions\n\nFolder id: `{}`\n\nUse `raw/` for source captures, `raw/assets/` for non-Markdown Assets, `compiled/` for curated wiki pages, and `output/` for generated artifacts. Pair every Asset with a Markdown Source Note before citing it from synthesized work.\n",
                 folder.id
             ),
         );
@@ -1491,7 +1491,7 @@ fn add_empty_readable_folders(
                 folder_path
             ),
         );
-        for convention in ["raw", "compiled", "output"] {
+        for convention in ["raw", "raw/assets", "compiled", "output"] {
             projection.files.insert(
                 format!("{}/{convention}/.keep", folder_path),
                 format!(
@@ -2318,6 +2318,14 @@ mod tests {
         assert_eq!(projection.state.folder_roots[0].folder_id, "home");
         assert!(projection.files.contains_key("home/AGENTS.md"));
         assert!(projection.files.contains_key("home/raw/.keep"));
+        assert!(projection.files.contains_key("home/raw/assets/.keep"));
+        assert!(
+            projection
+                .files
+                .get("home/AGENTS.md")
+                .unwrap()
+                .contains("Source Note")
+        );
     }
 
     #[test]
