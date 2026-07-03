@@ -103,6 +103,7 @@ The core implementation contract is the FiniteBrain Portable v1 specification:
 
 - [`docs/specs/finitebrain-portability-spec.md`](docs/specs/finitebrain-portability-spec.md)
 
-This repository is the Rust implementation target. The previous
-SilverBullet/TypeScript prototype is preserved as
-[`finitecomputer/finite-brain-v1`](https://github.com/finitecomputer/finite-brain-v1).
+This repository is the active Rust implementation target and includes the
+first-party Product Client prototype served at `/client`. The previous
+SilverBullet/TypeScript fork is legacy archive material, not part of the active
+workspace or compatibility surface.

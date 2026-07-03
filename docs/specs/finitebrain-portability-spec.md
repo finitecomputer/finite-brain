@@ -22,9 +22,9 @@ Vault contains Folders. A Folder is the access boundary and the default LLM wiki
 scope. A Folder contains Folder Objects. A Folder Object decrypts into a Page,
 attachment, asset, generated file, or future content type.
 
-FiniteBrain inherits SilverBullet as the editor/runtime foundation, but
-FiniteBrain product language should use Vault, Folder, and Page rather than
-SilverBullet Space.
+FiniteBrain is a hard cut from the earlier SilverBullet-based prototype. The
+active Rust implementation and first-party Product Client use FiniteBrain
+product language: Vault, Folder, and Page rather than SilverBullet Space.
 
 The server stores and syncs encrypted Vault state. It does not need to decrypt
 Page paths, Page titles, links, backlinks, wiki indexes, wiki logs, or Page
