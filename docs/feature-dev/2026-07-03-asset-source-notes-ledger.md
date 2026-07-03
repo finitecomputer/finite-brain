@@ -9,7 +9,7 @@
 - Feature branch: feature/asset-source-notes
 - Human owner: AustinKelsay
 - Started: 2026-07-03T09:20:32-0500
-- Current status: all slices committed; ready for PR
+- Current status: PR open
 - Skill setup status: present; root AGENTS.md, issue tracker docs, triage labels, domain docs, and ADRs exist
 
 ## Goal
@@ -29,7 +29,7 @@ synthesized wiki pages cite the source notes.
   and Folder config templates updated with Asset Source Note rules
 - Review packets: docs/feature-dev/2026-07-03-issue-67-asset-source-notes-convention-review-packet.md; docs/feature-dev/2026-07-03-issue-68-core-asset-model-review-packet.md; docs/feature-dev/2026-07-03-issue-69-fbrain-asset-sync-review-packet.md; docs/feature-dev/2026-07-03-issue-70-product-okf-asset-aware-review-packet.md
 - Local CodeRabbit report: not run; local code-review passes completed
-- PR URL: pending
+- PR URL: https://github.com/finitecomputer/finite-brain/pull/71
 
 ## Commands
 
