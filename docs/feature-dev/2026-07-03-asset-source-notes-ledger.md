@@ -9,7 +9,7 @@
 - Feature branch: feature/asset-source-notes
 - Human owner: AustinKelsay
 - Started: 2026-07-03T09:20:32-0500
-- Current status: local CodeRabbit fixes committed; PR update pending
+- Current status: PR open; CI green; CodeRabbit fallback recorded
 - Skill setup status: present; root AGENTS.md, issue tracker docs, triage labels, domain docs, and ADRs exist
 
 ## Goal
@@ -68,7 +68,7 @@ hard-cut branch. Final PR target: main.
 | #68 | de1ec24 | current thread | 1f80c57 | local review passed, no findings | cargo fmt --check; git diff --check; cargo test -p finite-brain-core working_tree_materializes_accessible_pages_and_safe_agent_conventions; cargo test -p finite-brain-core; cargo test -p finite-brain-cli |
 | #69 | 1f80c57 | current thread | 63abd59 | local review passed, no findings | cargo fmt --check; git diff --check; cargo test -p finite-brain-cli scan_detects_asset_pairs_and_reports_invalid_assets; cargo test -p finite-brain-cli asset_plaintext_round_trips_with_hash_and_content_type; cargo test -p finite-brain-cli scan_detects_markdown_create_update_and_delete; cargo test -p finite-brain-core working_tree_change_intents_use_encrypted_product_client_routes; cargo test -p finite-brain-core; cargo test -p finite-brain-cli |
 | #70 | 63abd59 | current thread | 191e22b | local review passed, no findings | node --check product-client.js; node product-client.test.js; cargo test -p finite-brain-server product_client_serves_spine_assets_and_config; git diff --check; cargo fmt --check; cargo test --workspace; cargo check --workspace; cargo clippy --all-targets -- -D warnings; cargo build --workspace |
-| Local CodeRabbit | 94de197 | current thread | f1b8ff9 | round 1 found 8 major issues; round 2 found 0 issues | coderabbit review --agent --type all --base main -c AGENTS.md; cargo fmt --check; node --check product-client.js; node product-client.test.js; git diff --check; cargo test -p finite-brain-core; cargo test -p finite-brain-cli; cargo test -p finite-brain-server product_client_serves_spine_assets_and_config; cargo test --workspace; cargo check --workspace; cargo clippy --all-targets -- -D warnings; cargo build --workspace |
+| CodeRabbit | 94de197 | current thread | f1b8ff9 | local round 1 found 8 major issues; local round 2 found 0 issues; PR trigger posted with fallback recorded | coderabbit review --agent --type all --base main -c AGENTS.md; @coderabbit full review; cargo fmt --check; node --check product-client.js; node product-client.test.js; git diff --check; cargo test -p finite-brain-core; cargo test -p finite-brain-cli; cargo test -p finite-brain-server product_client_serves_spine_assets_and_config; cargo test --workspace; cargo check --workspace; cargo clippy --all-targets -- -D warnings; cargo build --workspace |
 
 ## Open Questions
 
