@@ -155,17 +155,41 @@
           </div>
           <div id="accessFolderInspector" class="access-inspector">
             <div class="access-inspector-header">
-              <span id="accessFolderTitle">No Folder selected</span>
+              <div class="access-title-stack">
+                <span id="accessFolderTitle">No Folder selected</span>
+                <span id="accessFolderDetail">Load a Vault and select a Folder.</span>
+              </div>
               <span id="accessFolderStatus" class="pill muted">empty</span>
             </div>
-            <div id="accessBadgeRow" class="access-badge-row" aria-label="Folder access badges"></div>
-            <p id="accessFolderDetail" class="muted-copy">Load a Vault and select a Folder to inspect access.</p>
-            <div id="accessIntentActions" class="access-action-row">
-              <button id="accessManageButton" type="button">Manage</button>
-              <button id="accessShareButton" type="button">Share</button>
+            <div class="access-summary-grid" aria-label="Selected Folder access summary">
+              <div>
+                <span>Audience</span>
+                <strong id="accessAudienceSummary">-</strong>
+              </div>
+              <div>
+                <span>Folder key</span>
+                <strong id="accessKeySummary">-</strong>
+              </div>
+              <div>
+                <span>People</span>
+                <strong id="accessPeopleSummary">-</strong>
+              </div>
+              <div>
+                <span>Pages</span>
+                <strong id="accessPageSummary">-</strong>
+              </div>
+            </div>
+            <div id="accessIntentActions" class="access-segmented-control" role="group" aria-label="Access view">
+              <button id="accessOverviewButton" type="button" aria-pressed="true">Overview</button>
+              <button id="accessManageButton" type="button" aria-pressed="false">People</button>
+              <button id="accessShareButton" type="button" aria-pressed="false">Links</button>
+            </div>
+            <div id="accessOverviewPanel" class="access-pane">
+              <p id="accessOverviewText" class="access-pane-copy">Load a Vault to inspect access boundaries.</p>
+              <div id="accessBadgeRow" class="access-badge-row" aria-label="Folder access badges"></div>
             </div>
             <div id="accessFlowPanel" class="access-flow-panel" hidden>
-              <label class="access-field access-recipient-field">
+              <label id="accessTargetField" class="access-field">
                 <span>Target npub</span>
                 <input
                   id="accessTargetNpubInput"
@@ -174,21 +198,21 @@
                   spellcheck="false"
                 />
               </label>
-              <details id="accessManageSection" class="access-section">
-                <summary>
-                  <span>Direct access</span>
-                  <small>Grant or remove one npub</small>
-                </summary>
+              <div id="accessPeoplePanel" class="access-pane" hidden>
+                <div class="access-pane-heading">
+                  <span>Direct People</span>
+                  <small id="accessPeopleHint">Restricted Folders use explicit grants.</small>
+                </div>
                 <div class="access-action-row">
                   <button id="grantFolderAccessButton" type="button">Grant</button>
                   <button id="removeFolderAccessButton" class="danger-action" type="button">Remove</button>
                 </div>
-              </details>
-              <details id="accessShareSection" class="access-section">
-                <summary>
-                  <span>Share link</span>
-                  <small>Single-use folder access</small>
-                </summary>
+              </div>
+              <div id="accessLinksPanel" class="access-pane" hidden>
+                <div class="access-pane-heading">
+                  <span>Share Links</span>
+                  <small>Single-use Folder access</small>
+                </div>
                 <label id="shareExpiryField" class="access-field">
                   <span>Expires</span>
                   <input
@@ -204,14 +228,8 @@
                 <div class="access-action-row">
                   <button id="createShareLinkButton" type="button">Create</button>
                 </div>
-              </details>
-              <details id="accessAcceptSection" class="access-section">
-                <summary>
-                  <span>Existing link</span>
-                  <small>Accept or revoke</small>
-                </summary>
                 <label id="shareAcceptField" class="access-field">
-                  <span>Share link</span>
+                  <span>Existing link</span>
                   <input
                     id="accessShareLinkInput"
                     placeholder="share-link-..."
@@ -223,8 +241,8 @@
                   <button id="acceptShareLinkButton" type="button">Accept</button>
                   <button id="revokeShareLinkButton" type="button">Revoke</button>
                 </div>
-              </details>
-              <p id="accessFlowHint" class="access-hint">Open this Folder key before sharing.</p>
+              </div>
+              <p id="accessFlowHint" class="access-hint">Choose a Folder to manage access.</p>
             </div>
             <div id="accessResultPanel" class="access-result" hidden></div>
           </div>

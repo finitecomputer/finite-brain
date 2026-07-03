@@ -1011,9 +1011,22 @@ pre {
   overflow: auto;
 }
 
+#accessSidebarPanel {
+  display: block;
+  overflow: auto;
+}
+
+#accessSidebarPanel[hidden] {
+  display: none;
+}
+
+#accessSidebarPanel > * + * {
+  margin-top: 8px;
+}
+
 .access-inspector {
   display: grid;
-  gap: 8px;
+  gap: 10px;
   margin: 0 10px;
   border-radius: 10px;
   background: #202020;
@@ -1021,27 +1034,126 @@ pre {
   padding: 10px;
 }
 
-.access-inspector-header,
+.access-inspector-header {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 8px;
+  min-width: 0;
+  color: #e2e2e2;
+}
+
+.access-title-stack {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.access-title-stack > span:first-child {
+  overflow: hidden;
+  color: #f1f1f1;
+  font-size: 13px;
+  font-weight: 820;
+  letter-spacing: 0;
+  text-overflow: ellipsis;
+  text-wrap: balance;
+  white-space: nowrap;
+}
+
+.access-title-stack > span:last-child {
+  overflow: hidden;
+  color: #949494;
+  font-size: 11px;
+  font-weight: 560;
+  text-overflow: ellipsis;
+  text-wrap: pretty;
+  white-space: nowrap;
+}
+
+.access-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.access-summary-grid > div {
+  min-width: 0;
+  border-radius: 7px;
+  background: #1a1a1a;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.045);
+  padding: 7px 8px;
+}
+
+.access-summary-grid span {
+  display: block;
+  overflow: hidden;
+  color: #858585;
+  font-size: 9px;
+  font-weight: 780;
+  letter-spacing: 0;
+  text-overflow: ellipsis;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.access-summary-grid strong {
+  display: block;
+  overflow: hidden;
+  color: #d8d8d8;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.25;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.access-segmented-control {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 2px;
+  min-width: 0;
+  border-radius: 8px;
+  background: #181818;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.06);
+  padding: 3px;
+}
+
+.access-segmented-control[hidden] {
+  display: none;
+}
+
+.access-segmented-control button {
+  min-width: 0;
+  min-height: 40px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: #9b9b9b;
+  padding: 6px 4px;
+  transition-duration: 140ms;
+  transition-property: background-color, box-shadow, color, opacity, transform;
+  transition-timing-function: cubic-bezier(0.2, 0, 0, 1);
+}
+
+.access-segmented-control button.active {
+  background: #28302d;
+  box-shadow: 0 0 0 1px rgba(69, 212, 131, 0.26);
+  color: #e9fff2;
+}
+
+.access-segmented-control button:not(:disabled):hover {
+  color: #f2f2f2;
+}
+
+.access-segmented-control button:not(:disabled):active {
+  transform: scale(0.96);
+}
+
 .access-action-row,
 .access-badge-row {
   display: flex;
   align-items: center;
   gap: 6px;
-}
-
-.access-inspector-header {
-  justify-content: space-between;
-  min-width: 0;
-  color: #e2e2e2;
-  font-size: 13px;
-  font-weight: 800;
-}
-
-.access-inspector-header > span:first-child {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .access-action-row {
@@ -1053,9 +1165,9 @@ pre {
 }
 
 .access-action-row button {
-  min-height: 32px;
+  min-height: 40px;
   border-radius: 7px;
-  padding: 5px 10px;
+  padding: 7px 11px;
   transition-property: background-color, border-color, color, transform;
   transition-duration: 140ms;
   transition-timing-function: ease-out;
@@ -1085,30 +1197,59 @@ pre {
 .access-flow-panel {
   display: grid;
   gap: 8px;
-  padding-top: 2px;
 }
 
-.access-flow-panel[hidden] {
+.access-flow-panel[hidden],
+.access-pane[hidden] {
   display: none;
+}
+
+.access-pane {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+
+.access-pane-copy,
+.access-hint {
+  margin: 0;
+  color: #969696;
+  font-size: 11px;
+  line-height: 1.45;
+  text-wrap: pretty;
+}
+
+.access-pane-heading {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.access-pane-heading span {
+  color: #e5e5e5;
+  font-size: 12px;
+  font-weight: 780;
+}
+
+.access-pane-heading small {
+  color: #8f8f8f;
+  font-size: 10px;
+  font-weight: 620;
+  line-height: 1.35;
+  text-wrap: pretty;
 }
 
 .access-field {
   display: grid;
-  gap: 4px;
+  gap: 5px;
   color: #a8a8a8;
   font-size: 11px;
   font-weight: 750;
 }
 
-.access-recipient-field {
-  border-radius: 8px;
-  background: #1a1a1a;
-  padding: 8px;
-}
-
 .access-field input {
   width: 100%;
-  min-height: 30px;
+  min-height: 40px;
   margin: 0;
   border-color: #3a3a3a;
   background: #1a1a1a;
@@ -1120,6 +1261,7 @@ pre {
   grid-template-columns: 16px minmax(0, 1fr);
   align-items: center;
   gap: 7px;
+  min-height: 40px;
   color: #bdbdbd;
   font-size: 12px;
 }
@@ -1128,14 +1270,6 @@ pre {
   width: 15px;
   height: 15px;
   margin: 0;
-}
-
-.access-hint {
-  margin: 0;
-  color: #888888;
-  font-size: 11px;
-  line-height: 1.35;
-  text-wrap: pretty;
 }
 
 .access-section {
@@ -1147,18 +1281,12 @@ pre {
   box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.07);
 }
 
-.access-inspector .access-section {
-  margin: 0;
-  border-radius: 8px;
-  background: #1a1a1a;
-}
-
 .access-section summary {
   position: relative;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr);
   align-items: center;
-  gap: 8px;
+  gap: 2px;
   min-height: 40px;
   cursor: pointer;
   list-style: none;
@@ -1194,14 +1322,12 @@ pre {
 
 .access-section summary small {
   min-width: 0;
-  overflow: hidden;
   color: #929292;
   font-size: 10px;
   font-weight: 650;
   line-height: 1.2;
-  text-align: right;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  text-align: left;
+  text-wrap: pretty;
 }
 
 .access-section[open] summary {

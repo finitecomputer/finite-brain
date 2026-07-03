@@ -18,7 +18,7 @@ const FiniteBrainProductClient = (() => {
     activeWorkspaceView: "page",
     activeSidebarMode: "files",
     activeAccessFolderId: null,
-    activeAccessIntent: "inspect",
+    activeAccessIntent: "overview",
     accessBusy: false,
     accessResult: null,
     lastShareLinkId: null,
@@ -426,7 +426,7 @@ const FiniteBrainProductClient = (() => {
     state.selectedFolderId = null;
     state.selectedPageKey = null;
     state.activeAccessFolderId = null;
-    state.activeAccessIntent = "inspect";
+    state.activeAccessIntent = "overview";
     state.accessResult = null;
     state.okfPlan = null;
     state.expandedFolderIds = new Set();
@@ -630,58 +630,137 @@ const FiniteBrainProductClient = (() => {
   function accessActionRoute(action, target) {
     if (!target?.folderId) return null;
     if (action === "share-folder") {
-      return { folderId: target.folderId, intent: "share", sidebarMode: "access" };
+      return { folderId: target.folderId, intent: "links", sidebarMode: "access" };
     }
     if (action === "manage-access") {
-      return { folderId: target.folderId, intent: "manage", sidebarMode: "access" };
+      return { folderId: target.folderId, intent: "people", sidebarMode: "access" };
     }
     if (action === "inspect-access") {
-      return { folderId: target.folderId, intent: "inspect", sidebarMode: "access" };
+      return { folderId: target.folderId, intent: "overview", sidebarMode: "access" };
     }
     return null;
   }
 
+  function accessIntentValue(intent) {
+    if (intent === "share" || intent === "links") return "links";
+    if (intent === "manage" || intent === "people") return "people";
+    return "overview";
+  }
+
   function accessPanelState(intent, row) {
+    const mode = accessIntentValue(intent);
     if (!row) {
       return {
         detail: "Load a Vault and select a Folder to inspect access.",
-        primaryLabel: "Manage",
-        secondaryLabel: "Share",
+        mode,
         status: "empty",
         title: "No Folder selected",
         tone: "muted",
       };
     }
     const pageDetail = readerFolderDetail(row);
-    const restricted = row.access === "restricted";
-    if (intent === "share" && restricted) {
-      return {
-        detail: `${pageDetail}. Choose who can see this Folder.`,
-        primaryLabel: "Share",
-        secondaryLabel: "Manage",
-        status: "share",
-        title: `Share ${row.path}`,
-        tone: "ready",
-      };
-    }
-    if (intent === "manage" && restricted) {
-      return {
-        detail: `${pageDetail}. Review who can open this Folder.`,
-        primaryLabel: "Manage",
-        secondaryLabel: "Share",
-        status: "manage",
-        title: `Manage ${row.path}`,
-        tone: row.status === "ready" ? "ready" : "warn",
-      };
-    }
     return {
-      detail: pageDetail,
-      primaryLabel: "Manage",
-      secondaryLabel: "Share",
+      detail: `${pageDetail} in this Folder`,
+      mode,
       status: row.accessLabel,
       title: row.path,
       tone: row.status === "ready" ? "ready" : "warn",
     };
+  }
+
+  function countLabel(count, singular, plural = `${singular}s`) {
+    return `${count} ${count === 1 ? singular : plural}`;
+  }
+
+  function accessAudienceSummary(row) {
+    if (!row) return "-";
+    if (row.access === "owner") return "Owner only";
+    if (row.access === "admin_only") return "Admins";
+    if (row.access === "all_members") return "All members";
+    if (row.access === "restricted") return "Restricted";
+    return row.accessLabel || "Unknown";
+  }
+
+  function accessPeopleSummary(row, metadata) {
+    if (!row) return "-";
+    const explicitCount = row.accessUserIds?.length || 0;
+    const adminCount = metadata?.admins?.length || 0;
+    const memberCount = metadata?.members?.length || 0;
+    if (row.access === "owner") return "Owner";
+    if (row.access === "admin_only") return countLabel(adminCount, "admin");
+    if (row.access === "all_members") return countLabel(memberCount, "member");
+    if (row.access === "restricted" && metadata?.kind === "organization") {
+      return explicitCount
+        ? `${countLabel(adminCount, "admin")} + ${countLabel(explicitCount, "person", "people")}`
+        : `${countLabel(adminCount, "admin")}`;
+    }
+    if (row.access === "restricted") {
+      return explicitCount ? countLabel(explicitCount, "person", "people") : "Owner only";
+    }
+    return "-";
+  }
+
+  function accessKeySummary(row, openedFolderKeys) {
+    if (!row) return "-";
+    const keyVersion = row.currentKeyVersion || 1;
+    const keyOpen = openedFolderKeys.has(folderKeyVersionKey(row.id, keyVersion));
+    return `${keyOpen ? "Open" : "Closed"} v${keyVersion}`;
+  }
+
+  function accessPagesSummary(row) {
+    if (!row) return "-";
+    if (!row.pageCount) return "0 pages";
+    if (row.readableCount === row.pageCount) return pageCountLabel(row.pageCount);
+    if (!row.readableCount) return `${pageCountLabel(row.pageCount)} locked`;
+    return `${row.readableCount}/${row.pageCount} readable`;
+  }
+
+  function accessOverviewCopy(row, metadata, openedFolderKeys) {
+    if (!row) return "Load a Vault to inspect Folder access.";
+    const keyOpen = openedFolderKeys.has(folderKeyVersionKey(row.id, row.currentKeyVersion || 1));
+    if (row.setupIncomplete) return "This Folder still needs setup before its current key state is reliable.";
+    if (row.access === "owner") return "Only the personal Vault owner should be able to open this Folder.";
+    if (row.access === "admin_only") return "Vault admins can open this Folder. Ordinary members cannot.";
+    if (row.access === "all_members") return "Every member of this Vault can open this Folder after their Folder Key is available.";
+    if (row.access === "restricted" && metadata?.kind === "organization") {
+      return keyOpen
+        ? "Admins and explicitly granted people can open this restricted Folder."
+        : "This restricted Folder needs its Folder Key opened before People or Links can change it.";
+    }
+    if (row.access === "restricted") {
+      return keyOpen
+        ? "This personal restricted Folder is open in this session and stays inside its tighter boundary."
+        : "This personal restricted Folder is owner-scoped until you grant or share access.";
+    }
+    return "Access is Folder-scoped. Keep summaries and logs inside a Folder with the right audience.";
+  }
+
+  function accessPeopleHint(row, metadata) {
+    if (!row) return "Choose a Folder first.";
+    if (row.access !== "restricted") return "Direct people grants are only needed for restricted Folders.";
+    if (metadata?.kind === "organization") return "Admins can open it; add explicit people when needed.";
+    return "Personal restricted Folders start owner-only; grant one npub when sharing is intentional.";
+  }
+
+  function accessFlowHint(row, mode, keyOpen) {
+    if (!row) return "Choose a Folder to manage access.";
+    if (mode === "people" && row.access !== "restricted") {
+      return "This Folder uses Vault-level access, so there is no direct people list to edit.";
+    }
+    if (mode === "links" && row.access !== "restricted") {
+      return "Create links from restricted Folders so the link carries a bounded Folder Key Grant.";
+    }
+    if (!keyOpen) return "Open this Folder key before creating grants or links.";
+    if (mode === "people") return "Grant adds one npub. Remove rotates the Folder Key and re-encrypts readable Pages.";
+    if (mode === "links") return "Create a single-use link for a target npub, or accept an existing link.";
+    return "Choose People or Links when this Folder needs an access change.";
+  }
+
+  function renderAccessSummary(row, metadata, openedFolderKeys) {
+    setText("accessAudienceSummary", accessAudienceSummary(row));
+    setText("accessKeySummary", accessKeySummary(row, openedFolderKeys));
+    setText("accessPeopleSummary", accessPeopleSummary(row, metadata));
+    setText("accessPageSummary", accessPagesSummary(row));
   }
 
   function metadataMountRows(metadata) {
@@ -2924,7 +3003,7 @@ const FiniteBrainProductClient = (() => {
     render();
   }
 
-  function selectAccessFolder(folderId, intent = "inspect") {
+  function selectAccessFolder(folderId, intent = "overview") {
     if (state.activeAccessFolderId !== folderId || state.activeAccessIntent !== intent) {
       state.accessResult = null;
     }
@@ -4006,7 +4085,7 @@ const FiniteBrainProductClient = (() => {
       $("pageFolderIdInput").value = accessRoute.folderId;
       $("okfDestinationFolderInput").value = accessRoute.folderId;
       setSidebarMode(accessRoute.sidebarMode);
-      log(accessRoute.intent === "share" ? "Opened Folder share panel." : "Opened Folder access panel.", {
+      log(accessIntentValue(accessRoute.intent) === "links" ? "Opened Folder links panel." : "Opened Folder access panel.", {
         folderId: accessRoute.folderId,
         intent: accessRoute.intent,
       });
@@ -4133,20 +4212,18 @@ const FiniteBrainProductClient = (() => {
   }
 
   function renderAccessFlowPanel(activeRow) {
-    const intent = state.activeAccessIntent;
+    const mode = accessIntentValue(state.activeAccessIntent);
     const restricted = activeRow?.access === "restricted";
-    const flowVisible = Boolean(activeRow && restricted && (intent === "manage" || intent === "share"));
+    const flowVisible = Boolean(activeRow && mode !== "overview");
     const keyOpen = hasOpenedAccessFolderKey(activeRow);
     const busy = state.accessBusy;
+    const peopleMode = mode === "people";
+    const linksMode = mode === "links";
     $("accessFlowPanel").hidden = !flowVisible;
-    const manageSection = $("accessManageSection");
-    const shareSection = $("accessShareSection");
-    const acceptSection = $("accessAcceptSection");
-    if (manageSection) manageSection.open = flowVisible && intent !== "share";
-    if (shareSection) shareSection.open = flowVisible && intent === "share";
-    if (acceptSection) {
-      acceptSection.open = flowVisible && intent === "share" && Boolean(state.lastShareLinkId || $("accessShareLinkInput").value);
-    }
+    $("accessOverviewPanel").hidden = mode !== "overview";
+    $("accessTargetField").hidden = !flowVisible || !(peopleMode || linksMode);
+    $("accessPeoplePanel").hidden = !peopleMode;
+    $("accessLinksPanel").hidden = !linksMode;
     if (!$("accessShareExpiresAtInput").value) {
       $("accessShareExpiresAtInput").value = defaultShareExpiryDateTimeLocal();
     }
@@ -4154,20 +4231,13 @@ const FiniteBrainProductClient = (() => {
       $("accessShareLinkInput").value = state.lastShareLinkId;
     }
     const canUseFolderFlow = flowVisible && restricted && keyOpen && !busy && state.signerStatus === "connected";
-    $("grantFolderAccessButton").disabled = !canUseFolderFlow;
-    $("removeFolderAccessButton").disabled = !canUseFolderFlow;
-    $("createShareLinkButton").disabled = !canUseFolderFlow;
-    $("acceptShareLinkButton").disabled = !flowVisible || busy || state.signerStatus !== "connected";
-    $("revokeShareLinkButton").disabled = !flowVisible || busy || state.signerStatus !== "connected";
-    if (!flowVisible) {
-      setText("accessFlowHint", restricted ? "Choose Manage or Share." : "Restricted folders only.");
-    } else if (!keyOpen) {
-      setText("accessFlowHint", "Open this Folder key before sharing.");
-    } else if (intent === "manage") {
-      setText("accessFlowHint", "Direct access rotates encrypted folder grants.");
-    } else {
-      setText("accessFlowHint", "Links are single-use and bound to the recipient npub.");
-    }
+    $("grantFolderAccessButton").disabled = !peopleMode || !canUseFolderFlow;
+    $("removeFolderAccessButton").disabled = !peopleMode || !canUseFolderFlow;
+    $("createShareLinkButton").disabled = !linksMode || !canUseFolderFlow;
+    $("acceptShareLinkButton").disabled = !linksMode || busy || state.signerStatus !== "connected";
+    $("revokeShareLinkButton").disabled = !linksMode || busy || state.signerStatus !== "connected";
+    setText("accessPeopleHint", accessPeopleHint(activeRow, state.metadata));
+    setText("accessFlowHint", accessFlowHint(activeRow, mode, keyOpen));
     renderAccessResultPanel();
   }
 
@@ -4209,27 +4279,31 @@ const FiniteBrainProductClient = (() => {
       state.activeAccessFolderId = activeRow.id;
     }
     const panel = accessPanelState(state.activeAccessIntent, activeRow);
+    const mode = panel.mode;
     setPill("accessFolderCount", `${rows.length}`, rows.length ? "ready" : "muted");
     setText("accessFolderTitle", panel.title);
     setPill("accessFolderStatus", panel.status, panel.tone);
     setText("accessFolderDetail", panel.detail);
-    setText("accessManageButton", "Manage");
-    setText("accessShareButton", "Share");
-    const restricted = activeRow?.access === "restricted";
-    $("accessIntentActions").hidden = !restricted;
-    $("accessManageButton").disabled = !activeRow || !restricted || state.accessBusy;
-    $("accessShareButton").disabled = !activeRow || !restricted || state.accessBusy;
-    $("accessManageButton").className = state.activeAccessIntent === "manage" ? "active" : "";
-    $("accessShareButton").className = state.activeAccessIntent === "share" ? "active" : "";
-    setPressed("accessManageButton", state.activeAccessIntent === "manage");
-    setPressed("accessShareButton", state.activeAccessIntent === "share");
+    renderAccessSummary(activeRow, state.metadata, openedFolders);
+    setText("accessOverviewText", accessOverviewCopy(activeRow, state.metadata, openedFolders));
+    const modeButtons = [
+      ["accessOverviewButton", "overview"],
+      ["accessManageButton", "people"],
+      ["accessShareButton", "links"],
+    ];
+    for (const [buttonId, buttonMode] of modeButtons) {
+      const button = $(buttonId);
+      button.disabled = !activeRow || state.accessBusy;
+      button.className = mode === buttonMode ? "active" : "";
+      setPressed(buttonId, mode === buttonMode);
+    }
     renderAccessBadgeRow("accessBadgeRow", accessBadgesForFolder(activeRow, openedFolders));
     renderAccessFlowPanel(activeRow);
     renderVaultInvitationPanel();
     setList("accessFolderList", rows, "Load a Vault to inspect access", (item, row) => {
       const button = obsidianTreeButton(
         row.path,
-        `${row.accessLabel} - key v${row.currentKeyVersion || 1}${row.detail ? ` - ${row.detail}` : ""}`,
+        `${row.accessLabel} - ${accessKeySummary(row, openedFolders).toLowerCase()}`,
         `obsidian-folder-button ${row.status}${row.id === activeRow?.id ? " active" : ""}`,
         () => selectAccessFolder(row.id),
         {
@@ -4240,7 +4314,7 @@ const FiniteBrainProductClient = (() => {
           },
         }
       );
-      appendAccessBadges(button, accessBadgesForFolder(row, openedFolders));
+      appendAccessBadges(button, sidebarAccessBadgesForFolder(row, openedFolders));
       item.appendChild(button);
     });
   }
@@ -5940,22 +6014,31 @@ const FiniteBrainProductClient = (() => {
     $("ribbonAccessButton").addEventListener("click", () => {
       setSidebarMode("access");
     });
+    $("accessOverviewButton").addEventListener("click", () => {
+      const folderId = state.activeAccessFolderId || state.selectedFolderId;
+      if (!folderId) return;
+      state.activeAccessIntent = "overview";
+      state.activeAccessFolderId = folderId;
+      state.accessResult = null;
+      log("Opened Folder access overview.", { folderId });
+      render();
+    });
     $("accessManageButton").addEventListener("click", () => {
       const folderId = state.activeAccessFolderId || state.selectedFolderId;
       if (!folderId) return;
-      state.activeAccessIntent = "manage";
+      state.activeAccessIntent = "people";
       state.activeAccessFolderId = folderId;
       state.accessResult = null;
-      log("Access management is visible in the prototype panel.", { folderId });
+      log("Opened Folder people access panel.", { folderId });
       render();
     });
     $("accessShareButton").addEventListener("click", () => {
       const folderId = state.activeAccessFolderId || state.selectedFolderId;
       if (!folderId) return;
-      state.activeAccessIntent = "share";
+      state.activeAccessIntent = "links";
       state.activeAccessFolderId = folderId;
       state.accessResult = null;
-      log("Share flow is visible in the prototype panel.", { folderId });
+      log("Opened Folder links panel.", { folderId });
       render();
     });
     onOptionalClick("grantFolderAccessButton", () => {
@@ -6157,7 +6240,9 @@ const FiniteBrainProductClient = (() => {
   return {
     accessActionRoute,
     accessBadgesForFolder,
+    accessIntentValue,
     accessPanelState,
+    accessPeopleSummary,
     adminAccessChangeTags,
     buildAdminAccessChangeEvent,
     buildFolderKeyGrantRequest,

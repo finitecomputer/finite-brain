@@ -141,18 +141,31 @@ assert.deepEqual(
 );
 assert.equal(
   JSON.stringify(client.accessActionRoute("share-folder", { folderId: "restricted" })),
-  JSON.stringify({ folderId: "restricted", intent: "share", sidebarMode: "access" })
+  JSON.stringify({ folderId: "restricted", intent: "links", sidebarMode: "access" })
 );
 assert.equal(
   JSON.stringify(client.accessActionRoute("manage-access", { folderId: "restricted" })),
-  JSON.stringify({ folderId: "restricted", intent: "manage", sidebarMode: "access" })
+  JSON.stringify({ folderId: "restricted", intent: "people", sidebarMode: "access" })
 );
 assert.equal(client.accessActionRoute("delete-folder", { folderId: "restricted" }), null);
-assert.equal(client.accessPanelState("share", folderRows[1]).status, "share");
-assert.match(client.accessPanelState("share", folderRows[1]).detail, /Choose who can see/);
-assert.equal(client.accessPanelState("manage", folderRows[1]).title, "Manage Restricted");
+assert.equal(client.accessIntentValue("share"), "links");
+assert.equal(client.accessIntentValue("manage"), "people");
+assert.equal(client.accessPanelState("links", folderRows[1]).status, "restricted");
+assert.equal(client.accessPanelState("links", folderRows[1]).mode, "links");
+assert.equal(client.accessPanelState("people", folderRows[1]).title, "Restricted");
 assert.equal(client.accessPanelState("manage", folderRows[0]).title, "General");
 assert.equal(client.accessPanelState("share", folderRows[0]).status, "all members");
+assert.equal(
+  client.accessPeopleSummary(folderRows[0], {
+    admins: ["npub-admin"],
+    members: ["npub-admin", "npub-member"],
+  }),
+  "2 members"
+);
+assert.match(htmlSource, /id="accessOverviewButton"/);
+assert.match(htmlSource, /id="accessPeoplePanel"/);
+assert.match(htmlSource, /id="accessLinksPanel"/);
+assert.doesNotMatch(htmlSource, /id="accessManageSection"/);
 assert.equal(client.personalVaultIdForPubkey("ab".repeat(32)), "personal-abababababababab");
 assert.equal(
   client.normalizeVisibleVault({
