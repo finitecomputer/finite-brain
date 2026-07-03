@@ -786,7 +786,8 @@ fn folder_visible(stored: &StoredVault, folder_id: &FolderId, actor_npub: &str) 
         FolderAccessMode::AdminOnly => is_admin,
         FolderAccessMode::AllMembers => is_admin || is_member,
         FolderAccessMode::Restricted => {
-            is_admin
+            is_owner
+                || is_admin
                 || stored
                     .folder_access
                     .get(folder_id)
@@ -1580,6 +1581,14 @@ mod tests {
         )
         .await;
         assert_eq!(create.status(), StatusCode::OK);
+        let metadata: VaultMetadataResponse = read_json(create).await;
+        let restricted = metadata
+            .folders
+            .iter()
+            .find(|folder| folder.id == "restricted")
+            .expect("restricted default folder");
+        assert_eq!(restricted.access, FolderAccessMode::Restricted);
+        assert!(restricted.access_user_ids.is_empty());
 
         let body = serde_json::json!({
             "folderId": "notes",

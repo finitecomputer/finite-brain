@@ -47,6 +47,7 @@ pub(crate) fn folder_required_recipients(
             recipients.extend(metadata.members.iter().cloned());
         }
         "restricted" => {
+            recipients.extend(metadata.owner_user_id.iter().cloned());
             recipients.extend(metadata.admins.iter().cloned());
             recipients.extend(access_users.iter().cloned());
         }

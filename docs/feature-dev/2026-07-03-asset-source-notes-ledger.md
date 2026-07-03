@@ -9,7 +9,7 @@
 - Feature branch: feature/asset-source-notes
 - Human owner: AustinKelsay
 - Started: 2026-07-03T09:20:32-0500
-- Current status: PR open; CI green; CodeRabbit fallback recorded; defaults/Smoke follow-up ready
+- Current status: PR open; CI green; CodeRabbit fallback recorded; defaults/Smoke follow-up ready; personal restricted bootstrap follow-up ready
 - Skill setup status: present; root AGENTS.md, issue tracker docs, triage labels, domain docs, and ADRs exist
 
 ## Goal
@@ -33,6 +33,9 @@ synthesized wiki pages cite the source notes.
 - Defaults/Smoke follow-up: default Getting Started and AGENTS guidance, CLI
   empty-folder skeletons, Smoke seed content, and Smoke reset runbook now all
   describe the Asset Source Note paradigm.
+- Personal restricted bootstrap follow-up: new personal Vaults now bootstrap the
+  default `restricted` Folder with restricted access while treating the owner as
+  the implicit restricted recipient.
 
 ## Commands
 
@@ -73,6 +76,7 @@ hard-cut branch. Final PR target: main.
 | #70 | 63abd59 | current thread | 191e22b | local review passed, no findings | node --check product-client.js; node product-client.test.js; cargo test -p finite-brain-server product_client_serves_spine_assets_and_config; git diff --check; cargo fmt --check; cargo test --workspace; cargo check --workspace; cargo clippy --all-targets -- -D warnings; cargo build --workspace |
 | CodeRabbit | 94de197 | current thread | f1b8ff9 | local round 1 found 8 major issues; local round 2 found 0 issues; PR trigger posted with fallback recorded | coderabbit review --agent --type all --base main -c AGENTS.md; @coderabbit full review; cargo fmt --check; node --check product-client.js; node product-client.test.js; git diff --check; cargo test -p finite-brain-core; cargo test -p finite-brain-cli; cargo test -p finite-brain-server product_client_serves_spine_assets_and_config; cargo test --workspace; cargo check --workspace; cargo clippy --all-targets -- -D warnings; cargo build --workspace |
 | Defaults/Smoke follow-up | c5e6e7f | current thread | branch tip | local review passed; public Smoke `/health` reachable but `/client` assets require OAuth so unauthenticated deployed bundle verification is blocked | node --check crates/finite-brain-server/src/product-client.js; node --check scripts/seed-smoke-doc-pages.mjs; node crates/finite-brain-server/src/product-client.test.js; node scripts/seed-smoke-doc-pages.mjs; node scripts/verify-obsidian-product-client.mjs; cargo fmt --check; git diff --check; cargo test -p finite-brain-core; cargo test -p finite-brain-cli; cargo test -p finite-brain-server product_client_serves_spine_assets_and_config -- --nocapture; cargo check --workspace; cargo test --workspace; cargo clippy --all-targets -- -D warnings; cargo build --workspace |
+| Personal restricted bootstrap follow-up | 16c0f3b | current thread | branch tip | local review passed; personal owner is implicit recipient/admin-equivalent for personal restricted Folders | cargo fmt --check; git diff --check; node --check crates/finite-brain-server/src/product-client.js; node crates/finite-brain-server/src/product-client.test.js; cargo test -p finite-brain-core; cargo test -p finite-brain-store; cargo test -p finite-brain-cli; cargo test -p finite-brain-server; cargo check --workspace; cargo test --workspace; cargo clippy --all-targets -- -D warnings; cargo build --workspace |
 
 ## Open Questions
 

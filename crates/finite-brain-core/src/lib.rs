@@ -653,7 +653,7 @@ pub enum FolderAccessMode {
     AdminOnly,
     /// Organization members and admins.
     AllMembers,
-    /// Admins plus explicitly listed members.
+    /// Vault admins, the personal owner for personal Vaults, plus explicitly listed members.
     Restricted,
 }
 
@@ -834,7 +834,7 @@ pub fn bootstrap_personal_vault(
             "restricted",
             "restricted",
             FolderRole::Folder,
-            FolderAccessMode::Owner,
+            FolderAccessMode::Restricted,
         )?,
     ];
 
@@ -2062,7 +2062,7 @@ mod tests {
         let restricted = &output.vault.folders[1];
         assert_eq!(restricted.id, FolderId::new("restricted").unwrap());
         assert_eq!(restricted.role, FolderRole::Folder);
-        assert_eq!(restricted.access, FolderAccessMode::Owner);
+        assert_eq!(restricted.access, FolderAccessMode::Restricted);
         assert_eq!(
             restricted.path,
             SafeRelativePath::new("folder_path", "restricted").unwrap()

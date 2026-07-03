@@ -4398,5 +4398,21 @@ mod tests {
             folder_required_recipients(&metadata, "admin_only", &[]).unwrap(),
             vec!["npub-admin".to_owned()]
         );
+
+        let personal_metadata = VaultMetadataView {
+            vault_id: "personal".to_owned(),
+            kind: "personal".to_owned(),
+            name: "Personal".to_owned(),
+            owner_user_id: Some("npub-owner".to_owned()),
+            members: Vec::new(),
+            admins: Vec::new(),
+            folders: Vec::new(),
+            mounted_folders: Vec::new(),
+            grant_count: 0,
+        };
+        assert_eq!(
+            folder_required_recipients(&personal_metadata, "restricted", &[]).unwrap(),
+            vec!["npub-owner".to_owned()]
+        );
     }
 }

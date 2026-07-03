@@ -166,7 +166,7 @@ Personal Vault:
 - Has exactly one owner identity in `ownerUserId`.
 - Starts with Folder-scoped wiki roots:
   - `getting-started`: role `personal_home`, access `owner`
-  - `restricted`: role `folder`, access `owner`
+  - `restricted`: role `folder`, access `restricted`
 - Does not use ordinary organization membership/admin lists for the owner.
 - May contain limited members only when sharing a source Folder.
 
@@ -231,7 +231,8 @@ Access modes:
 - `owner`: personal Vault owner only.
 - `admin_only`: Vault Admins only.
 - `all_members`: all organization Vault Members and Vault Admins.
-- `restricted`: Vault Admins plus members listed in `folderAccess`.
+- `restricted`: personal Vault owner, organization Vault Admins, plus members
+  listed in `folderAccess`.
 
 ### 4.3.1 Folder-scoped LLM Wiki Profile
 

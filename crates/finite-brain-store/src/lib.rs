@@ -1983,6 +1983,9 @@ fn required_recipients(
             recipients.extend(vault.members.iter().map(|member| member.user_id.clone()));
         }
         FolderAccessMode::Restricted => {
+            if let Some(owner) = vault.owner_user_id.clone() {
+                recipients.insert(owner);
+            }
             recipients.extend(vault.admins.iter().cloned());
             recipients.extend(access_user_ids.iter().cloned());
         }
@@ -2039,7 +2042,8 @@ fn folder_visible_to_actor(
         FolderAccessMode::AdminOnly => is_admin,
         FolderAccessMode::AllMembers => is_admin || is_member,
         FolderAccessMode::Restricted => {
-            is_admin
+            is_owner
+                || is_admin
                 || stored
                     .folder_access
                     .get(folder_id)
@@ -2366,6 +2370,21 @@ mod tests {
                 .collect::<BTreeSet<_>>(),
             BTreeSet::from(["getting-started".to_owned(), "restricted".to_owned()])
         );
+        let restricted = FolderId::new("restricted").unwrap();
+        assert_eq!(
+            stored
+                .vault
+                .folders
+                .iter()
+                .find(|folder| folder.id == restricted)
+                .map(|folder| folder.access),
+            Some(FolderAccessMode::Restricted)
+        );
+        assert!(!stored.folder_access.contains_key(&restricted));
+        assert!(stored.grants.iter().any(|grant| {
+            grant.folder_id == restricted
+                && grant.recipient_npub == UserId::new("npub-owner").unwrap()
+        }));
         assert_same_grants(&stored.grants, &grants);
         assert!(stored.setup_incomplete_folder_ids.is_empty());
     }
