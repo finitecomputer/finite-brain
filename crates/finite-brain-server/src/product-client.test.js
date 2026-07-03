@@ -477,28 +477,31 @@ assert.equal(client.readerPageRows("general", draftPages)[0].label, "Draft Page"
 
   assert.equal(
     JSON.stringify(client.defaultVaultBootstrapFolderIds("personal")),
-    JSON.stringify(["home", "projects", "work", "life", "learning", "archive"])
+    JSON.stringify(["getting-started", "restricted"])
   );
   assert.equal(
     JSON.stringify(client.defaultVaultBootstrapFolderIds("organization")),
-    JSON.stringify(["vault-ops", "general", "product", "engineering", "marketing", "design", "operations"])
+    JSON.stringify(["getting-started", "restricted"])
   );
-  assert.equal(client.defaultVaultPagesFolderId("personal"), "home");
-  assert.equal(client.defaultVaultPagesFolderId("organization"), "general");
+  assert.equal(client.defaultVaultPagesFolderId("personal"), "getting-started");
+  assert.equal(client.defaultVaultPagesFolderId("organization"), "getting-started");
   const defaultPages = client.defaultVaultPages("organization");
   assert.equal(
     JSON.stringify(defaultPages.slice(0, 5).map((page) => [page.folderId, page.objectId, page.path])),
     JSON.stringify([
-      ["general", "obj_default_agents", "AGENTS.md"],
-      ["general", "obj_default_humans", "HUMANS.md"],
-      ["general", "obj_default_general_scope_config", "config.md"],
-      ["general", "obj_default_general_scope_index", "_index.md"],
-      ["general", "obj_default_general_scope_log", "log.md"],
+      ["getting-started", "obj_default_agents", "AGENTS.md"],
+      ["getting-started", "obj_default_humans", "HUMANS.md"],
+      ["getting-started", "obj_default_getting-started_scope_config", "config.md"],
+      ["getting-started", "obj_default_getting-started_scope_index", "_index.md"],
+      ["getting-started", "obj_default_getting-started_scope_log", "log.md"],
     ])
   );
-  assert.equal(defaultPages.length, 20);
+  assert.equal(defaultPages.length, 12);
   assert.equal(new Set(defaultPages.map((page) => page.objectId)).size, defaultPages.length);
   assert.equal(defaultPages.some((page) => page.folderId === "vault-ops"), false);
+  assert.equal(defaultPages.some((page) => page.folderId === "product"), false);
+  const restrictedExamplePage = defaultPages.find((page) => page.path === "wiki/restricted-folder-example.md");
+  assert.equal(restrictedExamplePage?.folderId, "restricted");
   assert.match(defaultPages[0].markdown, /Use `fbrain`/);
   assert.match(defaultPages[0].markdown, /LLM Wiki Rules/);
   assert.match(defaultPages[1].markdown, /private, encrypted knowledge workspace/);
@@ -516,20 +519,19 @@ assert.equal(client.readerPageRows("general", draftPages)[0].label, "Draft Page"
     kind: "organization",
     provider: { signEvent: bootstrapSigner, nip44: { encrypt: fakeEncrypt, decrypt: fakeDecrypt } },
     rawKeysByFolderId: {
-      "vault-ops": new Uint8Array(32).fill(12),
-      general: new Uint8Array(32).fill(13),
+      "getting-started": new Uint8Array(32).fill(12),
+      restricted: new Uint8Array(32).fill(13),
     },
     signEvent: bootstrapSigner,
     vaultId: "org-smoke",
   });
   assert.equal(
     JSON.stringify(orgBootstrapPlan.bootstrapGrants.map((entry) => entry.folderId)),
-    JSON.stringify(["vault-ops", "general", "product", "engineering", "marketing", "design", "operations"])
+    JSON.stringify(["getting-started", "restricted"])
   );
-  assert.equal(orgBootstrapPlan.defaultFolderId, "general");
-  assert.equal(orgBootstrapPlan.keyring.keys.has("org-smoke:vault-ops:1"), true);
-  assert.equal(orgBootstrapPlan.keyring.keys.has("org-smoke:general:1"), true);
-  assert.equal(orgBootstrapPlan.keyring.keys.has("org-smoke:product:1"), true);
+  assert.equal(orgBootstrapPlan.defaultFolderId, "getting-started");
+  assert.equal(orgBootstrapPlan.keyring.keys.has("org-smoke:getting-started:1"), true);
+  assert.equal(orgBootstrapPlan.keyring.keys.has("org-smoke:restricted:1"), true);
   const starterWrites = await client.buildDefaultVaultPageWrites({
     actorNpub: authorNpub,
     createdAtUnix: 1780000300,
@@ -544,22 +546,22 @@ assert.equal(client.readerPageRows("general", draftPages)[0].label, "Draft Page"
       starterWrites.slice(0, 8).map((write) => [write.folderId, write.objectId, write.targetPath])
     ),
     JSON.stringify([
-      ["general", "obj_default_agents", "AGENTS.md"],
-      ["general", "obj_default_humans", "HUMANS.md"],
-      ["general", "obj_default_general_scope_config", "config.md"],
-      ["general", "obj_default_general_scope_index", "_index.md"],
-      ["general", "obj_default_general_scope_log", "log.md"],
-      ["product", "obj_default_product_scope_config", "config.md"],
-      ["product", "obj_default_product_scope_index", "_index.md"],
-      ["product", "obj_default_product_scope_log", "log.md"],
+      ["getting-started", "obj_default_agents", "AGENTS.md"],
+      ["getting-started", "obj_default_humans", "HUMANS.md"],
+      ["getting-started", "obj_default_getting-started_scope_config", "config.md"],
+      ["getting-started", "obj_default_getting-started_scope_index", "_index.md"],
+      ["getting-started", "obj_default_getting-started_scope_log", "log.md"],
+      ["getting-started", "obj_default_getting-started_readme", "README.md"],
+      ["getting-started", "obj_default_getting-started_how_finitebrain_works", "wiki/how-finitebrain-works.md"],
+      ["getting-started", "obj_default_getting-started_access_and_folders", "wiki/access-and-folders.md"],
     ])
   );
-  assert.equal(starterWrites.length, 20);
+  assert.equal(starterWrites.length, 12);
   assert.equal(new Set(starterWrites.map((write) => write.objectId)).size, starterWrites.length);
   assert.equal(starterWrites.some((write) => write.folderId === "vault-ops"), false);
   const openedAgentsDefault = await client.openFolderObject(orgBootstrapPlan.keyring, {
     vaultId: "org-smoke",
-    folderId: "general",
+    folderId: "getting-started",
     objectId: "obj_default_agents",
     revision: 1,
     ciphertext: starterWrites[0].body.ciphertext,
@@ -569,7 +571,7 @@ assert.equal(client.readerPageRows("general", draftPages)[0].label, "Draft Page"
   assert.match(openedAgentsDefault.text, /FiniteBrain vault/);
   const openedHumansDefault = await client.openFolderObject(orgBootstrapPlan.keyring, {
     vaultId: "org-smoke",
-    folderId: "general",
+    folderId: "getting-started",
     objectId: "obj_default_humans",
     revision: 1,
     ciphertext: starterWrites[1].body.ciphertext,

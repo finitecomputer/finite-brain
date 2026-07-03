@@ -2364,14 +2364,7 @@ mod tests {
                 .iter()
                 .map(|folder| folder.id.to_string())
                 .collect::<BTreeSet<_>>(),
-            BTreeSet::from([
-                "archive".to_owned(),
-                "home".to_owned(),
-                "learning".to_owned(),
-                "life".to_owned(),
-                "projects".to_owned(),
-                "work".to_owned()
-            ])
+            BTreeSet::from(["getting-started".to_owned(), "restricted".to_owned()])
         );
         assert_same_grants(&stored.grants, &grants);
         assert!(stored.setup_incomplete_folder_ids.is_empty());
@@ -2405,16 +2398,23 @@ mod tests {
                 .iter()
                 .map(|folder| folder.id.to_string())
                 .collect::<BTreeSet<_>>(),
-            BTreeSet::from([
-                "design".to_owned(),
-                "engineering".to_owned(),
-                "general".to_owned(),
-                "marketing".to_owned(),
-                "operations".to_owned(),
-                "product".to_owned(),
-                "vault-ops".to_owned()
-            ])
+            BTreeSet::from(["getting-started".to_owned(), "restricted".to_owned()])
         );
+        let restricted = FolderId::new("restricted").unwrap();
+        assert_eq!(
+            stored
+                .vault
+                .folders
+                .iter()
+                .find(|folder| folder.id == restricted)
+                .map(|folder| folder.access),
+            Some(FolderAccessMode::Restricted)
+        );
+        assert!(!stored.folder_access.contains_key(&restricted));
+        assert!(stored.grants.iter().any(|grant| {
+            grant.folder_id == restricted
+                && grant.recipient_npub == UserId::new("npub-admin").unwrap()
+        }));
         assert_same_grants(&stored.grants, &grants);
     }
 
@@ -2519,11 +2519,11 @@ mod tests {
         store
             .grant_folder_access(
                 &vault_id,
-                &FolderId::new("general").unwrap(),
+                &FolderId::new("getting-started").unwrap(),
                 &member,
                 &grant(
-                    "grant-general-member",
-                    "general",
+                    "grant-getting-started-member",
+                    "getting-started",
                     1,
                     "npub-admin",
                     member.as_str(),
@@ -2535,10 +2535,10 @@ mod tests {
         assert!(
             !stored
                 .folder_access
-                .contains_key(&FolderId::new("general").unwrap())
+                .contains_key(&FolderId::new("getting-started").unwrap())
         );
         assert!(stored.grants.iter().any(|grant| {
-            grant.folder_id == FolderId::new("general").unwrap()
+            grant.folder_id == FolderId::new("getting-started").unwrap()
                 && grant.key_version == 1
                 && grant.recipient_npub == member
         }));
@@ -2548,6 +2548,21 @@ mod tests {
     fn grants_admin_only_folder_key_to_existing_admin_without_access_row() {
         let mut store = bootstrapped_org_store();
         let vault_id = VaultId::new("acme").unwrap();
+        let admin_only = admin_only_folder();
+        store
+            .create_folder(
+                &vault_id,
+                &admin_only,
+                &BTreeSet::new(),
+                &[grant(
+                    "grant-admin-only-admin",
+                    "admin-only",
+                    1,
+                    "npub-admin",
+                    "npub-admin",
+                )],
+            )
+            .unwrap();
         let admin = UserId::new("npub-second-admin").unwrap();
         store.add_member(&vault_id, &admin).unwrap();
         store.add_admin(&vault_id, &admin).unwrap();
@@ -2555,11 +2570,11 @@ mod tests {
         store
             .grant_folder_access(
                 &vault_id,
-                &FolderId::new("vault-ops").unwrap(),
+                &FolderId::new("admin-only").unwrap(),
                 &admin,
                 &grant(
-                    "grant-vault-ops-second-admin",
-                    "vault-ops",
+                    "grant-admin-only-second-admin",
+                    "admin-only",
                     1,
                     "npub-admin",
                     admin.as_str(),
@@ -2571,10 +2586,10 @@ mod tests {
         assert!(
             !stored
                 .folder_access
-                .contains_key(&FolderId::new("vault-ops").unwrap())
+                .contains_key(&FolderId::new("admin-only").unwrap())
         );
         assert!(stored.grants.iter().any(|grant| {
-            grant.folder_id == FolderId::new("vault-ops").unwrap()
+            grant.folder_id == FolderId::new("admin-only").unwrap()
                 && grant.key_version == 1
                 && grant.recipient_npub == admin
         }));
@@ -2584,6 +2599,21 @@ mod tests {
     fn rejects_admin_only_folder_key_grant_to_non_admin() {
         let mut store = bootstrapped_org_store();
         let vault_id = VaultId::new("acme").unwrap();
+        let admin_only = admin_only_folder();
+        store
+            .create_folder(
+                &vault_id,
+                &admin_only,
+                &BTreeSet::new(),
+                &[grant(
+                    "grant-admin-only-admin",
+                    "admin-only",
+                    1,
+                    "npub-admin",
+                    "npub-admin",
+                )],
+            )
+            .unwrap();
         let member = UserId::new("npub-member").unwrap();
         store.add_member(&vault_id, &member).unwrap();
 
@@ -2591,11 +2621,11 @@ mod tests {
             store
                 .grant_folder_access(
                     &vault_id,
-                    &FolderId::new("vault-ops").unwrap(),
+                    &FolderId::new("admin-only").unwrap(),
                     &member,
                     &grant(
-                        "grant-vault-ops-member",
-                        "vault-ops",
+                        "grant-admin-only-member",
+                        "admin-only",
                         1,
                         "npub-admin",
                         member.as_str(),
@@ -2624,7 +2654,7 @@ mod tests {
                 &target,
                 "invite-0123456789abcdef0123456789abcdef",
                 "/_admin/vault-invitation-links/invite-0123456789abcdef0123456789abcdef/accept",
-                &[FolderId::new("general").unwrap()],
+                &[FolderId::new("getting-started").unwrap()],
                 &admin,
                 "2026-06-30T00:00:00.000Z",
                 now,
@@ -2633,7 +2663,7 @@ mod tests {
         assert_eq!(invitation.status, LinkStatus::Pending);
         assert_eq!(
             invitation.initial_folder_access,
-            vec![FolderId::new("general").unwrap()]
+            vec![FolderId::new("getting-started").unwrap()]
         );
 
         assert_eq!(
@@ -2811,12 +2841,12 @@ mod tests {
             .submit_sync_record(
                 &vault_id,
                 &revision_record_for(
-                    "general",
-                    "event-general-create",
+                    "getting-started",
+                    "event-getting-started-create",
                     "obj_000000000101",
                     1,
                     None,
-                    "general payload",
+                    "getting-started payload",
                 ),
             )
             .unwrap();
@@ -2839,13 +2869,19 @@ mod tests {
         assert!(member_export.key_grants.is_empty());
         assert_eq!(member_export.access_state.members, vec![member.clone()]);
         assert!(member_export.access_state.admins.is_empty());
-        let general = member_export
+        let getting_started = member_export
             .objects
             .iter()
-            .find(|object| object.folder_id == FolderId::new("general").unwrap())
+            .find(|object| object.folder_id == FolderId::new("getting-started").unwrap())
             .unwrap();
-        assert!(!general.opaque);
-        assert!(general.payload_json.as_ref().unwrap().contains("general"));
+        assert!(!getting_started.opaque);
+        assert!(
+            getting_started
+                .payload_json
+                .as_ref()
+                .unwrap()
+                .contains("getting-started")
+        );
         let strategy = member_export
             .objects
             .iter()
@@ -3596,11 +3632,15 @@ mod tests {
     fn rolls_back_folder_creation_when_grant_insert_fails() {
         let mut store = bootstrapped_org_store();
         let vault_id = VaultId::new("acme").unwrap();
-        assert!(store.grant_exists("grant-general-npub-admin").unwrap());
+        assert!(
+            store
+                .grant_exists("grant-getting-started-npub-admin")
+                .unwrap()
+        );
 
         let folder = strategy_folder();
         let grants = vec![grant(
-            "grant-general-npub-admin",
+            "grant-getting-started-npub-admin",
             "strategy",
             1,
             "npub-admin",
@@ -3771,7 +3811,8 @@ mod tests {
         let bad_issuer_folder = Folder {
             id: FolderId::new("bad-issuer-strategy").unwrap(),
             name: DisplayName::new("folder_name", "Bad Issuer Strategy").unwrap(),
-            path: SafeRelativePath::new("folder_path", "general/Bad Issuer Strategy").unwrap(),
+            path: SafeRelativePath::new("folder_path", "getting-started/Bad Issuer Strategy")
+                .unwrap(),
             ..strategy_folder()
         };
         assert_eq!(
@@ -4252,8 +4293,21 @@ mod tests {
             name: DisplayName::new("folder_name", "Strategy").unwrap(),
             role: FolderRole::Folder,
             access: FolderAccessMode::Restricted,
-            parent_folder_id: Some(FolderId::new("general").unwrap()),
-            path: SafeRelativePath::new("folder_path", "general/Strategy").unwrap(),
+            parent_folder_id: Some(FolderId::new("getting-started").unwrap()),
+            path: SafeRelativePath::new("folder_path", "getting-started/Strategy").unwrap(),
+            current_key_version: 1,
+            shared_folder_source: false,
+        }
+    }
+
+    fn admin_only_folder() -> Folder {
+        Folder {
+            id: FolderId::new("admin-only").unwrap(),
+            name: DisplayName::new("folder_name", "admin-only").unwrap(),
+            role: FolderRole::Folder,
+            access: FolderAccessMode::AdminOnly,
+            parent_folder_id: None,
+            path: SafeRelativePath::new("folder_path", "admin-only").unwrap(),
             current_key_version: 1,
             shared_folder_source: false,
         }

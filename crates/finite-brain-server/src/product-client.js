@@ -216,6 +216,56 @@ const FiniteBrainProductClient = (() => {
       "",
       "Do not record activity from sibling Folders here.",
     ].join("\n") + "\n";
+  const DEFAULT_GETTING_STARTED_README_MARKDOWN =
+    [
+      "# Getting Started",
+      "",
+      "This Folder explains the default FiniteBrain vault layout.",
+      "",
+      "Use this Folder for orientation, operating rules, and shared notes about how",
+      "the vault should be maintained. Keep durable knowledge inside Folder-scoped",
+      "wiki pages, and keep private or sensitive work inside a Folder with an equal",
+      "or tighter access boundary.",
+    ].join("\n") + "\n";
+  const DEFAULT_HOW_FINITEBRAIN_WORKS_MARKDOWN =
+    [
+      "# How FiniteBrain Works",
+      "",
+      "FiniteBrain stores encrypted Vault data on the server. The client or agent",
+      "opens Folder Keys locally, decrypts the Pages it can access, edits markdown,",
+      "and syncs encrypted updates back.",
+      "",
+      "Each top-level Folder is an LLM wiki scope. A Folder has its own `config.md`,",
+      "`_index.md`, and `log.md`, so activity and summaries stay inside the same",
+      "access boundary as the content they describe.",
+    ].join("\n") + "\n";
+  const DEFAULT_ACCESS_AND_FOLDERS_MARKDOWN =
+    [
+      "# Access And Folders",
+      "",
+      "Access is Folder-scoped.",
+      "",
+      "- Open folders are intended for everyone who belongs in that vault.",
+      "- Restricted folders are for material that should only be visible to approved",
+      "  people.",
+      "- Do not copy restricted titles, summaries, sources, or log entries into a",
+      "  less-restricted Folder.",
+      "",
+      "Use the `restricted` Folder as the default example of a tighter access boundary.",
+    ].join("\n") + "\n";
+  const DEFAULT_RESTRICTED_EXAMPLE_MARKDOWN =
+    [
+      "# Restricted Folder Example",
+      "",
+      "This Folder demonstrates a tighter access boundary.",
+      "",
+      "In an organization Vault, this Folder starts with access for admins only. Add",
+      "specific members later when the work in this Folder should be shared with them.",
+      "",
+      "Keep this Folder's `_index.md` and `log.md` local to this Folder. Do not",
+      "summarize this Folder into `getting-started` unless the user explicitly chooses",
+      "that destination and the audience is allowed to see the summary.",
+    ].join("\n") + "\n";
   const defaultPage = (folderId, objectId, path, markdown) =>
     Object.freeze({ folderId, objectId, path, markdown });
   const defaultScopePages = (folderId) => [
@@ -233,21 +283,44 @@ const FiniteBrainProductClient = (() => {
     defaultPage(folderId, "obj_default_humans", "HUMANS.md", DEFAULT_HUMANS_MARKDOWN),
     ...defaultScopePages(folderId),
   ];
+  const gettingStartedGuidePages = () => [
+    defaultPage(
+      "getting-started",
+      "obj_default_getting-started_readme",
+      "README.md",
+      DEFAULT_GETTING_STARTED_README_MARKDOWN
+    ),
+    defaultPage(
+      "getting-started",
+      "obj_default_getting-started_how_finitebrain_works",
+      "wiki/how-finitebrain-works.md",
+      DEFAULT_HOW_FINITEBRAIN_WORKS_MARKDOWN
+    ),
+    defaultPage(
+      "getting-started",
+      "obj_default_getting-started_access_and_folders",
+      "wiki/access-and-folders.md",
+      DEFAULT_ACCESS_AND_FOLDERS_MARKDOWN
+    ),
+  ];
+  const restrictedGuidePage = () =>
+    defaultPage(
+      "restricted",
+      "obj_default_restricted_example",
+      "wiki/restricted-folder-example.md",
+      DEFAULT_RESTRICTED_EXAMPLE_MARKDOWN
+    );
+  const starterVaultPages = () => [
+    ...defaultPrimaryScopePages("getting-started"),
+    ...gettingStartedGuidePages(),
+    ...defaultScopePages("restricted"),
+    restrictedGuidePage(),
+  ];
   const PERSONAL_DEFAULT_VAULT_PAGES = Object.freeze([
-    ...defaultPrimaryScopePages("home"),
-    ...defaultScopePages("projects"),
-    ...defaultScopePages("work"),
-    ...defaultScopePages("life"),
-    ...defaultScopePages("learning"),
-    ...defaultScopePages("archive"),
+    ...starterVaultPages(),
   ]);
   const ORGANIZATION_DEFAULT_VAULT_PAGES = Object.freeze([
-    ...defaultPrimaryScopePages("general"),
-    ...defaultScopePages("product"),
-    ...defaultScopePages("engineering"),
-    ...defaultScopePages("marketing"),
-    ...defaultScopePages("design"),
-    ...defaultScopePages("operations"),
+    ...starterVaultPages(),
   ]);
   const BECH32_CHARSET = "qpzry9x8gf2tvdw0s3jn54khce6mua7l";
   const graphViewport = { height: 560, width: 900 };
@@ -4141,16 +4214,14 @@ const FiniteBrainProductClient = (() => {
   }
 
   function defaultVaultPagesFolderId(kind) {
-    if (kind === "personal") return "home";
-    if (kind === "organization") return "general";
+    if (kind === "personal") return "getting-started";
+    if (kind === "organization") return "getting-started";
     throw new Error(`Unsupported Vault kind: ${kind}`);
   }
 
   function defaultVaultBootstrapFolderIds(kind) {
-    if (kind === "personal") return ["home", "projects", "work", "life", "learning", "archive"];
-    if (kind === "organization") {
-      return ["vault-ops", "general", "product", "engineering", "marketing", "design", "operations"];
-    }
+    if (kind === "personal") return ["getting-started", "restricted"];
+    if (kind === "organization") return ["getting-started", "restricted"];
     throw new Error(`Unsupported Vault kind: ${kind}`);
   }
 

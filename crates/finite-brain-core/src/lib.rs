@@ -197,34 +197,80 @@ Append meaningful changes in this Folder only.
 Do not record activity from sibling Folders here.
 "#;
 
+const DEFAULT_GETTING_STARTED_README_MARKDOWN: &str = r#"# Getting Started
+
+This Folder explains the default FiniteBrain vault layout.
+
+Use this Folder for orientation, operating rules, and shared notes about how
+the vault should be maintained. Keep durable knowledge inside Folder-scoped
+wiki pages, and keep private or sensitive work inside a Folder with an equal
+or tighter access boundary.
+"#;
+
+const DEFAULT_HOW_FINITEBRAIN_WORKS_MARKDOWN: &str = r#"# How FiniteBrain Works
+
+FiniteBrain stores encrypted Vault data on the server. The client or agent
+opens Folder Keys locally, decrypts the Pages it can access, edits markdown,
+and syncs encrypted updates back.
+
+Each top-level Folder is an LLM wiki scope. A Folder has its own `config.md`,
+`_index.md`, and `log.md`, so activity and summaries stay inside the same
+access boundary as the content they describe.
+"#;
+
+const DEFAULT_ACCESS_AND_FOLDERS_MARKDOWN: &str = r#"# Access And Folders
+
+Access is Folder-scoped.
+
+- Open folders are intended for everyone who belongs in that vault.
+- Restricted folders are for material that should only be visible to approved
+  people.
+- Do not copy restricted titles, summaries, sources, or log entries into a
+  less-restricted Folder.
+
+Use the `restricted` Folder as the default example of a tighter access boundary.
+"#;
+
+const DEFAULT_RESTRICTED_EXAMPLE_MARKDOWN: &str = r#"# Restricted Folder Example
+
+This Folder demonstrates a tighter access boundary.
+
+In an organization Vault, this Folder starts with access for admins only. Add
+specific members later when the work in this Folder should be shared with them.
+
+Keep this Folder's `_index.md` and `log.md` local to this Folder. Do not
+summarize this Folder into `getting-started` unless the user explicitly chooses
+that destination and the audience is allowed to see the summary.
+"#;
+
 const DEFAULT_PRIMARY_SCOPE_PAGES: [DefaultVaultPage; 5] = [
     DefaultVaultPage {
-        folder_id: "home",
+        folder_id: "getting-started",
         object_id: "obj_default_agents",
         path: "AGENTS.md",
         markdown: DEFAULT_AGENTS_MARKDOWN,
     },
     DefaultVaultPage {
-        folder_id: "home",
+        folder_id: "getting-started",
         object_id: "obj_default_humans",
         path: "HUMANS.md",
         markdown: DEFAULT_HUMANS_MARKDOWN,
     },
     DefaultVaultPage {
-        folder_id: "home",
-        object_id: "obj_default_home_scope_config",
+        folder_id: "getting-started",
+        object_id: "obj_default_getting-started_scope_config",
         path: "config.md",
         markdown: DEFAULT_SCOPE_CONFIG_MARKDOWN,
     },
     DefaultVaultPage {
-        folder_id: "home",
-        object_id: "obj_default_home_scope_index",
+        folder_id: "getting-started",
+        object_id: "obj_default_getting-started_scope_index",
         path: "_index.md",
         markdown: DEFAULT_SCOPE_INDEX_MARKDOWN,
     },
     DefaultVaultPage {
-        folder_id: "home",
-        object_id: "obj_default_home_scope_log",
+        folder_id: "getting-started",
+        object_id: "obj_default_getting-started_scope_log",
         path: "log.md",
         markdown: DEFAULT_SCOPE_LOG_MARKDOWN,
     },
@@ -255,76 +301,50 @@ macro_rules! default_scope_pages {
     };
 }
 
-const PERSONAL_DEFAULT_VAULT_PAGES: [DefaultVaultPage; 20] = [
+const GETTING_STARTED_GUIDE_PAGES: [DefaultVaultPage; 3] = [
+    DefaultVaultPage {
+        folder_id: "getting-started",
+        object_id: "obj_default_getting-started_readme",
+        path: "README.md",
+        markdown: DEFAULT_GETTING_STARTED_README_MARKDOWN,
+    },
+    DefaultVaultPage {
+        folder_id: "getting-started",
+        object_id: "obj_default_getting-started_how_finitebrain_works",
+        path: "wiki/how-finitebrain-works.md",
+        markdown: DEFAULT_HOW_FINITEBRAIN_WORKS_MARKDOWN,
+    },
+    DefaultVaultPage {
+        folder_id: "getting-started",
+        object_id: "obj_default_getting-started_access_and_folders",
+        path: "wiki/access-and-folders.md",
+        markdown: DEFAULT_ACCESS_AND_FOLDERS_MARKDOWN,
+    },
+];
+
+const RESTRICTED_GUIDE_PAGE: DefaultVaultPage = DefaultVaultPage {
+    folder_id: "restricted",
+    object_id: "obj_default_restricted_example",
+    path: "wiki/restricted-folder-example.md",
+    markdown: DEFAULT_RESTRICTED_EXAMPLE_MARKDOWN,
+};
+
+const PERSONAL_DEFAULT_VAULT_PAGES: [DefaultVaultPage; 12] = [
     DEFAULT_PRIMARY_SCOPE_PAGES[0],
     DEFAULT_PRIMARY_SCOPE_PAGES[1],
     DEFAULT_PRIMARY_SCOPE_PAGES[2],
     DEFAULT_PRIMARY_SCOPE_PAGES[3],
     DEFAULT_PRIMARY_SCOPE_PAGES[4],
-    default_scope_pages!("projects", "projects")[0],
-    default_scope_pages!("projects", "projects")[1],
-    default_scope_pages!("projects", "projects")[2],
-    default_scope_pages!("work", "work")[0],
-    default_scope_pages!("work", "work")[1],
-    default_scope_pages!("work", "work")[2],
-    default_scope_pages!("life", "life")[0],
-    default_scope_pages!("life", "life")[1],
-    default_scope_pages!("life", "life")[2],
-    default_scope_pages!("learning", "learning")[0],
-    default_scope_pages!("learning", "learning")[1],
-    default_scope_pages!("learning", "learning")[2],
-    default_scope_pages!("archive", "archive")[0],
-    default_scope_pages!("archive", "archive")[1],
-    default_scope_pages!("archive", "archive")[2],
+    GETTING_STARTED_GUIDE_PAGES[0],
+    GETTING_STARTED_GUIDE_PAGES[1],
+    GETTING_STARTED_GUIDE_PAGES[2],
+    default_scope_pages!("restricted", "restricted")[0],
+    default_scope_pages!("restricted", "restricted")[1],
+    default_scope_pages!("restricted", "restricted")[2],
+    RESTRICTED_GUIDE_PAGE,
 ];
 
-const ORGANIZATION_DEFAULT_VAULT_PAGES: [DefaultVaultPage; 20] = [
-    DefaultVaultPage {
-        folder_id: "general",
-        object_id: "obj_default_agents",
-        path: "AGENTS.md",
-        markdown: DEFAULT_AGENTS_MARKDOWN,
-    },
-    DefaultVaultPage {
-        folder_id: "general",
-        object_id: "obj_default_humans",
-        path: "HUMANS.md",
-        markdown: DEFAULT_HUMANS_MARKDOWN,
-    },
-    DefaultVaultPage {
-        folder_id: "general",
-        object_id: "obj_default_general_scope_config",
-        path: "config.md",
-        markdown: DEFAULT_SCOPE_CONFIG_MARKDOWN,
-    },
-    DefaultVaultPage {
-        folder_id: "general",
-        object_id: "obj_default_general_scope_index",
-        path: "_index.md",
-        markdown: DEFAULT_SCOPE_INDEX_MARKDOWN,
-    },
-    DefaultVaultPage {
-        folder_id: "general",
-        object_id: "obj_default_general_scope_log",
-        path: "log.md",
-        markdown: DEFAULT_SCOPE_LOG_MARKDOWN,
-    },
-    default_scope_pages!("product", "product")[0],
-    default_scope_pages!("product", "product")[1],
-    default_scope_pages!("product", "product")[2],
-    default_scope_pages!("engineering", "engineering")[0],
-    default_scope_pages!("engineering", "engineering")[1],
-    default_scope_pages!("engineering", "engineering")[2],
-    default_scope_pages!("marketing", "marketing")[0],
-    default_scope_pages!("marketing", "marketing")[1],
-    default_scope_pages!("marketing", "marketing")[2],
-    default_scope_pages!("design", "design")[0],
-    default_scope_pages!("design", "design")[1],
-    default_scope_pages!("design", "design")[2],
-    default_scope_pages!("operations", "operations")[0],
-    default_scope_pages!("operations", "operations")[1],
-    default_scope_pages!("operations", "operations")[2],
-];
+const ORGANIZATION_DEFAULT_VAULT_PAGES: [DefaultVaultPage; 12] = PERSONAL_DEFAULT_VAULT_PAGES;
 
 /// Returns the crate name used in workspace status surfaces.
 pub fn crate_name() -> &'static str {
@@ -342,8 +362,7 @@ pub fn default_vault_pages(kind: VaultKind) -> &'static [DefaultVaultPage] {
 /// Primary Folder that receives starter orientation Pages for a new Vault.
 pub fn default_vault_pages_folder_id(kind: VaultKind) -> &'static str {
     match kind {
-        VaultKind::Personal => "home",
-        VaultKind::Organization => "general",
+        VaultKind::Personal | VaultKind::Organization => "getting-started",
     }
 }
 
@@ -774,28 +793,14 @@ pub fn bootstrap_personal_vault(
 
     let folders = vec![
         root_folder(
-            "home",
-            "home",
+            "getting-started",
+            "getting-started",
             FolderRole::PersonalHome,
             FolderAccessMode::Owner,
         )?,
         root_folder(
-            "projects",
-            "projects",
-            FolderRole::Folder,
-            FolderAccessMode::Owner,
-        )?,
-        root_folder("work", "work", FolderRole::Folder, FolderAccessMode::Owner)?,
-        root_folder("life", "life", FolderRole::Folder, FolderAccessMode::Owner)?,
-        root_folder(
-            "learning",
-            "learning",
-            FolderRole::Folder,
-            FolderAccessMode::Owner,
-        )?,
-        root_folder(
-            "archive",
-            "archive",
+            "restricted",
+            "restricted",
             FolderRole::Folder,
             FolderAccessMode::Owner,
         )?,
@@ -838,46 +843,16 @@ pub fn bootstrap_organization_vault(
 
     let folders = vec![
         root_folder(
-            "vault-ops",
-            "vault-ops",
-            FolderRole::VaultOps,
-            FolderAccessMode::AdminOnly,
-        )?,
-        root_folder(
-            "general",
-            "general",
+            "getting-started",
+            "getting-started",
             FolderRole::General,
             FolderAccessMode::AllMembers,
         )?,
         root_folder(
-            "product",
-            "product",
+            "restricted",
+            "restricted",
             FolderRole::Folder,
-            FolderAccessMode::AllMembers,
-        )?,
-        root_folder(
-            "engineering",
-            "engineering",
-            FolderRole::Folder,
-            FolderAccessMode::AllMembers,
-        )?,
-        root_folder(
-            "marketing",
-            "marketing",
-            FolderRole::Folder,
-            FolderAccessMode::AllMembers,
-        )?,
-        root_folder(
-            "design",
-            "design",
-            FolderRole::Folder,
-            FolderAccessMode::AllMembers,
-        )?,
-        root_folder(
-            "operations",
-            "operations",
-            FolderRole::Folder,
-            FolderAccessMode::AllMembers,
+            FolderAccessMode::Restricted,
         )?,
     ];
 
@@ -1932,14 +1907,26 @@ mod tests {
                 .map(|page| (page.folder_id, page.object_id, page.path))
                 .collect::<Vec<_>>(),
             vec![
-                ("home", "obj_default_agents", "AGENTS.md"),
-                ("home", "obj_default_humans", "HUMANS.md"),
-                ("home", "obj_default_home_scope_config", "config.md"),
-                ("home", "obj_default_home_scope_index", "_index.md"),
-                ("home", "obj_default_home_scope_log", "log.md")
+                ("getting-started", "obj_default_agents", "AGENTS.md"),
+                ("getting-started", "obj_default_humans", "HUMANS.md"),
+                (
+                    "getting-started",
+                    "obj_default_getting-started_scope_config",
+                    "config.md"
+                ),
+                (
+                    "getting-started",
+                    "obj_default_getting-started_scope_index",
+                    "_index.md"
+                ),
+                (
+                    "getting-started",
+                    "obj_default_getting-started_scope_log",
+                    "log.md"
+                )
             ]
         );
-        assert_eq!(pages.len(), 20);
+        assert_eq!(pages.len(), 12);
         assert_eq!(
             pages
                 .iter()
@@ -1948,7 +1935,13 @@ mod tests {
                 .len(),
             pages.len()
         );
-        assert!(pages.iter().any(|page| page.folder_id == "projects"));
+        assert!(pages.iter().any(|page| page.path == "README.md"));
+        assert!(
+            pages
+                .iter()
+                .any(|page| page.path == "wiki/access-and-folders.md")
+        );
+        assert!(pages.iter().any(|page| page.folder_id == "restricted"));
         assert!(pages[0].markdown.contains("Use `fbrain`"));
         assert!(pages[0].markdown.contains("LLM Wiki Rules"));
         assert!(
@@ -1957,7 +1950,7 @@ mod tests {
                 .contains("private, encrypted knowledge workspace")
         );
         let organization_pages = default_vault_pages(VaultKind::Organization);
-        assert_eq!(organization_pages.len(), 20);
+        assert_eq!(organization_pages.len(), 12);
         assert_eq!(
             organization_pages
                 .iter()
@@ -1974,12 +1967,21 @@ mod tests {
         assert!(
             organization_pages
                 .iter()
-                .any(|page| page.folder_id == "engineering")
+                .all(|page| page.folder_id != "product")
         );
-        assert_eq!(default_vault_pages_folder_id(VaultKind::Personal), "home");
+        assert!(
+            organization_pages
+                .iter()
+                .any(|page| page.folder_id == "restricted"
+                    && page.path == "wiki/restricted-folder-example.md")
+        );
+        assert_eq!(
+            default_vault_pages_folder_id(VaultKind::Personal),
+            "getting-started"
+        );
         assert_eq!(
             default_vault_pages_folder_id(VaultKind::Organization),
-            "general"
+            "getting-started"
         );
     }
 
@@ -1994,16 +1996,28 @@ mod tests {
         );
         assert!(output.vault.members.is_empty());
         assert!(output.vault.admins.is_empty());
-        assert_eq!(output.vault.folders.len(), 6);
+        assert_eq!(output.vault.folders.len(), 2);
 
-        let home = &output.vault.folders[0];
-        assert_eq!(home.id, FolderId::new("home").unwrap());
-        assert_eq!(home.role, FolderRole::PersonalHome);
-        assert_eq!(home.access, FolderAccessMode::Owner);
-        assert_eq!(home.current_key_version, 1);
+        let getting_started = &output.vault.folders[0];
         assert_eq!(
-            home.path,
-            SafeRelativePath::new("folder_path", "home").unwrap()
+            getting_started.id,
+            FolderId::new("getting-started").unwrap()
+        );
+        assert_eq!(getting_started.role, FolderRole::PersonalHome);
+        assert_eq!(getting_started.access, FolderAccessMode::Owner);
+        assert_eq!(getting_started.current_key_version, 1);
+        assert_eq!(
+            getting_started.path,
+            SafeRelativePath::new("folder_path", "getting-started").unwrap()
+        );
+
+        let restricted = &output.vault.folders[1];
+        assert_eq!(restricted.id, FolderId::new("restricted").unwrap());
+        assert_eq!(restricted.role, FolderRole::Folder);
+        assert_eq!(restricted.access, FolderAccessMode::Owner);
+        assert_eq!(
+            restricted.path,
+            SafeRelativePath::new("folder_path", "restricted").unwrap()
         );
         assert_eq!(
             output
@@ -2011,7 +2025,7 @@ mod tests {
                 .iter()
                 .map(|grant| grant.folder_id.to_string())
                 .collect::<Vec<_>>(),
-            vec!["home", "projects", "work", "life", "learning", "archive"]
+            vec!["getting-started", "restricted"]
         );
         assert!(
             output
@@ -2039,43 +2053,29 @@ mod tests {
             output.vault.members[0].user_id,
             UserId::new("npub-admin").unwrap()
         );
-        assert_eq!(output.vault.folders.len(), 7);
-        assert_eq!(output.required_key_grants.len(), 7);
+        assert_eq!(output.vault.folders.len(), 2);
+        assert_eq!(output.required_key_grants.len(), 2);
         assert_eq!(
             output
                 .required_key_grants
                 .iter()
                 .map(|grant| grant.folder_id.to_string())
                 .collect::<Vec<_>>(),
-            vec![
-                "vault-ops",
-                "general",
-                "product",
-                "engineering",
-                "marketing",
-                "design",
-                "operations"
-            ]
+            vec!["getting-started", "restricted"]
         );
 
-        let vault_ops = &output.vault.folders[0];
-        assert_eq!(vault_ops.id, FolderId::new("vault-ops").unwrap());
-        assert_eq!(vault_ops.role, FolderRole::VaultOps);
-        assert_eq!(vault_ops.access, FolderAccessMode::AdminOnly);
-
-        let general = &output.vault.folders[1];
-        assert_eq!(general.id, FolderId::new("general").unwrap());
-        assert_eq!(general.role, FolderRole::General);
-        assert_eq!(general.access, FolderAccessMode::AllMembers);
-        assert!(
-            output
-                .vault
-                .folders
-                .iter()
-                .skip(2)
-                .all(|folder| folder.role == FolderRole::Folder
-                    && folder.access == FolderAccessMode::AllMembers)
+        let getting_started = &output.vault.folders[0];
+        assert_eq!(
+            getting_started.id,
+            FolderId::new("getting-started").unwrap()
         );
+        assert_eq!(getting_started.role, FolderRole::General);
+        assert_eq!(getting_started.access, FolderAccessMode::AllMembers);
+
+        let restricted = &output.vault.folders[1];
+        assert_eq!(restricted.id, FolderId::new("restricted").unwrap());
+        assert_eq!(restricted.role, FolderRole::Folder);
+        assert_eq!(restricted.access, FolderAccessMode::Restricted);
     }
 
     #[test]
@@ -2242,24 +2242,16 @@ mod tests {
         assert_eq!(summary.personal.kind, VaultKind::Personal);
         assert_eq!(
             summary.personal.folder_ids,
-            vec!["home", "projects", "work", "life", "learning", "archive"]
+            vec!["getting-started", "restricted"]
         );
-        assert_eq!(summary.personal.required_grants, 6);
+        assert_eq!(summary.personal.required_grants, 2);
 
         assert_eq!(summary.organization.kind, VaultKind::Organization);
         assert_eq!(
             summary.organization.folder_ids,
-            vec![
-                "vault-ops".to_owned(),
-                "general".to_owned(),
-                "product".to_owned(),
-                "engineering".to_owned(),
-                "marketing".to_owned(),
-                "design".to_owned(),
-                "operations".to_owned()
-            ]
+            vec!["getting-started".to_owned(), "restricted".to_owned()]
         );
-        assert_eq!(summary.organization.required_grants, 7);
+        assert_eq!(summary.organization.required_grants, 2);
         assert_eq!(summary.organization.admin_count, 1);
         assert_eq!(summary.organization.member_count, 1);
     }

@@ -1149,8 +1149,13 @@ mod tests {
         assert_eq!(metadata.status(), StatusCode::OK);
         let metadata: VaultMetadataResponse = read_json(metadata).await;
         assert_eq!(metadata.vault_id, "smoke");
-        assert_eq!(metadata.folders.len(), 7);
-        assert!(metadata.folders.iter().any(|folder| folder.id == "general"));
+        assert_eq!(metadata.folders.len(), 2);
+        assert!(
+            metadata
+                .folders
+                .iter()
+                .any(|folder| folder.id == "getting-started")
+        );
 
         let sync_bootstrap = authed_request(
             reopened,
@@ -1339,8 +1344,8 @@ mod tests {
         let metadata: VaultMetadataResponse = read_json(response).await;
         assert_eq!(metadata.vault_id, "acme");
         assert_eq!(metadata.kind, VaultKind::Organization);
-        assert_eq!(metadata.folders.len(), 7);
-        assert_eq!(metadata.grant_count, 7);
+        assert_eq!(metadata.folders.len(), 2);
+        assert_eq!(metadata.grant_count, 2);
         assert!(
             metadata
                 .folders
@@ -1440,7 +1445,7 @@ mod tests {
 
         let invite_body = serde_json::json!({
             "targetNpub": invited_npub,
-            "initialFolderAccess": ["general"],
+            "initialFolderAccess": ["getting-started"],
             "expiresAt": "2099-06-30T00:00:00.000Z",
         })
         .to_string();
@@ -1791,12 +1796,12 @@ mod tests {
         .await;
         assert_eq!(create_vault.status(), StatusCode::OK);
 
-        let object_path = "/_admin/vaults/acme/folders/general/objects/obj_000000000001";
+        let object_path = "/_admin/vaults/acme/folders/getting-started/objects/obj_000000000001";
         let create_body = object_write_body(
             &keys,
             RevisionFixture {
                 vault_id: "acme",
-                folder_id: "general",
+                folder_id: "getting-started",
                 object_id: "obj_000000000001",
                 operation: FolderObjectOperation::Create,
                 revision: 1,
@@ -1833,7 +1838,7 @@ mod tests {
             &keys,
             RevisionFixture {
                 vault_id: "acme",
-                folder_id: "general",
+                folder_id: "getting-started",
                 object_id: "obj_000000000001",
                 operation: FolderObjectOperation::Update,
                 revision: 2,
@@ -1923,7 +1928,7 @@ mod tests {
             &keys,
             RevisionFixture {
                 vault_id: "acme",
-                folder_id: "general",
+                folder_id: "getting-started",
                 object_id: "obj_000000000001",
                 operation: FolderObjectOperation::Move,
                 revision: 3,
@@ -1938,7 +1943,7 @@ mod tests {
             router.clone(),
             &keys,
             "POST",
-            "/_admin/vaults/acme/folders/general/objects/obj_000000000001/move",
+            "/_admin/vaults/acme/folders/getting-started/objects/obj_000000000001/move",
             Some(move_body),
             TEST_NOW,
         )
@@ -1952,7 +1957,7 @@ mod tests {
             &keys,
             TombstoneFixture {
                 vault_id: "acme",
-                folder_id: "general",
+                folder_id: "getting-started",
                 object_id: "obj_000000000001",
                 revision: 4,
                 base_revision: 3,
@@ -2041,8 +2046,8 @@ mod tests {
                     name: DisplayName::new("folder_name", "Strategy").unwrap(),
                     role: FolderRole::Folder,
                     access: FolderAccessMode::Restricted,
-                    parent_folder_id: Some(FolderId::new("general").unwrap()),
-                    path: SafeRelativePath::new("folder_path", "general/Strategy").unwrap(),
+                    parent_folder_id: Some(FolderId::new("getting-started").unwrap()),
+                    path: SafeRelativePath::new("folder_path", "getting-started/Strategy").unwrap(),
                     current_key_version: 1,
                     shared_folder_source: false,
                 },
@@ -2061,7 +2066,11 @@ mod tests {
             )
             .unwrap();
         for (folder_id, object_id, body) in [
-            ("general", "obj_000000000201", "general encrypted payload"),
+            (
+                "getting-started",
+                "obj_000000000201",
+                "getting-started encrypted payload",
+            ),
             ("strategy", "obj_000000000202", "secret encrypted payload"),
         ] {
             store
@@ -2096,13 +2105,19 @@ mod tests {
         assert_eq!(export.status(), StatusCode::OK);
         let export: EncryptedVaultExportResponse = read_json(export).await;
         assert_eq!(export.version, "finite-vault-export-v1");
-        let general = export
+        let getting_started = export
             .objects
             .iter()
-            .find(|object| object.folder_id == "general")
+            .find(|object| object.folder_id == "getting-started")
             .unwrap();
-        assert!(!general.opaque);
-        assert!(general.payload_json.as_ref().unwrap().contains("general"));
+        assert!(!getting_started.opaque);
+        assert!(
+            getting_started
+                .payload_json
+                .as_ref()
+                .unwrap()
+                .contains("getting-started")
+        );
         let strategy = export
             .objects
             .iter()
@@ -2132,12 +2147,12 @@ mod tests {
     async fn object_write_duplicate_retry_returns_original_sequence() {
         let keys = Keys::generate();
         let router = router_with_bootstrapped_org(&keys).await;
-        let path = "/_admin/vaults/acme/folders/general/objects/obj_000000000001";
+        let path = "/_admin/vaults/acme/folders/getting-started/objects/obj_000000000001";
         let body = object_write_body(
             &keys,
             RevisionFixture {
                 vault_id: "acme",
-                folder_id: "general",
+                folder_id: "getting-started",
                 object_id: "obj_000000000001",
                 operation: FolderObjectOperation::Create,
                 revision: 1,
@@ -2174,12 +2189,12 @@ mod tests {
     async fn object_write_rejects_stale_base_bad_ciphertext_hash_and_signer_mismatch() {
         let keys = Keys::generate();
         let router = router_with_bootstrapped_org(&keys).await;
-        let path = "/_admin/vaults/acme/folders/general/objects/obj_000000000001";
+        let path = "/_admin/vaults/acme/folders/getting-started/objects/obj_000000000001";
         let create_body = object_write_body(
             &keys,
             RevisionFixture {
                 vault_id: "acme",
-                folder_id: "general",
+                folder_id: "getting-started",
                 object_id: "obj_000000000001",
                 operation: FolderObjectOperation::Create,
                 revision: 1,
@@ -2205,7 +2220,7 @@ mod tests {
             &keys,
             RevisionFixture {
                 vault_id: "acme",
-                folder_id: "general",
+                folder_id: "getting-started",
                 object_id: "obj_000000000001",
                 operation: FolderObjectOperation::Update,
                 revision: 2,
@@ -2231,7 +2246,7 @@ mod tests {
             &keys,
             RevisionFixture {
                 vault_id: "acme",
-                folder_id: "general",
+                folder_id: "getting-started",
                 object_id: "obj_000000000001",
                 operation: FolderObjectOperation::Update,
                 revision: 2,
@@ -2253,16 +2268,28 @@ mod tests {
         .await;
         assert_error(stale, StatusCode::CONFLICT, "baseRevision does not match").await;
 
-        let good_envelope =
-            object_envelope_json("acme", "general", "obj_000000000002", 1, "good content", 7);
-        let bad_envelope =
-            object_envelope_json("acme", "general", "obj_000000000002", 1, "bad content", 8);
+        let good_envelope = object_envelope_json(
+            "acme",
+            "getting-started",
+            "obj_000000000002",
+            1,
+            "good content",
+            7,
+        );
+        let bad_envelope = object_envelope_json(
+            "acme",
+            "getting-started",
+            "obj_000000000002",
+            1,
+            "bad content",
+            8,
+        );
         let event = revision_event_for_author(
             &keys,
             npub(&keys),
             RevisionEventFixture {
                 vault_id: "acme",
-                folder_id: "general",
+                folder_id: "getting-started",
                 object_id: "obj_000000000002",
                 operation: FolderObjectOperation::Create,
                 revision: 1,
@@ -2283,7 +2310,7 @@ mod tests {
             router.clone(),
             &keys,
             "PUT",
-            "/_admin/vaults/acme/folders/general/objects/obj_000000000002",
+            "/_admin/vaults/acme/folders/getting-started/objects/obj_000000000002",
             Some(bad_hash_body),
             TEST_NOW,
         )
@@ -2298,7 +2325,7 @@ mod tests {
         let signer_keys = Keys::generate();
         let envelope = object_envelope_json(
             "acme",
-            "general",
+            "getting-started",
             "obj_000000000003",
             1,
             "signer mismatch",
@@ -2309,7 +2336,7 @@ mod tests {
             npub(&keys),
             RevisionEventFixture {
                 vault_id: "acme",
-                folder_id: "general",
+                folder_id: "getting-started",
                 object_id: "obj_000000000003",
                 operation: FolderObjectOperation::Create,
                 revision: 1,
@@ -2330,7 +2357,7 @@ mod tests {
             router,
             &keys,
             "PUT",
-            "/_admin/vaults/acme/folders/general/objects/obj_000000000003",
+            "/_admin/vaults/acme/folders/getting-started/objects/obj_000000000003",
             Some(signer_mismatch_body),
             TEST_NOW,
         )
@@ -2354,12 +2381,12 @@ mod tests {
         )
         .await;
         assert_eq!(create_vault.status(), StatusCode::OK);
-        let path = "/_admin/vaults/acme/folders/general/objects/obj_000000000001";
+        let path = "/_admin/vaults/acme/folders/getting-started/objects/obj_000000000001";
         let body = object_write_body(
             &keys,
             RevisionFixture {
                 vault_id: "acme",
-                folder_id: "general",
+                folder_id: "getting-started",
                 object_id: "obj_000000000001",
                 operation: FolderObjectOperation::Create,
                 revision: 1,
@@ -2430,8 +2457,8 @@ mod tests {
             "name": "Strategy",
             "role": "folder",
             "access": "restricted",
-            "parentFolderId": "general",
-            "path": "general/Strategy",
+            "parentFolderId": "getting-started",
+            "path": "getting-started/Strategy",
             "accessUserIds": [member_npub],
             "grants": [
                 folder_key_grant_value("grant-strategy-admin-v1", 1, npub(&admin_keys).as_str()),
@@ -2681,7 +2708,7 @@ mod tests {
 
         let create_body = serde_json::json!({
             "targetNpub": target_npub,
-            "initialFolderAccess": ["general"],
+            "initialFolderAccess": ["getting-started"],
             "expiresAt": "2026-06-30T00:00:00.000Z",
         })
         .to_string();
@@ -2698,7 +2725,10 @@ mod tests {
         let invitation: VaultInvitationResponse = read_json(create).await;
         assert_eq!(invitation.status, "pending");
         assert_eq!(invitation.user_id, target_npub);
-        assert_eq!(invitation.initial_folder_access, vec!["general".to_owned()]);
+        assert_eq!(
+            invitation.initial_folder_access,
+            vec!["getting-started".to_owned()]
+        );
 
         let link_path = format!("/_admin/vault-invitation-links/{}", invitation.invite_code);
         let wrong_view = authed_request(
@@ -2798,8 +2828,8 @@ mod tests {
             "name": "Strategy",
             "role": "folder",
             "access": "restricted",
-            "parentFolderId": "general",
-            "path": "general/Strategy",
+            "parentFolderId": "getting-started",
+            "path": "getting-started/Strategy",
             "accessUserIds": [],
             "grants": [
                 folder_key_grant_value("grant-strategy-admin-v1", 1, npub(&admin_keys).as_str())
@@ -2918,7 +2948,7 @@ mod tests {
             .find(|folder| folder.id == "strategy")
             .expect("strategy folder metadata");
         assert_eq!(strategy.access_user_ids, vec![recipient_npub]);
-        assert_eq!(metadata.grant_count, 9);
+        assert_eq!(metadata.grant_count, 4);
 
         let revoke =
             authed_request(router, &admin_keys, "DELETE", &share_path, None, TEST_NOW).await;
@@ -2965,8 +2995,8 @@ mod tests {
             "name": "Strategy",
             "role": "folder",
             "access": "restricted",
-            "parentFolderId": "general",
-            "path": "general/Strategy",
+            "parentFolderId": "getting-started",
+            "path": "getting-started/Strategy",
             "accessUserIds": [],
             "grants": [
                 folder_key_grant_value("grant-strategy-source-admin-v1", 1, source_admin_npub.as_str())
@@ -3768,8 +3798,8 @@ mod tests {
             name: DisplayName::new("folder_name", "Strategy").unwrap(),
             role: FolderRole::Folder,
             access: FolderAccessMode::Restricted,
-            parent_folder_id: Some(FolderId::new("general").unwrap()),
-            path: SafeRelativePath::new("folder_path", "general/Strategy").unwrap(),
+            parent_folder_id: Some(FolderId::new("getting-started").unwrap()),
+            path: SafeRelativePath::new("folder_path", "getting-started/Strategy").unwrap(),
             current_key_version: 1,
             shared_folder_source: false,
         }

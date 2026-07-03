@@ -2826,22 +2826,14 @@ mod tests {
                 VaultKind::Personal,
                 "personal-defaults",
                 "Personal defaults",
-                vec!["home", "projects", "work", "life", "learning", "archive"],
+                vec!["getting-started", "restricted"],
             ),
             (
                 "organization",
                 VaultKind::Organization,
                 "org-defaults",
                 "Org defaults",
-                vec![
-                    "vault-ops",
-                    "general",
-                    "product",
-                    "engineering",
-                    "marketing",
-                    "design",
-                    "operations",
-                ],
+                vec!["getting-started", "restricted"],
             ),
         ];
 
