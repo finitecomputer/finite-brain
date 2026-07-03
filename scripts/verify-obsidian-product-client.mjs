@@ -197,15 +197,18 @@ function checkStaticShell() {
     "graphEmptyState",
     "graph-icon-button",
     "accessFolderInspector",
+    "access-summary-grid",
+    "accessOverviewButton",
     "accessManageButton",
     "accessShareButton",
     "accessIntentActions",
+    "accessOverviewPanel",
     "accessFlowPanel",
-    "accessManageSection",
-    "accessShareSection",
-    "accessAcceptSection",
+    "accessPeoplePanel",
+    "accessLinksPanel",
     "accessTargetNpubInput",
     "accessShareExpiresAtInput",
+    "accessShareMountInput",
     "grantFolderAccessButton",
     "removeFolderAccessButton",
     "createShareLinkButton",
@@ -213,6 +216,15 @@ function checkStaticShell() {
     "acceptShareLinkButton",
     "revokeShareLinkButton",
     "accessResultPanel",
+    "vaultInvitationPanel",
+    "vaultInviteTargetNpubInput",
+    "vaultInviteFoldersInput",
+    "vaultInviteExpiresAtInput",
+    "createVaultInvitationButton",
+    "revokeVaultInvitationButton",
+    "vaultInviteCodeInput",
+    "getVaultInvitationButton",
+    "acceptVaultInvitationButton",
     "readerModeButton",
     "editorSlashMenu",
     "readerPageContent",
@@ -247,11 +259,16 @@ function checkStaticShell() {
     ".edge.hover-connected",
     ".graph-replay-overlay",
     ".access-inspector",
+    ".access-summary-grid",
+    ".access-segmented-control",
     ".access-flow-panel",
+    ".access-pane",
+    ".access-pane-heading",
     ".access-section",
     ".access-vault-section",
     ".access-folder-browser",
     ".access-field",
+    ".access-checkbox",
     ".access-result",
     ".access-badge",
     ".note-content-empty",
@@ -284,6 +301,15 @@ function checkStaticShell() {
     "graphNeighborIds",
     "accessBadgesForFolder",
     "accessActionRoute",
+    "accessIntentValue",
+    "accessPanelState",
+    "accessPeopleSummary",
+    "buildFolderAccessRemovalRequest",
+    "buildVaultInvitationRequest",
+    "vaultInvitationCreatePath",
+    "vaultInvitationLinkPath",
+    "vaultInvitationAcceptPath",
+    "vaultInvitationRevokePath",
     "markdownFromEditorElement",
     "saveActivePage",
     "splitMarkdownTableRow",
@@ -331,6 +357,9 @@ function checkStaticShell() {
     "header-icon-button",
     "pageVisualEditor",
     "editorModeToggleButton",
+    "accessManageSection",
+    "accessShareSection",
+    "accessAcceptSection",
   ]) {
     assertNotIncludes(html, marker, "Product Client HTML");
   }
@@ -444,9 +473,10 @@ async function main() {
   );
   assert.equal(
     client.accessActionRoute("share-folder", { folderId: "restricted-lab" }).intent,
-    "share"
+    "links"
   );
-  assert.equal(client.accessPanelState("share", restricted).status, "share");
+  assert.equal(client.accessPanelState("links", restricted).mode, "links");
+  assert.equal(client.accessPanelState("links", restricted).status, "restricted");
 
   const summary = {
     folders: folders.length,
