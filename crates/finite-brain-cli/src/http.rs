@@ -2,12 +2,9 @@ use std::env;
 use std::net::IpAddr;
 use std::time::Duration;
 
-use nostr::Keys;
-
 use crate::{
     CliEnvironment, CliError, HealthCheck, HttpResponse, SyncOnceReport, find_agent_state,
-    option_value, read_agent_state, read_auth_required, run_working_tree_sync,
-    signed_http_auth_header,
+    load_signer, option_value, read_agent_state, run_working_tree_sync, signed_http_auth_header,
 };
 
 pub(crate) const FINITE_BRAIN_SERVER_URL_ENV: &str = "FINITE_BRAIN_SERVER_URL";
@@ -55,10 +52,8 @@ pub(crate) fn signed_json_request_to_server(
 ) -> Result<serde_json::Value, CliError> {
     let body = body.map(|body| serde_json::to_vec(&body)).transpose()?;
     let url = absolute_server_url(server_url, path);
-    let auth = read_auth_required(env)?;
-    let keys = Keys::parse(&auth.secret_key)
-        .map_err(|error| CliError::InvalidSigner(error.to_string()))?;
-    let authorization = signed_http_auth_header(&keys, method, &url, body.as_deref())?;
+    let signer = load_signer(env)?;
+    let authorization = signed_http_auth_header(&signer.keys, method, &url, body.as_deref())?;
     let response = http_request(method, &url, Some(&authorization), body.as_deref())?;
     if !(200..300).contains(&response.status) {
         return Err(CliError::Http(format!(

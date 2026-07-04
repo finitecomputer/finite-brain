@@ -28,7 +28,7 @@ pub(crate) use sync_engine::*;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
-use std::io::Write;
+use std::io::{BufRead, Write};
 use std::path::PathBuf;
 
 use finite_brain_core::portability::{
@@ -42,24 +42,41 @@ use finite_brain_core::{
     default_vault_pages, encrypt_folder_object,
 };
 use finite_nostr::{NostrPublicKey, decrypt_nip44, encrypt_nip44};
-use nostr::{Keys, Kind};
+use nostr::Kind;
 
-pub(crate) const AUTH_VERSION: &str = "finitebrain-agent-auth-v1";
 pub(crate) const AGENT_STATE_VERSION: &str = "finitebrain-agent-state-v1";
 pub(crate) const VAULT_DIRECTORY_VERSION: &str = "finite-vault-directory-v1";
 pub(crate) const WORKING_TREE_STATE_VERSION: &str = "finite-vault-working-tree-state-v1";
 pub(crate) const APP_SPECIFIC_KIND: u16 = 30_078;
 const CIPHER_AES_256_GCM: &str = "AES-256-GCM";
 
-/// Run `fbrain` using process args and stdout.
+/// Run `fbrain` using process args, stdin, and stdout.
 pub fn run_from_process(env: CliEnvironment) -> Result<(), CliError> {
     let args = std::env::args().skip(1).collect::<Vec<_>>();
     let mut stdout = std::io::stdout();
-    run_with_env(args, env, &mut stdout)
+    run_with_io(args, env, &mut std::io::stdin(), &mut stdout)
 }
 
 /// Run `fbrain` with injected args and output. Tests use this public seam.
+/// Commands that read a secret from stdin (`auth import`) read from the
+/// process stdin; use [`run_with_io`] to inject it.
 pub fn run_with_env<I, S, W>(args: I, env: CliEnvironment, output: &mut W) -> Result<(), CliError>
+where
+    I: IntoIterator<Item = S>,
+    S: Into<String>,
+    W: Write,
+{
+    run_with_io(args, env, &mut std::io::stdin(), output)
+}
+
+/// Run `fbrain` with injected args, input, and output. `input` stands in
+/// for stdin and is only read by `fbrain auth import` without `--file`.
+pub fn run_with_io<I, S, W>(
+    args: I,
+    env: CliEnvironment,
+    input: &mut dyn std::io::Read,
+    output: &mut W,
+) -> Result<(), CliError>
 where
     I: IntoIterator<Item = S>,
     S: Into<String>,
@@ -76,7 +93,7 @@ where
         "help" | "--help" | "-h" => help(output),
         "version" | "--version" | "-V" => version(output),
         "doctor" => doctor(&args[1..], &env, json, output),
-        "auth" => auth(&args[1..], &env, json, output),
+        "auth" => auth(&args[1..], &env, json, input, output),
         "signer" => signer(&args[1..], &env, json, output),
         "daemon" => daemon(&args[1..], &env, json, output),
         "sync" => sync(&args[1..], &env, json, output),
@@ -100,7 +117,7 @@ where
 fn help<W: Write>(output: &mut W) -> Result<(), CliError> {
     writeln!(
         output,
-        "fbrain [--config-dir <path>] doctor\nauth status|login|logout\nsigner status|public-key|sign|encrypt|decrypt\ndaemon status|start|stop|logs|tick|watch\nsync status|now [--summary]\nopen <vault-id> [path]\nstatus [--json]\nunlock [folder|--all]\nconflicts\nresolve <id>\nactivity\naccess explain|list|grant|revoke\nvault create|metadata|export\nfolder create|list\nmount list\npermissions add-member|remove-member|add-admin|remove-admin|grant-folder\ninvites create|show --code invite-...|accept --code invite-...|accept --vault <vault-id> --id invitation-...|revoke\nshare link|accept|revoke|source|folder-invite|folder-accept"
+        "fbrain [--config-dir <path>] doctor\nauth status|import [--file <path>]\nsigner status|public-key|sign|encrypt|decrypt\ndaemon status|start|stop|logs|tick|watch\nsync status|now [--summary]\nopen <vault-id> [path]\nstatus [--json]\nunlock [folder|--all]\nconflicts\nresolve <id>\nactivity\naccess explain|list|grant|revoke\nvault create|metadata|export\nfolder create|list\nmount list\npermissions add-member|remove-member|add-admin|remove-admin|grant-folder\ninvites create|show --code invite-...|accept --code invite-...|accept --vault <vault-id> --id invitation-...|revoke\nshare link|accept|revoke|source|folder-invite|folder-accept"
     )?;
     Ok(())
 }
@@ -125,7 +142,7 @@ fn doctor<W: Write>(
 ) -> Result<(), CliError> {
     let server_url = server_url_for_optional_command(env, args);
     let working_tree = find_agent_state(&env.cwd).ok().flatten();
-    let auth = read_auth_optional(env)?;
+    let identity = load_identity_optional(env)?;
     let daemon_state = working_tree
         .as_ref()
         .and_then(|root| read_agent_state(root).ok())
@@ -137,10 +154,16 @@ fn doctor<W: Write>(
         .unwrap_or_else(|| HealthCheck::skipped("no server URL configured"));
     let report = DoctorReport {
         cli: CheckState::ok("fbrain CLI is available"),
-        auth: auth
+        auth: identity
             .as_ref()
-            .map(|auth| CheckState::ok(format!("acting npub {}", auth.npub)))
-            .unwrap_or_else(|| CheckState::warn("no local signer configured")),
+            .map(|identity| {
+                CheckState::ok(format!("acting npub {} (shared Finite identity)", identity.npub()))
+            })
+            .unwrap_or_else(|| {
+                CheckState::warn(
+                    "no Finite identity yet; it is minted on first signing use, or adopt an existing secret with fbrain auth import",
+                )
+            }),
         working_tree: working_tree
             .as_ref()
             .map(|root| CheckState::ok(format!("Vault Working Tree at {}", root.display())))
@@ -169,58 +192,99 @@ fn auth<W: Write>(
     args: &[String],
     env: &CliEnvironment,
     json: bool,
+    input: &mut dyn std::io::Read,
     output: &mut W,
 ) -> Result<(), CliError> {
     match args.first().map(String::as_str).unwrap_or("status") {
+        // Shows the shared Finite identity; never mints (CLI-CONVENTIONS.md).
         "status" => {
             let status = auth_status(env)?;
             if json {
                 write_json(output, &status)
             } else {
                 match status.state.as_str() {
-                    "authenticated" => writeln!(
-                        output,
-                        "authenticated as {} ({})",
-                        status.npub.as_deref().unwrap_or("-"),
-                        status.signer
-                    )?,
-                    _ => writeln!(output, "not authenticated")?,
+                    "authenticated" => {
+                        writeln!(
+                            output,
+                            "authenticated as {} ({})",
+                            status.npub.as_deref().unwrap_or("-"),
+                            status.signer
+                        )?;
+                        writeln!(output, "identity file: {}", status.identity_file)?;
+                        writeln!(
+                            output,
+                            "created by {} at {}",
+                            status.created_by.as_deref().unwrap_or("-"),
+                            status.created_at.as_deref().unwrap_or("-")
+                        )?;
+                    }
+                    _ => {
+                        writeln!(output, "no Finite identity yet")?;
+                        writeln!(
+                            output,
+                            "identity file: {} (not created)",
+                            status.identity_file
+                        )?;
+                        writeln!(
+                            output,
+                            "mint: run any fbrain command that signs, or bring your own: fbrain auth import"
+                        )?;
+                    }
                 }
                 Ok(())
             }
         }
-        "login" => {
-            let nsec = option_value(args, "--nsec")
-                .or_else(|| args.get(1).cloned())
-                .ok_or(CliError::MissingArgument("--nsec"))?;
-            let auth = PrototypeAuth::from_nsec(&nsec, timestamp(env))?;
-            write_auth(env, &auth)?;
-            let status = auth_status(env)?;
+        // Adopts an existing secret as the shared Finite identity. The
+        // secret comes from stdin or --file, never argv: flag values leak
+        // into ps output and shell history (CLI-CONVENTIONS.md). Refuses to
+        // overwrite an existing identity.
+        "import" => {
+            let secret_text = match option_value(args, "--file") {
+                Some(path) => {
+                    let path = expand_cli_path(&path);
+                    fs::read_to_string(&path)?
+                }
+                None => read_secret_text(input)?,
+            };
+            let identity = import_identity(env, &secret_text)?;
+            let identity_file = identity_paths(env)?.identity_file();
             if json {
-                write_json(output, &status)
-            } else {
-                writeln!(
+                write_json(
                     output,
-                    "authenticated as {}",
-                    status.npub.unwrap_or_default()
-                )?;
-                Ok(())
-            }
-        }
-        "logout" => {
-            let path = auth_path(env);
-            if path.exists() {
-                fs::remove_file(path)?;
-            }
-            if json {
-                write_json(output, &serde_json::json!({ "state": "logged_out" }))
+                    &serde_json::json!({
+                        "npub": identity.npub(),
+                        "identityFile": identity_file.display().to_string()
+                    }),
+                )
             } else {
-                writeln!(output, "logged out")?;
+                writeln!(output, "imported Finite identity {}", identity.npub())?;
+                writeln!(output, "identity file: {}", identity_file.display())?;
                 Ok(())
             }
         }
+        // Hard cut: the plaintext auth.json prototype is gone. Keep explicit
+        // guidance for the removed verbs instead of "unknown command".
+        "login" => Err(CliError::Unsupported(
+            "fbrain auth login was replaced by fbrain auth import; pipe the secret via stdin or --file <path> (never argv)".to_owned(),
+        )),
+        "logout" => Err(CliError::Unsupported(
+            "fbrain auth logout was removed: the identity is shared by every Finite tool; move ~/.finite/identity/identity.json aside by hand if you mean it".to_owned(),
+        )),
         other => Err(CliError::InvalidCommand(format!("auth {other}"))),
     }
+}
+
+/// Read the secret for `fbrain auth import` from stdin: one trimmed line
+/// (`ImportSecret::parse` owns validation and never echoes the input).
+fn read_secret_text(input: &mut dyn std::io::Read) -> Result<String, CliError> {
+    let mut text = String::new();
+    std::io::BufReader::new(input).read_line(&mut text)?;
+    if text.trim().is_empty() {
+        return Err(CliError::InvalidInput(
+            "expected an nsec1... or 64-char hex secret on stdin (or use --file <path>)".to_owned(),
+        ));
+    }
+    Ok(text)
 }
 
 fn signer<W: Write>(
@@ -230,9 +294,15 @@ fn signer<W: Write>(
     output: &mut W,
 ) -> Result<(), CliError> {
     match args.first().map(String::as_str).unwrap_or("status") {
-        "status" => auth(&["status".to_owned()], env, json, output),
+        "status" => auth(
+            &["status".to_owned()],
+            env,
+            json,
+            &mut std::io::empty(),
+            output,
+        ),
         "public-key" | "get-public-key" => {
-            let auth = read_auth_required(env)?;
+            let auth = load_signer(env)?;
             if json {
                 write_json(output, &serde_json::json!({ "npub": auth.npub }))
             } else {
@@ -765,14 +835,16 @@ fn open_vault<W: Write>(
     }
     fs::create_dir_all(path.join(".finitebrain/encrypted-sync"))?;
     let now = timestamp(env);
-    let auth = read_auth_optional(env)?;
+    // Opening a Vault Working Tree needs the acting identity (it records the
+    // owner npub and immediately attempts a signed sync): mint on use.
+    let auth = load_signer(env)?;
     let directory = VaultDirectoryManifest {
         version: VAULT_DIRECTORY_VERSION.to_owned(),
         vault: VaultDirectoryVaultSummary {
             id: vault_id.to_owned(),
             kind: "unknown".to_owned(),
             name: vault_id.to_owned(),
-            owner_npub: auth.as_ref().map(|auth| auth.npub.clone()),
+            owner_npub: Some(auth.npub.clone()),
         },
         working_tree: VaultDirectoryPath {
             path: ".".to_owned(),
@@ -803,7 +875,7 @@ fn open_vault<W: Write>(
     state.server_url = server_url;
     state.daemon.state = DaemonRunState::Running;
     state.daemon.last_started_at = Some(now.clone());
-    state.auth_npub = auth.map(|auth| auth.npub);
+    state.auth_npub = Some(auth.npub);
     state.add_activity(
         now,
         "working_tree.opened",
@@ -1014,7 +1086,7 @@ fn bootstrap_plan_for_vault_create(
     kind: &str,
     name: &str,
 ) -> Result<VaultCreateBootstrapPlan, CliError> {
-    let auth = read_auth_required(env)?;
+    let auth = load_signer(env)?;
     let (vault_kind, output) = match kind {
         "personal" => (
             VaultKind::Personal,
@@ -1071,9 +1143,8 @@ fn write_default_vault_pages_for_create(
     vault_id: &str,
     plan: &VaultCreateBootstrapPlan,
 ) -> Result<(), CliError> {
-    let auth = read_auth_required(env)?;
-    let keys = Keys::parse(&auth.secret_key)
-        .map_err(|error| CliError::InvalidSigner(error.to_string()))?;
+    let auth = load_signer(env)?;
+    let keys = auth.keys.clone();
     let key_version = 1;
 
     for page in default_vault_pages(plan.vault_kind) {
@@ -1397,7 +1468,7 @@ fn folder<W: Write>(
             let access_users = option_values(args, "--member");
             let recipients = folder_required_recipients(&metadata, &access, &access_users)?;
             let folder_key = FolderKey::generate();
-            let auth = read_auth_required(env)?;
+            let auth = load_signer(env)?;
             let event = admin_access_change_event(
                 env,
                 &vault_id,
@@ -1610,7 +1681,7 @@ fn permissions<W: Write>(
                 .map(|folder| folder.current_key_version)
                 .ok_or_else(|| CliError::NotFound(format!("folder {folder_id}")))?;
             let folder_key = opened_folder_key(env, &folder_id, key_version)?;
-            let auth = read_auth_required(env)?;
+            let auth = load_signer(env)?;
             let event = admin_access_change_event(
                 env,
                 &vault_id,
@@ -1735,7 +1806,7 @@ fn share<W: Write>(
                 .map(|folder| folder.current_key_version)
                 .ok_or_else(|| CliError::NotFound(format!("folder {folder_id}")))?;
             let folder_key = opened_folder_key(env, &folder_id, key_version)?;
-            let auth = read_auth_required(env)?;
+            let auth = load_signer(env)?;
             let event = admin_access_change_event(
                 env,
                 &vault_id,
@@ -1821,7 +1892,7 @@ fn share<W: Write>(
                 .map(|folder| folder.current_key_version)
                 .ok_or_else(|| CliError::NotFound(format!("folder {folder_id}")))?;
             let folder_key = opened_folder_key(env, &folder_id, key_version)?;
-            let auth = read_auth_required(env)?;
+            let auth = load_signer(env)?;
             let event = admin_access_change_event(
                 env,
                 &vault_id,
@@ -1882,6 +1953,7 @@ mod tests {
             cwd: tmp.path().to_path_buf(),
             config_dir: tmp.path().join("config"),
             now: Some("2026-06-24T20:46:36Z".to_owned()),
+            finite_home: Some(tmp.path().join("finite-home")),
         }
     }
 
@@ -1889,6 +1961,22 @@ mod tests {
         let mut output = Vec::new();
         run_with_env(args.iter().copied(), env_for(tmp), &mut output).unwrap();
         String::from_utf8(output).unwrap()
+    }
+
+    /// Plant a known secret as the shared Finite identity for this test
+    /// environment (setup shorthand; the CLI import path has its own tests).
+    fn import_identity_for(env: &CliEnvironment, secret: &str) {
+        let paths = identity_paths(env).unwrap();
+        finite_identity::FiniteIdentity::import(
+            &paths,
+            finite_identity::ImportSecret::parse(secret).unwrap(),
+            "test-setup/0.0.0",
+        )
+        .unwrap();
+    }
+
+    fn import_identity_secret(tmp: &TempDir, secret: &str) {
+        import_identity_for(&env_for(tmp), secret);
     }
 
     fn start_conflict_sync_server() -> (String, thread::JoinHandle<Vec<String>>) {
@@ -2667,32 +2755,178 @@ mod tests {
         (url, handle)
     }
 
+    const TEST_SECRET_HEX: &str =
+        "0000000000000000000000000000000000000000000000000000000000000001";
+
+    fn npub_for_secret(secret: &str) -> String {
+        let keys = Keys::parse(secret).unwrap();
+        NostrPublicKey::from_protocol(keys.public_key())
+            .to_npub()
+            .unwrap()
+    }
+
+    fn identity_file_for(tmp: &TempDir) -> std::path::PathBuf {
+        identity_paths(&env_for(tmp)).unwrap().identity_file()
+    }
+
+    /// No file under fbrain's config dir may contain the secret; the shared
+    /// identity file is the only place it lives.
+    fn assert_config_dir_has_no_secret(tmp: &TempDir, secret: &str) {
+        let config_dir = env_for(tmp).config_dir;
+        assert!(!config_dir.join("auth.json").exists());
+        if let Ok(entries) = fs::read_dir(&config_dir) {
+            for entry in entries.flatten() {
+                let body = fs::read_to_string(entry.path()).unwrap_or_default();
+                assert!(
+                    !body.contains(secret),
+                    "{} leaks the secret",
+                    entry.path().display()
+                );
+            }
+        }
+    }
+
     #[test]
-    fn auth_login_status_and_logout_are_stateful() {
+    fn auth_status_reports_missing_identity_and_never_mints() {
         let tmp = TempDir::new().unwrap();
-        let output = run(
-            &tmp,
-            &[
-                "auth",
-                "login",
-                "--nsec",
-                "0000000000000000000000000000000000000000000000000000000000000001",
-                "--json",
-            ],
-        );
-        let json: Value = serde_json::from_str(&output).unwrap();
-        assert_eq!(json["state"], "authenticated");
-        assert_eq!(json["signer"], "local-nostr-keypair");
-        assert!(json["npub"].as_str().unwrap().starts_with("npub"));
-
-        let status = run(&tmp, &["auth", "status", "--json"]);
-        let json: Value = serde_json::from_str(&status).unwrap();
-        assert_eq!(json["capabilities"][1], "signEvent");
-
-        assert_eq!(run(&tmp, &["auth", "logout"]).trim(), "logged out");
         let status = run(&tmp, &["auth", "status", "--json"]);
         let json: Value = serde_json::from_str(&status).unwrap();
         assert_eq!(json["state"], "missing");
+        assert_eq!(json["signer"], "none");
+        assert_eq!(json["npub"], Value::Null);
+        assert_eq!(
+            json["identityFile"],
+            identity_file_for(&tmp).display().to_string()
+        );
+        // Status must never mint (finite-identity CLI-CONVENTIONS.md).
+        assert!(!identity_file_for(&tmp).exists());
+        run(&tmp, &["auth", "status"]);
+        run(&tmp, &["status", "--json"]);
+        run(&tmp, &["doctor"]);
+        assert!(!identity_file_for(&tmp).exists());
+    }
+
+    #[test]
+    fn auth_status_reports_shared_identity_fields() {
+        let tmp = TempDir::new().unwrap();
+        import_identity_secret(&tmp, TEST_SECRET_HEX);
+        let status = run(&tmp, &["auth", "status", "--json"]);
+        let json: Value = serde_json::from_str(&status).unwrap();
+        assert_eq!(json["state"], "authenticated");
+        assert_eq!(json["signer"], "finite-identity");
+        assert_eq!(json["npub"], npub_for_secret(TEST_SECRET_HEX));
+        assert_eq!(
+            json["identityFile"],
+            identity_file_for(&tmp).display().to_string()
+        );
+        assert_eq!(json["createdBy"], "test-setup/0.0.0");
+        assert!(json["createdAt"].as_str().is_some());
+        assert_eq!(
+            json["configDir"],
+            env_for(&tmp).config_dir.display().to_string()
+        );
+    }
+
+    #[test]
+    fn auth_import_reads_the_secret_from_stdin() {
+        let tmp = TempDir::new().unwrap();
+        let mut input = format!("{TEST_SECRET_HEX}\n").into_bytes();
+        let mut input = std::io::Cursor::new(&mut input);
+        let mut output = Vec::new();
+        run_with_io(
+            ["auth", "import", "--json"],
+            env_for(&tmp),
+            &mut input,
+            &mut output,
+        )
+        .unwrap();
+        let json: Value = serde_json::from_slice(&output).unwrap();
+        assert_eq!(json["npub"], npub_for_secret(TEST_SECRET_HEX));
+        assert_eq!(
+            json["identityFile"],
+            identity_file_for(&tmp).display().to_string()
+        );
+        assert!(identity_file_for(&tmp).exists());
+        assert_config_dir_has_no_secret(&tmp, TEST_SECRET_HEX);
+    }
+
+    #[test]
+    fn auth_import_reads_the_secret_from_a_file_and_never_argv() {
+        let tmp = TempDir::new().unwrap();
+        let secret_path = tmp.path().join("secret.txt");
+        fs::write(&secret_path, format!("{TEST_SECRET_HEX}\n")).unwrap();
+        let output = run(
+            &tmp,
+            &["auth", "import", "--file", secret_path.to_str().unwrap()],
+        );
+        assert!(output.contains(&npub_for_secret(TEST_SECRET_HEX)));
+        assert!(!output.contains(TEST_SECRET_HEX), "secret echoed back");
+        assert!(identity_file_for(&tmp).exists());
+        assert_config_dir_has_no_secret(&tmp, TEST_SECRET_HEX);
+
+        // The prototype login verb is a hard cut, not a silent alias.
+        let error = run_with_env(
+            ["auth", "login", "--nsec", TEST_SECRET_HEX],
+            env_for(&tmp),
+            &mut Vec::new(),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("fbrain auth import"));
+        let error = run_with_env(["auth", "logout"], env_for(&tmp), &mut Vec::new()).unwrap_err();
+        assert!(error.to_string().contains("shared"));
+    }
+
+    #[test]
+    fn auth_import_refuses_to_overwrite_an_existing_identity() {
+        let tmp = TempDir::new().unwrap();
+        import_identity_secret(&tmp, TEST_SECRET_HEX);
+        let other_secret = "0000000000000000000000000000000000000000000000000000000000000002";
+        let secret_path = tmp.path().join("secret.txt");
+        fs::write(&secret_path, other_secret).unwrap();
+        let error = run_with_env(
+            ["auth", "import", "--file", secret_path.to_str().unwrap()],
+            env_for(&tmp),
+            &mut Vec::new(),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("already exists"));
+        // The existing identity is untouched.
+        let status = run(&tmp, &["auth", "status", "--json"]);
+        let json: Value = serde_json::from_str(&status).unwrap();
+        assert_eq!(json["npub"], npub_for_secret(TEST_SECRET_HEX));
+    }
+
+    #[test]
+    fn commands_that_need_the_key_mint_the_shared_identity_on_first_use() {
+        let tmp = TempDir::new().unwrap();
+        assert!(!identity_file_for(&tmp).exists());
+        let npub = run(&tmp, &["signer", "public-key"]).trim().to_owned();
+        assert!(npub.starts_with("npub"));
+        assert!(identity_file_for(&tmp).exists());
+        // Repeat use keeps the same key.
+        assert_eq!(run(&tmp, &["signer", "public-key"]).trim(), npub);
+        // The mint recorded fbrain as the creating tool.
+        let status = run(&tmp, &["auth", "status", "--json"]);
+        let json: Value = serde_json::from_str(&status).unwrap();
+        assert_eq!(
+            json["createdBy"],
+            format!("fbrain/{}", env!("CARGO_PKG_VERSION"))
+        );
+        assert_config_dir_has_no_secret(&tmp, TEST_SECRET_HEX);
+    }
+
+    #[test]
+    fn existing_shared_identity_from_another_tool_is_found_not_replaced() {
+        let tmp = TempDir::new().unwrap();
+        // Another Finite tool minted first: plant a crate-format identity.
+        let paths = identity_paths(&env_for(&tmp)).unwrap();
+        let minted =
+            finite_identity::FiniteIdentity::load_or_generate(&paths, "finitechat/0.0.0").unwrap();
+        let npub = run(&tmp, &["signer", "public-key"]).trim().to_owned();
+        assert_eq!(npub, minted.npub());
+        let status = run(&tmp, &["auth", "status", "--json"]);
+        let json: Value = serde_json::from_str(&status).unwrap();
+        assert_eq!(json["createdBy"], "finitechat/0.0.0");
     }
 
     #[test]
@@ -2709,27 +2943,13 @@ mod tests {
     }
 
     #[test]
-    fn global_config_dir_redirects_auth_state() {
+    fn global_config_dir_never_holds_the_identity() {
         let tmp = TempDir::new().unwrap();
+        import_identity_secret(&tmp, TEST_SECRET_HEX);
         let config_dir = tmp.path().join("agent-config");
-        let mut output = Vec::new();
-        run_with_env(
-            [
-                "--config-dir",
-                config_dir.to_str().unwrap(),
-                "auth",
-                "login",
-                "--nsec",
-                "0000000000000000000000000000000000000000000000000000000000000001",
-            ],
-            env_for(&tmp),
-            &mut output,
-        )
-        .unwrap();
 
-        assert!(config_dir.join("auth.json").exists());
-        assert!(!tmp.path().join("config/auth.json").exists());
-
+        // --config-dir redirects fbrain state, but the identity stays in the
+        // shared location: no auth.json anywhere.
         let mut output = Vec::new();
         run_with_env(
             [
@@ -2746,19 +2966,20 @@ mod tests {
         let json: Value = serde_json::from_slice(&output).unwrap();
         assert_eq!(json["state"], "authenticated");
         assert_eq!(json["configDir"], config_dir.display().to_string());
+        assert_eq!(
+            json["identityFile"],
+            identity_file_for(&tmp).display().to_string()
+        );
+        assert!(!config_dir.join("auth.json").exists());
+        assert!(!tmp.path().join("config/auth.json").exists());
     }
 
     #[test]
     fn open_creates_working_tree_and_status_json() {
         let tmp = TempDir::new().unwrap();
-        run(
+        import_identity_secret(
             &tmp,
-            &[
-                "auth",
-                "login",
-                "--nsec",
-                "0000000000000000000000000000000000000000000000000000000000000001",
-            ],
+            "0000000000000000000000000000000000000000000000000000000000000001",
         );
         let tree = tmp.path().join("agent-vault");
         let output = run(
@@ -2794,7 +3015,7 @@ mod tests {
     fn grant_folder_uses_opened_local_folder_key() {
         let tmp = TempDir::new().unwrap();
         let secret = "0000000000000000000000000000000000000000000000000000000000000001";
-        run(&tmp, &["auth", "login", "--nsec", secret]);
+        import_identity_secret(&tmp, secret);
         let admin_npub = run(&tmp, &["signer", "public-key"]).trim().to_owned();
         let folder_key = FolderKey::from_bytes([7; 32]);
         let tree = tmp.path().join("org");
@@ -2857,7 +3078,7 @@ mod tests {
         for (kind, vault_kind, vault_id, name, expected_grant_folders) in cases {
             let tmp = TempDir::new().unwrap();
             let secret = "0000000000000000000000000000000000000000000000000000000000000001";
-            run(&tmp, &["auth", "login", "--nsec", secret]);
+            import_identity_secret(&tmp, secret);
             let actor_npub = run(&tmp, &["signer", "public-key"]).trim().to_owned();
             let default_pages = finite_brain_core::default_vault_pages(vault_kind);
             let (server_url, server) = start_ok_capture_server(1 + default_pages.len());
@@ -2946,14 +3167,9 @@ mod tests {
     #[test]
     fn folder_mount_and_access_list_commands_use_typed_metadata() {
         let tmp = TempDir::new().unwrap();
-        run(
+        import_identity_secret(
             &tmp,
-            &[
-                "auth",
-                "login",
-                "--nsec",
-                "0000000000000000000000000000000000000000000000000000000000000001",
-            ],
+            "0000000000000000000000000000000000000000000000000000000000000001",
         );
         let (server_url, server) = start_metadata_listing_server(3);
 
@@ -3063,14 +3279,9 @@ mod tests {
     #[test]
     fn access_revoke_with_rotation_body_uses_safe_delete_route() {
         let tmp = TempDir::new().unwrap();
-        run(
+        import_identity_secret(
             &tmp,
-            &[
-                "auth",
-                "login",
-                "--nsec",
-                "0000000000000000000000000000000000000000000000000000000000000001",
-            ],
+            "0000000000000000000000000000000000000000000000000000000000000001",
         );
         let body_path = tmp.path().join("rotation-body.json");
         fs::write(
@@ -3129,14 +3340,9 @@ mod tests {
     #[test]
     fn invites_create_posts_initial_folder_access() {
         let tmp = TempDir::new().unwrap();
-        run(
+        import_identity_secret(
             &tmp,
-            &[
-                "auth",
-                "login",
-                "--nsec",
-                "0000000000000000000000000000000000000000000000000000000000000001",
-            ],
+            "0000000000000000000000000000000000000000000000000000000000000001",
         );
         let (server_url, server) = start_ok_capture_server(1);
 
@@ -3173,14 +3379,9 @@ mod tests {
     #[test]
     fn invites_code_commands_reject_invitation_ids_locally() {
         let tmp = TempDir::new().unwrap();
-        run(
+        import_identity_secret(
             &tmp,
-            &[
-                "auth",
-                "login",
-                "--nsec",
-                "0000000000000000000000000000000000000000000000000000000000000001",
-            ],
+            "0000000000000000000000000000000000000000000000000000000000000001",
         );
 
         let mut output = Vec::new();
@@ -3226,14 +3427,9 @@ mod tests {
     #[test]
     fn invites_accept_routes_codes_and_ids_explicitly() {
         let tmp = TempDir::new().unwrap();
-        run(
+        import_identity_secret(
             &tmp,
-            &[
-                "auth",
-                "login",
-                "--nsec",
-                "0000000000000000000000000000000000000000000000000000000000000001",
-            ],
+            "0000000000000000000000000000000000000000000000000000000000000001",
         );
         let (server_url, server) = start_ok_capture_server(2);
 
@@ -3287,10 +3483,10 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let admin_secret = "0000000000000000000000000000000000000000000000000000000000000001";
         let sharee_secret = "0000000000000000000000000000000000000000000000000000000000000002";
-        run(&tmp, &["auth", "login", "--nsec", admin_secret]);
+        import_identity_secret(&tmp, admin_secret);
         let admin_npub = run(&tmp, &["signer", "public-key"]).trim().to_owned();
         let sharee_tmp = TempDir::new().unwrap();
-        run(&sharee_tmp, &["auth", "login", "--nsec", sharee_secret]);
+        import_identity_secret(&sharee_tmp, sharee_secret);
         let sharee_npub = run(&sharee_tmp, &["signer", "public-key"])
             .trim()
             .to_owned();
@@ -3339,13 +3535,10 @@ mod tests {
         let admin_secret = "0000000000000000000000000000000000000000000000000000000000000001";
         let destination_admin_secret =
             "0000000000000000000000000000000000000000000000000000000000000002";
-        run(&tmp, &["auth", "login", "--nsec", admin_secret]);
+        import_identity_secret(&tmp, admin_secret);
         let admin_npub = run(&tmp, &["signer", "public-key"]).trim().to_owned();
         let destination_tmp = TempDir::new().unwrap();
-        run(
-            &destination_tmp,
-            &["auth", "login", "--nsec", destination_admin_secret],
-        );
+        import_identity_secret(&destination_tmp, destination_admin_secret);
         let destination_admin_npub = run(&destination_tmp, &["signer", "public-key"])
             .trim()
             .to_owned();
@@ -3477,14 +3670,9 @@ mod tests {
     #[test]
     fn daemon_watch_once_runs_sync_and_stops_cleanly() {
         let tmp = TempDir::new().unwrap();
-        run(
+        import_identity_secret(
             &tmp,
-            &[
-                "auth",
-                "login",
-                "--nsec",
-                "0000000000000000000000000000000000000000000000000000000000000001",
-            ],
+            "0000000000000000000000000000000000000000000000000000000000000001",
         );
         let tree = tmp.path().join("vault");
         run(&tmp, &["open", "vault", tree.to_str().unwrap()]);
@@ -3546,14 +3734,9 @@ mod tests {
     #[test]
     fn daemon_watch_file_strategy_skips_idle_ticks() {
         let tmp = TempDir::new().unwrap();
-        run(
+        import_identity_secret(
             &tmp,
-            &[
-                "auth",
-                "login",
-                "--nsec",
-                "0000000000000000000000000000000000000000000000000000000000000001",
-            ],
+            "0000000000000000000000000000000000000000000000000000000000000001",
         );
         let tree = tmp.path().join("vault");
         run(&tmp, &["open", "vault", tree.to_str().unwrap()]);
@@ -3601,14 +3784,9 @@ mod tests {
     #[test]
     fn daemon_watch_once_applies_incremental_remote_records() {
         let tmp = TempDir::new().unwrap();
-        run(
+        import_identity_secret(
             &tmp,
-            &[
-                "auth",
-                "login",
-                "--nsec",
-                "0000000000000000000000000000000000000000000000000000000000000001",
-            ],
+            "0000000000000000000000000000000000000000000000000000000000000001",
         );
         let folder_key = FolderKey::from_bytes([8; 32]);
         let tree = setup_incremental_tree(&tmp, &folder_key, 0);
@@ -3683,14 +3861,9 @@ mod tests {
     #[test]
     fn daemon_watch_once_records_blocked_sync_without_crashing() {
         let tmp = TempDir::new().unwrap();
-        run(
+        import_identity_secret(
             &tmp,
-            &[
-                "auth",
-                "login",
-                "--nsec",
-                "0000000000000000000000000000000000000000000000000000000000000001",
-            ],
+            "0000000000000000000000000000000000000000000000000000000000000001",
         );
         let tree = tmp.path().join("vault");
         run(&tmp, &["open", "vault", tree.to_str().unwrap()]);
@@ -3748,14 +3921,9 @@ mod tests {
     #[test]
     fn sync_now_applies_incremental_remote_records_and_reports_them() {
         let tmp = TempDir::new().unwrap();
-        run(
+        import_identity_secret(
             &tmp,
-            &[
-                "auth",
-                "login",
-                "--nsec",
-                "0000000000000000000000000000000000000000000000000000000000000001",
-            ],
+            "0000000000000000000000000000000000000000000000000000000000000001",
         );
         let folder_key = FolderKey::from_bytes([4; 32]);
         let tree = setup_incremental_tree(&tmp, &folder_key, 0);
@@ -3812,14 +3980,9 @@ mod tests {
     #[test]
     fn sync_now_summary_prints_incremental_remote_records() {
         let tmp = TempDir::new().unwrap();
-        run(
+        import_identity_secret(
             &tmp,
-            &[
-                "auth",
-                "login",
-                "--nsec",
-                "0000000000000000000000000000000000000000000000000000000000000001",
-            ],
+            "0000000000000000000000000000000000000000000000000000000000000001",
         );
         let folder_key = FolderKey::from_bytes([7; 32]);
         let tree = setup_incremental_tree(&tmp, &folder_key, 0);
@@ -3854,14 +4017,9 @@ mod tests {
     #[test]
     fn sync_now_rebootstraps_when_incremental_cursor_expired() {
         let tmp = TempDir::new().unwrap();
-        run(
+        import_identity_secret(
             &tmp,
-            &[
-                "auth",
-                "login",
-                "--nsec",
-                "0000000000000000000000000000000000000000000000000000000000000001",
-            ],
+            "0000000000000000000000000000000000000000000000000000000000000001",
         );
         let folder_key = FolderKey::from_bytes([5; 32]);
         let tree = setup_incremental_tree(&tmp, &folder_key, 2);
@@ -3913,26 +4071,10 @@ mod tests {
             cwd: tmp.path().to_path_buf(),
             config_dir: agent_a_config.clone(),
             now: Some("2026-06-24T20:46:36Z".to_owned()),
+            finite_home: Some(tmp.path().join("finite-home")),
         };
-        let agent_b_auth_env = CliEnvironment {
-            cwd: tmp.path().to_path_buf(),
-            config_dir: agent_b_config.clone(),
-            now: Some("2026-06-24T20:46:36Z".to_owned()),
-        };
-        let mut output = Vec::new();
-        run_with_env(
-            ["auth", "login", "--nsec", nsec],
-            agent_a_auth_env,
-            &mut output,
-        )
-        .unwrap();
-        output.clear();
-        run_with_env(
-            ["auth", "login", "--nsec", nsec],
-            agent_b_auth_env,
-            &mut output,
-        )
-        .unwrap();
+        // Both agents share the one Finite identity: import once.
+        import_identity_for(&agent_a_auth_env, nsec);
         let folder_key = FolderKey::from_bytes([6; 32]);
         let agent_a_tree = setup_incremental_tree_named(&tmp, "agent-a", &folder_key, 0);
         let agent_b_tree = setup_incremental_tree_named(&tmp, "agent-b", &folder_key, 0);
@@ -3943,6 +4085,7 @@ mod tests {
             cwd: agent_b_tree.clone(),
             config_dir: agent_b_config,
             now: Some("2026-06-24T20:46:36Z".to_owned()),
+            finite_home: Some(tmp.path().join("finite-home")),
         };
         let mut output_b = Vec::new();
         run_with_env(
@@ -3959,6 +4102,7 @@ mod tests {
             cwd: agent_a_tree.clone(),
             config_dir: agent_a_config,
             now: Some("2026-06-24T20:46:36Z".to_owned()),
+            finite_home: Some(tmp.path().join("finite-home")),
         };
         let mut output_a = Vec::new();
         run_with_env(
@@ -4005,14 +4149,9 @@ mod tests {
     #[test]
     fn sync_now_records_server_write_conflicts_through_public_command() {
         let tmp = TempDir::new().unwrap();
-        run(
+        import_identity_secret(
             &tmp,
-            &[
-                "auth",
-                "login",
-                "--nsec",
-                "0000000000000000000000000000000000000000000000000000000000000001",
-            ],
+            "0000000000000000000000000000000000000000000000000000000000000001",
         );
         let tree = tmp.path().join("vault");
         fs::create_dir_all(tree.join(".finitebrain")).unwrap();
@@ -4092,14 +4231,9 @@ mod tests {
     #[test]
     fn sync_now_rematerializes_accepted_writes_while_preserving_conflicted_edits() {
         let tmp = TempDir::new().unwrap();
-        run(
+        import_identity_secret(
             &tmp,
-            &[
-                "auth",
-                "login",
-                "--nsec",
-                "0000000000000000000000000000000000000000000000000000000000000001",
-            ],
+            "0000000000000000000000000000000000000000000000000000000000000001",
         );
         let tree = tmp.path().join("vault");
         fs::create_dir_all(tree.join(".finitebrain")).unwrap();
@@ -4184,14 +4318,9 @@ mod tests {
     #[test]
     fn sync_now_summary_prints_change_groups() {
         let tmp = TempDir::new().unwrap();
-        run(
+        import_identity_secret(
             &tmp,
-            &[
-                "auth",
-                "login",
-                "--nsec",
-                "0000000000000000000000000000000000000000000000000000000000000001",
-            ],
+            "0000000000000000000000000000000000000000000000000000000000000001",
         );
         let tree = tmp.path().join("vault");
         run(&tmp, &["open", "vault", tree.to_str().unwrap()]);
@@ -4234,14 +4363,9 @@ mod tests {
     #[test]
     fn signer_sign_encrypt_and_decrypt_behaves_like_local_nip07() {
         let tmp = TempDir::new().unwrap();
-        run(
+        import_identity_secret(
             &tmp,
-            &[
-                "auth",
-                "login",
-                "--nsec",
-                "0000000000000000000000000000000000000000000000000000000000000001",
-            ],
+            "0000000000000000000000000000000000000000000000000000000000000001",
         );
 
         let public_key = run(&tmp, &["signer", "public-key"]);
