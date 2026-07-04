@@ -1221,9 +1221,11 @@ mod tests {
         assert!(client_body.contains("aria-label=\"Graph View\""));
         assert!(client_body.contains("aria-label=\"Search pages\""));
         assert!(client_body.contains("aria-label=\"Filter graph\""));
-        assert!(client_body.contains("accessFolderInspector"));
-        assert!(client_body.contains("accessManageButton"));
-        assert!(client_body.contains("accessShareButton"));
+        assert!(client_body.contains("accessFolderButton"));
+        assert!(client_body.contains("accessInspector"));
+        assert!(client_body.contains("accessWhoHasList"));
+        assert!(client_body.contains("accessAdvancedSection"));
+        assert!(!client_body.contains("accessChangeMode"));
         assert!(client_body.contains("removeFolderAccessButton"));
         assert!(client_body.contains("createVaultInvitationButton"));
         assert!(client_body.contains("acceptVaultInvitationButton"));

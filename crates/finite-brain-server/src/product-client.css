@@ -1024,6 +1024,7 @@ pre {
   margin-top: 8px;
 }
 
+/* Legacy access inspector (keeping for compatibility during transition) */
 .access-inspector {
   display: grid;
   gap: 10px;
@@ -1034,76 +1035,308 @@ pre {
   padding: 10px;
 }
 
-.access-inspector-header {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  align-items: start;
-  gap: 8px;
-  min-width: 0;
-  color: #e2e2e2;
+/* NEW OBSIDIAN-STYLE ACCESS UI */
+
+/* Compact Folder Selector */
+.access-folder-selector {
+  margin: 0 10px 15px 10px;
 }
 
-.access-title-stack {
-  display: grid;
-  gap: 2px;
-  min-width: 0;
+.access-folder-picker {
+  display: block;
 }
 
-.access-title-stack > span:first-child {
-  overflow: hidden;
-  color: #f1f1f1;
-  font-size: 13px;
-  font-weight: 820;
-  letter-spacing: 0;
-  text-overflow: ellipsis;
-  text-wrap: balance;
-  white-space: nowrap;
-}
-
-.access-title-stack > span:last-child {
-  overflow: hidden;
-  color: #949494;
+.access-selector-label {
+  display: block;
+  color: #a6a6a6;
   font-size: 11px;
   font-weight: 560;
-  text-overflow: ellipsis;
-  text-wrap: pretty;
-  white-space: nowrap;
-}
-
-.access-summary-grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 6px;
-}
-
-.access-summary-grid > div {
-  min-width: 0;
-  border-radius: 7px;
-  background: #1a1a1a;
-  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.045);
-  padding: 7px 8px;
-}
-
-.access-summary-grid span {
-  display: block;
-  overflow: hidden;
-  color: #858585;
-  font-size: 9px;
-  font-weight: 780;
-  letter-spacing: 0;
-  text-overflow: ellipsis;
+  margin-bottom: 4px;
   text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.folder-selector-button {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 10px;
+  background: #252525;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 6px;
+  color: #dadada;
+  font-size: 13px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.folder-selector-button:hover {
+  background: #2b2b2b;
+  border-color: rgba(255, 255, 255, 0.12);
+}
+
+.folder-selector-button:focus {
+  outline: none;
+  border-color: #7c6cff;
+  box-shadow: 0 0 0 2px rgba(124, 108, 255, 0.1);
+}
+
+.selector-chevron {
+  width: 14px;
+  height: 14px;
+  opacity: 0.6;
+  transition: transform 0.15s ease;
+}
+
+.folder-selector-button[aria-expanded="true"] .selector-chevron {
+  transform: rotate(180deg);
+}
+
+/* Folder Dropdown */
+.folder-dropdown {
+  position: absolute;
+  z-index: 100;
+  width: calc(100% - 20px);
+  max-height: 200px;
+  margin-top: 2px;
+  background: #242424;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 6px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+  overflow: auto;
+}
+
+.folder-dropdown-list {
+  list-style: none;
+  margin: 0;
+  padding: 4px;
+}
+
+.folder-dropdown-list .obsidian-folder-button {
+  width: 100%;
+  margin: 0;
+  padding: 6px 8px;
+  border-radius: 4px;
+  font-size: 12px;
+}
+
+.folder-dropdown-list .obsidian-folder-button:hover {
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.folder-dropdown-list .obsidian-folder-button.active {
+  background: #7c6cff;
+  color: #fff;
+}
+
+/* New Access Inspector */
+.access-inspector-new {
+  margin: 0 10px;
+}
+
+/* Basic Access View */
+.access-basic-view {
+  margin-bottom: 20px;
+}
+
+.access-header {
+  margin-bottom: 16px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.access-header h3 {
+  margin: 0 0 4px 0;
+  color: #f1f1f1;
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.3;
+}
+
+.access-summary {
+  margin: 0;
+  color: #a6a6a6;
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 1.4;
+}
+
+/* Who Has Access Section */
+.access-who-has-section {
+  margin-bottom: 20px;
+}
+
+.access-section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+
+.section-title {
+  color: #dadada;
+  font-size: 12px;
+  font-weight: 560;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.access-inline-button {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 8px;
+  background: transparent;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 4px;
+  color: #7c6cff;
+  font-size: 11px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.access-inline-button:hover {
+  background: rgba(124, 108, 255, 0.1);
+  border-color: rgba(124, 108, 255, 0.3);
+}
+
+.access-inline-button .icon {
+  width: 12px;
+  height: 12px;
+}
+
+/* Who Has Access List */
+.access-who-has-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.access-who-has-list li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 0;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+  color: #dadada;
+  font-size: 12px;
+}
+
+.access-who-has-list li:last-child {
+  border-bottom: none;
+}
+
+.access-empty-state {
+  color: #a6a6a6;
+  font-style: italic;
+  padding: 16px 0 !important;
+  border: none !important;
+  text-align: center;
+}
+
+.access-person-info {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  flex: 1;
+}
+
+.access-person-icon {
+  width: 16px;
+  height: 16px;
+  opacity: 0.6;
+  flex-shrink: 0;
+}
+
+.access-person-name {
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.access-summary-grid strong {
-  display: block;
-  overflow: hidden;
-  color: #d8d8d8;
+.access-person-role {
+  color: #a6a6a6;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.access-remove-person {
+  padding: 2px 4px;
+  background: transparent;
+  border: none;
+  color: #ff6b6b;
+  font-size: 10px;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+
+.access-who-has-list li:hover .access-remove-person {
+  opacity: 1;
+}
+
+.access-remove-person:hover {
+  background: rgba(255, 107, 107, 0.1);
+  border-radius: 3px;
+}
+
+/* Inline Add Person Form */
+.access-inline-form {
+  margin-top: 12px;
+  padding: 12px;
+  background: rgba(255, 255, 255, 0.02);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 6px;
+}
+
+.access-inline-field {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.access-inline-field input {
+  flex: 1;
+  padding: 6px 8px;
+  background: #1a1a1a;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 4px;
+  color: #dadada;
   font-size: 12px;
-  font-variant-numeric: tabular-nums;
-  line-height: 1.25;
-  text-overflow: ellipsis;
+}
+
+.access-inline-field input:focus {
+  outline: none;
+  border-color: #7c6cff;
+  box-shadow: 0 0 0 2px rgba(124, 108, 255, 0.1);
+}
+
+.access-add-button {
+  padding: 6px 12px;
+  background: #7c6cff;
+  border: none;
+  border-radius: 4px;
+  color: #fff;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+
+.access-add-button:hover {
+  background: #6b59e8;
+}
+
+.access-field-hint {
+  margin: 0;
+  color: #a6a6a6;
+  font-size: 10px;
+  line-height: 1.3;
   white-space: nowrap;
 }
 
@@ -2390,6 +2623,148 @@ pre {
 
 .graph-replay-overlay:empty {
   display: none;
+}
+
+/* Advanced Options Section */
+.access-advanced-section {
+  margin-top: 24px;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.access-advanced-summary {
+  padding: 12px 14px;
+  background: rgba(255, 255, 255, 0.02);
+  border: none;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  color: #dadada;
+  font-size: 12px;
+  font-weight: 500;
+  transition: background 0.15s ease;
+}
+
+.access-advanced-summary:hover {
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.access-advanced-summary span {
+  font-weight: 600;
+}
+
+.access-advanced-summary small {
+  color: #a6a6a6;
+  font-size: 10px;
+  font-weight: 400;
+}
+
+.access-advanced-content {
+  padding: 16px;
+  background: #1e1e1e;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+/* Subsections */
+.access-subsection {
+  margin-bottom: 24px;
+}
+
+.access-subsection:last-child {
+  margin-bottom: 0;
+}
+
+.access-subsection-title {
+  margin: 0 0 4px 0;
+  color: #f1f1f1;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.access-subsection-desc {
+  margin: 0 0 12px 0;
+  color: #a6a6a6;
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+/* Share Form Styles */
+.access-share-form,
+.access-share-existing {
+  margin-bottom: 16px;
+}
+
+.access-share-existing {
+  padding-top: 16px;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+/* Vault Administration */
+.access-vault-admin {
+  margin: 20px 10px 0 10px;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.access-admin-summary {
+  padding: 12px 14px;
+  background: rgba(255, 255, 255, 0.02);
+  border: none;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: #dadada;
+  font-size: 12px;
+  font-weight: 500;
+  transition: background 0.15s ease;
+}
+
+.access-admin-summary:hover {
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.access-admin-summary .icon {
+  width: 14px;
+  height: 14px;
+  opacity: 0.7;
+}
+
+.access-admin-summary span {
+  font-weight: 600;
+  flex: 1;
+}
+
+.access-admin-summary small {
+  color: #a6a6a6;
+  font-size: 10px;
+  font-weight: 400;
+}
+
+.access-admin-content {
+  padding: 16px;
+  background: #1e1e1e;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.access-admin-section {
+  margin-bottom: 20px;
+}
+
+.access-admin-section:last-child {
+  margin-bottom: 0;
+}
+
+.access-admin-section h4 {
+  margin: 0 0 8px 0;
+  color: #f1f1f1;
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
 }
 
 @media (max-width: 1180px) {

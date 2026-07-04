@@ -162,9 +162,10 @@ assert.equal(
   }),
   "2 members"
 );
-assert.match(htmlSource, /id="accessOverviewButton"/);
-assert.match(htmlSource, /id="accessPeoplePanel"/);
-assert.match(htmlSource, /id="accessLinksPanel"/);
+assert.match(htmlSource, /id="accessFolderButton"/);
+assert.match(htmlSource, /id="accessWhoHasList"/);
+assert.match(htmlSource, /id="accessAdvancedSection"/);
+assert.doesNotMatch(htmlSource, /id="accessChangeMode"/);
 assert.doesNotMatch(htmlSource, /id="accessManageSection"/);
 assert.equal(client.personalVaultIdForPubkey("ab".repeat(32)), "personal-abababababababab");
 assert.equal(
