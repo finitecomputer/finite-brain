@@ -7,12 +7,12 @@ use finite_brain_core::{
     SafeRelativePath, VaultId,
 };
 use finite_nostr::{NostrPublicKey, build_rumor, wrap_rumor};
-use nostr::{Keys, Kind, Tag};
+use nostr::{Kind, Tag};
 
 use crate::{
-    APP_SPECIFIC_KIND, CliEnvironment, CliError, LocalFolderKey, PrototypeAuth, UnlockedFolder,
-    VaultMetadataView, current_tree_root, deterministic_id, find_agent_state, mutate_agent_state,
-    normalize_folder_access, read_agent_state, read_auth_required, read_working_tree_state,
+    APP_SPECIFIC_KIND, CliEnvironment, CliError, LocalFolderKey, LocalSigner, UnlockedFolder,
+    VaultMetadataView, current_tree_root, deterministic_id, find_agent_state, load_signer,
+    mutate_agent_state, normalize_folder_access, read_agent_state, read_working_tree_state,
     sign_event, signed_json_request, tag_vec, timestamp, unix_timestamp, write_json_file,
 };
 
@@ -66,7 +66,7 @@ pub(crate) fn folder_required_recipients(
 }
 
 pub(crate) fn folder_key_grant_request(
-    auth: &PrototypeAuth,
+    auth: &LocalSigner,
     vault_id: &str,
     folder_id: &str,
     key_version: u32,
@@ -74,8 +74,7 @@ pub(crate) fn folder_key_grant_request(
     folder_key: &FolderKey,
     env: &CliEnvironment,
 ) -> Result<serde_json::Value, CliError> {
-    let keys = Keys::parse(&auth.secret_key)
-        .map_err(|error| CliError::InvalidSigner(error.to_string()))?;
+    let keys = auth.keys.clone();
     let recipient = NostrPublicKey::parse(recipient_npub)
         .map_err(|error| CliError::InvalidSigner(error.to_string()))?;
     let grant_id = deterministic_id(
@@ -158,9 +157,8 @@ pub(crate) fn admin_access_change_event(
     target_npub: Option<&str>,
     key_version: Option<u32>,
 ) -> Result<serde_json::Value, CliError> {
-    let auth = read_auth_required(env)?;
-    let keys = Keys::parse(&auth.secret_key)
-        .map_err(|error| CliError::InvalidSigner(error.to_string()))?;
+    let auth = load_signer(env)?;
+    let keys = auth.keys.clone();
     let change_id = deterministic_id(
         "access-change",
         &[

@@ -24,7 +24,7 @@ use serde::Deserialize;
 use crate::{
     APP_SPECIFIC_KIND, AgentState, CliEnvironment, CliError, ConflictEntry, ConflictState,
     LocalFolderKey, SyncChangeReport, SyncOnceReport, UnlockedFolder, current_tree_root,
-    deterministic_id, read_agent_state, read_auth_required, read_working_tree_state,
+    deterministic_id, load_signer, read_agent_state, read_working_tree_state,
     server_url_for_command, sign_event, signed_json_request_to_server, tag_vec, timestamp,
     timestamp_from_unix, unix_timestamp, write_agent_state, write_json_file,
 };
@@ -44,7 +44,7 @@ pub(crate) fn run_working_tree_sync(
     let prior_tree_state = read_working_tree_state(&root)?;
     let agent_state = read_agent_state(&root)?;
     let server_url = server_url_for_command(env, args)?;
-    let auth = read_auth_required(env)?;
+    let auth = load_signer(env)?;
     let export = fetch_encrypted_export(env, &server_url, &agent_state.vault_id)?;
     let mounted_exports =
         fetch_mounted_folder_sync_contexts(env, &server_url, &agent_state.vault_id, &export)?;
@@ -649,12 +649,11 @@ fn restore_conflicted_files(
 fn open_export_folder_key_grants(
     env: &CliEnvironment,
     root: &Path,
-    auth: &crate::PrototypeAuth,
+    auth: &crate::LocalSigner,
     export: &CliEncryptedVaultExport,
 ) -> Result<usize, CliError> {
     let opened_vault_id = read_agent_state(root)?.vault_id;
-    let keys = Keys::parse(&auth.secret_key)
-        .map_err(|error| CliError::InvalidSigner(error.to_string()))?;
+    let keys = auth.keys.clone();
     let recipient = NostrPublicKey::parse(&auth.npub)
         .map_err(|error| CliError::InvalidSigner(error.to_string()))?;
     let validation = GiftWrapValidation::new(recipient);
@@ -812,8 +811,7 @@ fn push_local_working_tree_changes(
             );
         }
     }
-    let signing_keys = Keys::parse(&read_auth_required(env)?.secret_key)
-        .map_err(|error| CliError::InvalidSigner(error.to_string()))?;
+    let signing_keys = load_signer(env)?.keys;
     let actor_npub = NostrPublicKey::from_protocol(signing_keys.public_key())
         .to_npub()
         .map_err(|error| CliError::InvalidSigner(error.to_string()))?;
@@ -2757,6 +2755,7 @@ mod tests {
             cwd: temp.path().to_path_buf(),
             config_dir: temp.path().join("config"),
             now: Some("2026-06-26T23:30:00Z".to_owned()),
+            finite_home: Some(temp.path().join("finite-home")),
         };
         let keys = Keys::parse("0000000000000000000000000000000000000000000000000000000000000001")
             .unwrap();
@@ -2998,6 +2997,7 @@ mod tests {
             cwd: root.to_path_buf(),
             config_dir: root.join("config"),
             now: Some("2026-06-26T23:30:00Z".to_owned()),
+            finite_home: Some(root.join("finite-home")),
         };
         let object_id = ObjectId::new("obj_remote000001").unwrap();
         let page_path = SafeRelativePath::new("page_path", "docs/from-envelope.md").unwrap();
@@ -3092,6 +3092,7 @@ mod tests {
             cwd: root.to_path_buf(),
             config_dir: root.join("config"),
             now: Some("2026-06-26T23:30:00Z".to_owned()),
+            finite_home: Some(root.join("finite-home")),
         };
         let object_id = ObjectId::new("obj_mounted00001").unwrap();
         let page_path = SafeRelativePath::new("page_path", "compiled/share-brief.md").unwrap();
@@ -3248,6 +3249,7 @@ mod tests {
             cwd: root.to_path_buf(),
             config_dir: root.join("config"),
             now: Some("2026-06-26T23:30:00Z".to_owned()),
+            finite_home: Some(root.join("finite-home")),
         };
         let export = CliEncryptedVaultExport {
             vault: CliExportVault {

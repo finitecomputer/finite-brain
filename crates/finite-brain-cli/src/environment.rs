@@ -7,6 +7,12 @@ pub struct CliEnvironment {
     pub cwd: PathBuf,
     pub config_dir: PathBuf,
     pub now: Option<String>,
+    /// Explicit Finite home for the shared identity, used by tests and
+    /// embedders. `None` resolves per the Finite Identity Contract v1:
+    /// `$FINITE_HOME/identity/` when `FINITE_HOME` is set, otherwise
+    /// `$HOME/.finite/identity/`. Deliberately not a CLI flag: the identity
+    /// location is convention, not per-tool configuration.
+    pub finite_home: Option<PathBuf>,
 }
 
 impl CliEnvironment {
@@ -24,6 +30,7 @@ impl CliEnvironment {
             cwd,
             config_dir,
             now,
+            finite_home: None,
         }
     }
 }

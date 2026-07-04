@@ -1,5 +1,5 @@
 use std::fs;
-use std::io::{Read, Write};
+use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use finite_brain_core::portability::VaultWorkingTreeStateManifest;
@@ -7,29 +7,31 @@ use serde::Deserialize;
 
 use crate::{
     AccessExplanation, AgentState, AuthStatus, CliEnvironment, CliError, ConflictState,
-    DaemonRunState, DaemonStatus, PrototypeAuth, StatusReport, SyncStatus, option_value, timestamp,
-    write_json_file,
+    DaemonRunState, DaemonStatus, StatusReport, SyncStatus, identity_paths, load_identity_optional,
+    option_value, timestamp, write_json_file,
 };
 
+/// Report the shared Finite identity without touching it: status never mints
+/// (finite-identity CLI-CONVENTIONS.md).
 pub(crate) fn auth_status(env: &CliEnvironment) -> Result<AuthStatus, CliError> {
-    Ok(match read_auth_optional(env)? {
-        Some(auth) => AuthStatus {
+    let identity_file = identity_paths(env)?.identity_file().display().to_string();
+    Ok(match load_identity_optional(env)? {
+        Some(identity) => AuthStatus {
             state: "authenticated".to_owned(),
-            npub: Some(auth.npub),
-            signer: "local-nostr-keypair".to_owned(),
-            capabilities: vec![
-                "getPublicKey".to_owned(),
-                "signEvent".to_owned(),
-                "nip44.encrypt".to_owned(),
-                "nip44.decrypt".to_owned(),
-            ],
+            npub: Some(identity.npub()),
+            identity_file,
+            created_by: Some(identity.created_by().to_owned()),
+            created_at: Some(identity.created_at().to_owned()),
+            signer: "finite-identity".to_owned(),
             config_dir: env.config_dir.display().to_string(),
         },
         None => AuthStatus {
             state: "missing".to_owned(),
             npub: None,
+            identity_file,
+            created_by: None,
+            created_at: None,
             signer: "none".to_owned(),
-            capabilities: Vec::new(),
             config_dir: env.config_dir.display().to_string(),
         },
     })
@@ -80,7 +82,10 @@ pub(crate) fn status_report(env: &CliEnvironment) -> Result<StatusReport, CliErr
         .collect::<Vec<_>>();
     let mut blocked = Vec::new();
     if auth.state != "authenticated" {
-        blocked.push("missing auth".to_owned());
+        blocked.push(
+            "no Finite identity yet (minted on first signing use, or fbrain auth import)"
+                .to_owned(),
+        );
     }
     if state.daemon.state != DaemonRunState::Running {
         blocked.push("daemon not running".to_owned());
@@ -202,34 +207,6 @@ pub(crate) fn read_working_tree_state(
     read_json_file(&root.join(".finitebrain/working-tree-state.json"))
 }
 
-pub(crate) fn read_auth_optional(env: &CliEnvironment) -> Result<Option<PrototypeAuth>, CliError> {
-    let path = auth_path(env);
-    if !path.exists() {
-        return Ok(None);
-    }
-    read_json_file(&path).map(Some)
-}
-
-pub(crate) fn write_auth(env: &CliEnvironment, auth: &PrototypeAuth) -> Result<(), CliError> {
-    let path = auth_path(env);
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    let body = serde_json::to_vec_pretty(auth)?;
-    let mut file = fs::OpenOptions::new()
-        .create(true)
-        .truncate(true)
-        .write(true)
-        .open(&path)?;
-    file.write_all(&body)?;
-    set_secret_permissions(&path)?;
-    Ok(())
-}
-
-pub(crate) fn auth_path(env: &CliEnvironment) -> PathBuf {
-    env.config_dir.join("auth.json")
-}
-
 pub(crate) fn read_json_file<T>(path: &Path) -> Result<T, CliError>
 where
     T: for<'de> Deserialize<'de>,
@@ -251,16 +228,4 @@ pub(crate) fn current_vault_id(env: &CliEnvironment) -> Option<String> {
         .flatten()
         .and_then(|root| read_agent_state(&root).ok())
         .map(|state| state.vault_id)
-}
-
-#[cfg(unix)]
-pub(crate) fn set_secret_permissions(path: &Path) -> Result<(), CliError> {
-    use std::os::unix::fs::PermissionsExt;
-    fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
-    Ok(())
-}
-
-#[cfg(not(unix))]
-pub(crate) fn set_secret_permissions(_path: &Path) -> Result<(), CliError> {
-    Ok(())
 }

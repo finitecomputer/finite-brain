@@ -1,44 +1,9 @@
 use std::fmt;
 
-use finite_nostr::NostrPublicKey;
-use nostr::Keys;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::{AGENT_STATE_VERSION, AUTH_VERSION, CliError};
-
-#[derive(Debug, Clone, Eq, PartialEq, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct PrototypeAuth {
-    pub(crate) version: String,
-    pub(crate) npub: String,
-    pub(crate) secret_key: String,
-    pub(crate) signer: String,
-    pub(crate) capabilities: Vec<String>,
-    pub(crate) created_at: String,
-}
-
-impl PrototypeAuth {
-    pub(crate) fn from_nsec(nsec: &str, created_at: String) -> Result<Self, CliError> {
-        let keys = Keys::parse(nsec).map_err(|error| CliError::InvalidSigner(error.to_string()))?;
-        let npub = NostrPublicKey::from_protocol(keys.public_key())
-            .to_npub()
-            .map_err(|error| CliError::InvalidSigner(error.to_string()))?;
-        Ok(Self {
-            version: AUTH_VERSION.to_owned(),
-            npub,
-            secret_key: nsec.to_owned(),
-            signer: "local-nostr-keypair".to_owned(),
-            capabilities: vec![
-                "getPublicKey".to_owned(),
-                "signEvent".to_owned(),
-                "nip44.encrypt".to_owned(),
-                "nip44.decrypt".to_owned(),
-            ],
-            created_at,
-        })
-    }
-}
+use crate::AGENT_STATE_VERSION;
 
 #[derive(Debug, Clone, Eq, PartialEq, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -216,13 +181,17 @@ pub struct ActivityEntry {
     pub message: String,
 }
 
+/// `fbrain auth status`: the shared Finite identity (never minted here),
+/// plus fbrain-specific context (signer type and config dir).
 #[derive(Debug, Clone, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct AuthStatus {
     pub(crate) state: String,
     pub(crate) npub: Option<String>,
+    pub(crate) identity_file: String,
+    pub(crate) created_by: Option<String>,
+    pub(crate) created_at: Option<String>,
     pub(crate) signer: String,
-    pub(crate) capabilities: Vec<String>,
     pub(crate) config_dir: String,
 }
 
