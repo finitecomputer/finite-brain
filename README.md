@@ -60,10 +60,43 @@ fbrain auth status --json
 
 Prefer `--json` for commands whose output an agent needs to parse.
 
+## Identity
+
+`fbrain` signs with the shared Finite identity used by every Finite tool
+(`fsite`, `finitechat`, hosted runtimes). The identity lives at
+`$FINITE_HOME/identity/identity.json` when `FINITE_HOME` is set and at
+`~/.finite/identity/identity.json` otherwise; whichever Finite tool runs first
+mints the key, and every other tool finds it. `fbrain` never copies the secret
+into its own config directory.
+
+```sh
+# Show the identity without creating or changing anything.
+fbrain auth status --json
+
+# Adopt an existing secret (nsec1... or 64-char hex) as the shared identity.
+# The secret is read from stdin or --file, never from argv.
+fbrain auth import < secret.txt
+fbrain auth import --file secret.txt
+```
+
+`auth import` refuses to overwrite an existing identity; move the old file
+aside by hand if you mean it. If no identity exists, the first `fbrain`
+command that needs to sign mints one automatically.
+
+The legacy `fbrain auth login --nsec` flow and its plaintext
+`<config-dir>/auth.json` are a hard cut and are no longer read. To keep a
+legacy key, import it once:
+
+```sh
+jq -r .secretKey "$FBRAIN_CONFIG_DIR/auth.json" | fbrain auth import
+rm "$FBRAIN_CONFIG_DIR/auth.json"
+```
+
 ## Open A Vault Working Tree
 
-Use an explicit config directory in agent runtimes so signer state does not
-depend on shell persistence:
+Use an explicit config directory in agent runtimes so fbrain state does not
+depend on shell persistence (the identity itself always resolves from the
+shared location above):
 
 ```sh
 export FINITE_BRAIN_SERVER_URL=https://brain.smoke.finite.computer
