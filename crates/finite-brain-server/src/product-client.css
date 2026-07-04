@@ -22,12 +22,21 @@
   --shadow-obsi-popover:
     0 0 0 1px rgba(255, 255, 255, 0.06),
     0 18px 44px rgba(0, 0, 0, 0.48);
+  --shadow-access-ring: 0 0 0 1px rgba(255, 255, 255, 0.075);
+  --shadow-access-ring-hover: 0 0 0 1px rgba(255, 255, 255, 0.13);
+  --shadow-access-accent:
+    0 0 0 1px rgba(124, 108, 255, 0.72),
+    0 0 0 3px rgba(124, 108, 255, 0.16);
 }
 
 * {
   box-sizing: border-box;
   scrollbar-color: #4b4b4b transparent;
   scrollbar-width: thin;
+}
+
+[hidden] {
+  display: none !important;
 }
 
 *::-webkit-scrollbar {
@@ -1039,7 +1048,8 @@ pre {
 
 /* Compact Folder Selector */
 .access-folder-selector {
-  margin: 0 10px 15px 10px;
+  position: relative;
+  margin: 0 12px 16px;
 }
 
 .access-folder-picker {
@@ -1051,7 +1061,7 @@ pre {
   color: #a6a6a6;
   font-size: 11px;
   font-weight: 560;
-  margin-bottom: 4px;
+  margin-bottom: 6px;
   text-transform: uppercase;
   letter-spacing: 0.5px;
 }
@@ -1061,49 +1071,71 @@ pre {
   width: 100%;
   align-items: center;
   justify-content: space-between;
-  padding: 8px 10px;
+  min-height: 52px;
+  gap: 10px;
+  padding: 9px 12px;
   background: #252525;
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  border-radius: 6px;
+  border: 0;
+  border-radius: 8px;
+  box-shadow: var(--shadow-access-ring);
   color: #dadada;
   font-size: 13px;
   cursor: pointer;
-  transition: all 0.15s ease;
+  transition-property: background-color, box-shadow, color, transform;
+  transition-duration: 150ms;
+  transition-timing-function: cubic-bezier(0.2, 0, 0, 1);
+}
+
+.folder-selector-button #accessFolderTitle {
+  min-width: 0;
+  overflow: hidden;
+  font-weight: 720;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.folder-selector-button #accessFolderStatus {
+  margin-left: auto;
 }
 
 .folder-selector-button:hover {
   background: #2b2b2b;
-  border-color: rgba(255, 255, 255, 0.12);
+  box-shadow: var(--shadow-access-ring-hover);
 }
 
 .folder-selector-button:focus {
   outline: none;
-  border-color: #7c6cff;
-  box-shadow: 0 0 0 2px rgba(124, 108, 255, 0.1);
+  box-shadow: var(--shadow-access-accent);
 }
 
 .selector-chevron {
   width: 14px;
   height: 14px;
   opacity: 0.6;
-  transition: transform 0.15s ease;
+  transition-property: opacity, transform;
+  transition-duration: 150ms;
+  transition-timing-function: cubic-bezier(0.2, 0, 0, 1);
 }
 
 .folder-selector-button[aria-expanded="true"] .selector-chevron {
   transform: rotate(180deg);
+  opacity: 0.86;
 }
 
 /* Folder Dropdown */
 .folder-dropdown {
   position: absolute;
   z-index: 100;
-  width: calc(100% - 20px);
+  right: 0;
+  left: 0;
+  width: auto;
   max-height: 200px;
-  margin-top: 2px;
+  margin-top: 6px;
   background: #242424;
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  border-radius: 6px;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+  border: 0;
+  border-radius: 9px;
+  box-shadow: var(--shadow-obsi-popover);
   overflow: auto;
 }
 
@@ -1132,16 +1164,16 @@ pre {
 
 /* New Access Inspector */
 .access-inspector-new {
-  margin: 0 10px;
+  margin: 0 12px;
 }
 
 /* Basic Access View */
 .access-basic-view {
-  margin-bottom: 20px;
+  margin-bottom: 18px;
 }
 
 .access-header {
-  margin-bottom: 16px;
+  margin-bottom: 14px;
   padding-bottom: 12px;
   border-bottom: 1px solid rgba(255, 255, 255, 0.06);
 }
@@ -1152,6 +1184,7 @@ pre {
   font-size: 14px;
   font-weight: 600;
   line-height: 1.3;
+  text-wrap: balance;
 }
 
 .access-summary {
@@ -1160,17 +1193,20 @@ pre {
   font-size: 12px;
   font-weight: 400;
   line-height: 1.4;
+  text-wrap: pretty;
 }
 
 /* Who Has Access Section */
 .access-who-has-section {
-  margin-bottom: 20px;
+  margin-bottom: 18px;
 }
 
 .access-section-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  min-height: 40px;
+  gap: 10px;
   margin-bottom: 8px;
 }
 
@@ -1185,30 +1221,43 @@ pre {
 .access-inline-button {
   display: flex;
   align-items: center;
-  gap: 4px;
-  padding: 4px 8px;
+  gap: 6px;
+  min-height: 40px;
+  padding: 0 11px 0 13px;
   background: transparent;
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  border-radius: 4px;
+  border: 0;
+  border-radius: 8px;
+  box-shadow: var(--shadow-access-ring);
   color: #7c6cff;
-  font-size: 11px;
-  font-weight: 500;
+  font-size: 12px;
+  font-weight: 650;
   cursor: pointer;
-  transition: all 0.15s ease;
+  transition-property: background-color, box-shadow, color, transform;
+  transition-duration: 150ms;
+  transition-timing-function: cubic-bezier(0.2, 0, 0, 1);
 }
 
 .access-inline-button:hover {
   background: rgba(124, 108, 255, 0.1);
-  border-color: rgba(124, 108, 255, 0.3);
+  box-shadow: 0 0 0 1px rgba(124, 108, 255, 0.32);
 }
 
 .access-inline-button .icon {
   width: 12px;
   height: 12px;
+  transition-property: transform;
+  transition-duration: 150ms;
+  transition-timing-function: cubic-bezier(0.2, 0, 0, 1);
+}
+
+.access-inline-button[aria-expanded="true"] .icon {
+  transform: rotate(45deg);
 }
 
 /* Who Has Access List */
 .access-who-has-list {
+  display: grid;
+  gap: 6px;
   list-style: none;
   margin: 0;
   padding: 0;
@@ -1218,22 +1267,28 @@ pre {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 8px 0;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+  min-height: 40px;
+  gap: 10px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.018);
+  box-shadow: var(--shadow-access-ring);
   color: #dadada;
   font-size: 12px;
 }
 
 .access-who-has-list li:last-child {
-  border-bottom: none;
+  box-shadow: var(--shadow-access-ring);
 }
 
 .access-empty-state {
   color: #a6a6a6;
   font-style: italic;
-  padding: 16px 0 !important;
-  border: none !important;
-  text-align: center;
+  justify-content: flex-start !important;
+  min-height: 48px !important;
+  padding: 10px 12px !important;
+  text-align: left;
+  text-wrap: pretty;
 }
 
 .access-person-info {
@@ -1266,32 +1321,40 @@ pre {
 }
 
 .access-remove-person {
-  padding: 2px 4px;
+  min-width: 40px;
+  min-height: 40px;
+  padding: 0 8px;
   background: transparent;
   border: none;
+  border-radius: 7px;
   color: #ff6b6b;
-  font-size: 10px;
+  font-size: 11px;
+  font-weight: 650;
   cursor: pointer;
   opacity: 0;
-  transition: opacity 0.15s ease;
+  transition-property: background-color, color, opacity, transform;
+  transition-duration: 150ms;
+  transition-timing-function: cubic-bezier(0.2, 0, 0, 1);
 }
 
-.access-who-has-list li:hover .access-remove-person {
+.access-who-has-list li:hover .access-remove-person,
+.access-remove-person:focus-visible {
   opacity: 1;
 }
 
 .access-remove-person:hover {
   background: rgba(255, 107, 107, 0.1);
-  border-radius: 3px;
+  color: #ffd2d5;
 }
 
 /* Inline Add Person Form */
 .access-inline-form {
   margin-top: 12px;
-  padding: 12px;
+  padding: 10px;
   background: rgba(255, 255, 255, 0.02);
-  border: 1px solid rgba(255, 255, 255, 0.06);
-  border-radius: 6px;
+  border: 0;
+  border-radius: 10px;
+  box-shadow: var(--shadow-access-ring);
 }
 
 .access-inline-field {
@@ -1302,10 +1365,13 @@ pre {
 
 .access-inline-field input {
   flex: 1;
-  padding: 6px 8px;
+  width: 100%;
+  min-height: 40px;
+  margin: 0;
+  padding: 7px 9px;
   background: #1a1a1a;
   border: 1px solid rgba(255, 255, 255, 0.08);
-  border-radius: 4px;
+  border-radius: 7px;
   color: #dadada;
   font-size: 12px;
 }
@@ -1317,19 +1383,23 @@ pre {
 }
 
 .access-add-button {
-  padding: 6px 12px;
+  min-height: 40px;
+  padding: 7px 12px;
   background: #7c6cff;
   border: none;
-  border-radius: 4px;
+  border-radius: 7px;
   color: #fff;
   font-size: 12px;
-  font-weight: 500;
+  font-weight: 700;
   cursor: pointer;
-  transition: background 0.15s ease;
+  transition-property: background-color, box-shadow, transform;
+  transition-duration: 150ms;
+  transition-timing-function: cubic-bezier(0.2, 0, 0, 1);
 }
 
 .access-add-button:hover {
   background: #6b59e8;
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.08);
 }
 
 .access-field-hint {
@@ -1337,7 +1407,7 @@ pre {
   color: #a6a6a6;
   font-size: 10px;
   line-height: 1.3;
-  white-space: nowrap;
+  text-wrap: pretty;
 }
 
 .access-segmented-control {
@@ -2627,43 +2697,81 @@ pre {
 
 /* Advanced Options Section */
 .access-advanced-section {
-  margin-top: 24px;
-  border: 1px solid rgba(255, 255, 255, 0.06);
-  border-radius: 6px;
+  margin-top: 18px;
+  border: 0;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.018);
+  box-shadow: var(--shadow-access-ring);
   overflow: hidden;
 }
 
 .access-advanced-summary {
-  padding: 12px 14px;
-  background: rgba(255, 255, 255, 0.02);
+  min-height: 44px;
+  padding: 11px 12px 11px 14px;
+  background: transparent;
   border: none;
   cursor: pointer;
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
   align-items: center;
-  justify-content: space-between;
+  gap: 8px;
   color: #dadada;
   font-size: 12px;
   font-weight: 500;
-  transition: background 0.15s ease;
+  list-style: none;
+  transition-property: background-color;
+  transition-duration: 150ms;
+  transition-timing-function: cubic-bezier(0.2, 0, 0, 1);
+}
+
+.access-advanced-summary::-webkit-details-marker,
+.access-admin-summary::-webkit-details-marker {
+  display: none;
 }
 
 .access-advanced-summary:hover {
   background: rgba(255, 255, 255, 0.04);
 }
 
+.access-advanced-summary::after,
+.access-admin-summary::after {
+  content: "";
+  width: 7px;
+  height: 7px;
+  border-right: 1.5px solid currentColor;
+  border-bottom: 1.5px solid currentColor;
+  opacity: 0.58;
+  transform: rotate(-45deg);
+  transition-property: opacity, transform;
+  transition-duration: 150ms;
+  transition-timing-function: cubic-bezier(0.2, 0, 0, 1);
+}
+
+.access-advanced-section[open] .access-advanced-summary::after,
+.access-vault-admin[open] .access-admin-summary::after {
+  opacity: 0.86;
+  transform: rotate(45deg);
+}
+
 .access-advanced-summary span {
+  min-width: 0;
   font-weight: 600;
+  text-wrap: balance;
 }
 
 .access-advanced-summary small {
+  max-width: 145px;
   color: #a6a6a6;
   font-size: 10px;
   font-weight: 400;
+  line-height: 1.25;
+  text-align: right;
+  text-wrap: pretty;
 }
 
 .access-advanced-content {
-  padding: 16px;
-  background: #1e1e1e;
+  padding: 14px;
+  background: rgba(0, 0, 0, 0.12);
   border-top: 1px solid rgba(255, 255, 255, 0.06);
 }
 
@@ -2681,6 +2789,7 @@ pre {
   color: #f1f1f1;
   font-size: 13px;
   font-weight: 600;
+  text-wrap: balance;
 }
 
 .access-subsection-desc {
@@ -2688,39 +2797,93 @@ pre {
   color: #a6a6a6;
   font-size: 11px;
   line-height: 1.4;
+  text-wrap: pretty;
 }
 
 /* Share Form Styles */
 .access-share-form,
 .access-share-existing {
+  display: grid;
+  gap: 10px;
   margin-bottom: 16px;
 }
 
 .access-share-existing {
-  padding-top: 16px;
+  padding-top: 14px;
   border-top: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.access-button-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.access-button-row button,
+.access-primary-button {
+  min-height: 40px;
+  border-radius: 7px;
+  padding: 7px 11px;
+  transition-property: background-color, border-color, box-shadow, color, transform;
+  transition-duration: 150ms;
+  transition-timing-function: cubic-bezier(0.2, 0, 0, 1);
+}
+
+.access-primary-button {
+  border-color: rgba(124, 108, 255, 0.42);
+  background: rgba(124, 108, 255, 0.18);
+  color: #f3f0ff;
+}
+
+.access-primary-button:not(:disabled):hover {
+  border-color: rgba(124, 108, 255, 0.72);
+  background: rgba(124, 108, 255, 0.26);
+  box-shadow: 0 0 0 1px rgba(124, 108, 255, 0.16);
+}
+
+.access-button-row .danger-action {
+  border-color: rgba(244, 109, 117, 0.42);
+  color: #ffb4b8;
+}
+
+.access-button-row .danger-action:not(:disabled):hover {
+  border-color: rgba(244, 109, 117, 0.72);
+  background: rgba(244, 109, 117, 0.1);
+  color: #ffd2d5;
 }
 
 /* Vault Administration */
 .access-vault-admin {
-  margin: 20px 10px 0 10px;
-  border: 1px solid rgba(255, 255, 255, 0.06);
-  border-radius: 6px;
+  margin: 14px 12px 0;
+  border: 0;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.015);
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.052);
   overflow: hidden;
 }
 
 .access-admin-summary {
-  padding: 12px 14px;
-  background: rgba(255, 255, 255, 0.02);
+  min-height: 44px;
+  padding: 11px 12px 11px 14px;
+  background: transparent;
   border: none;
   cursor: pointer;
-  display: flex;
+  display: grid;
+  grid-template-areas:
+    "icon title chevron"
+    "icon meta chevron";
+  grid-template-columns: 16px minmax(0, 1fr) auto;
   align-items: center;
-  gap: 8px;
+  column-gap: 8px;
+  row-gap: 2px;
   color: #dadada;
   font-size: 12px;
   font-weight: 500;
-  transition: background 0.15s ease;
+  list-style: none;
+  transition-property: background-color;
+  transition-duration: 150ms;
+  transition-timing-function: cubic-bezier(0.2, 0, 0, 1);
 }
 
 .access-admin-summary:hover {
@@ -2728,25 +2891,38 @@ pre {
 }
 
 .access-admin-summary .icon {
+  grid-area: icon;
+  align-self: center;
   width: 14px;
   height: 14px;
   opacity: 0.7;
 }
 
 .access-admin-summary span {
+  grid-area: title;
+  min-width: 0;
   font-weight: 600;
-  flex: 1;
+  text-wrap: balance;
 }
 
 .access-admin-summary small {
+  grid-area: meta;
+  max-width: none;
   color: #a6a6a6;
   font-size: 10px;
   font-weight: 400;
+  line-height: 1.25;
+  text-align: left;
+  text-wrap: pretty;
+}
+
+.access-admin-summary::after {
+  grid-area: chevron;
 }
 
 .access-admin-content {
-  padding: 16px;
-  background: #1e1e1e;
+  padding: 14px;
+  background: rgba(0, 0, 0, 0.1);
   border-top: 1px solid rgba(255, 255, 255, 0.06);
 }
 

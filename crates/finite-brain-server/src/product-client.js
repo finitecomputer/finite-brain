@@ -4392,6 +4392,7 @@ const FiniteBrainProductClient = (() => {
     manageToggle.hidden = !canManage;
     if (!canManage) addForm.hidden = true;
     setText("accessManageToggleLabel", addForm.hidden ? "Manage" : "Cancel");
+    manageToggle.setAttribute("aria-expanded", String(!addForm.hidden));
 
     const accessList = buildAccessList(row, metadata);
 
@@ -4444,6 +4445,7 @@ const FiniteBrainProductClient = (() => {
       const isShowing = !addForm.hidden;
       addForm.hidden = isShowing;
       setText("accessManageToggleLabel", isShowing ? "Manage" : "Cancel");
+      manageToggle.setAttribute("aria-expanded", String(!addForm.hidden));
     };
 
     setupAddPersonForm(row);

@@ -247,6 +247,8 @@ function checkStaticShell() {
   for (const marker of [
     ".obsidian-shell",
     ".obsidian-shell[data-workspace-view=\"graph\"]",
+    "[hidden]",
+    "--shadow-access-ring",
     ".compact-icon-button",
     ".vault-control-body",
     ".vault-picker",
@@ -273,6 +275,8 @@ function checkStaticShell() {
     ".access-who-has-list",
     ".access-inline-form",
     ".access-advanced-section",
+    ".access-advanced-summary::after",
+    ".access-button-row",
     ".access-vault-admin",
     ".access-field",
     ".access-checkbox",

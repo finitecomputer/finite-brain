@@ -45,6 +45,7 @@ context.globalThis = context;
 
 const source = fs.readFileSync(path.join(__dirname, "product-client.js"), "utf8");
 const htmlSource = fs.readFileSync(path.join(__dirname, "product-client.html"), "utf8");
+const cssSource = fs.readFileSync(path.join(__dirname, "product-client.css"), "utf8");
 vm.runInNewContext(source, context, { filename: "product-client.js" });
 
 const client = context.window.FiniteBrainProductClient;
@@ -167,6 +168,7 @@ assert.match(htmlSource, /id="accessWhoHasList"/);
 assert.match(htmlSource, /id="accessAdvancedSection"/);
 assert.doesNotMatch(htmlSource, /id="accessChangeMode"/);
 assert.doesNotMatch(htmlSource, /id="accessManageSection"/);
+assert.match(cssSource, /\[hidden\]\s*\{[^}]*display: none !important;/s);
 assert.equal(client.personalVaultIdForPubkey("ab".repeat(32)), "personal-abababababababab");
 assert.equal(
   client.normalizeVisibleVault({
