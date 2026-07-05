@@ -2611,17 +2611,21 @@ mod tests {
 
     fn read_http_request(stream: &mut TcpStream) -> (String, String) {
         stream
-            .set_read_timeout(Some(Duration::from_secs(1)))
+            .set_read_timeout(Some(Duration::from_millis(100)))
             .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
         let mut bytes = Vec::new();
         let mut buffer = [0_u8; 4096];
         loop {
+            if Instant::now() >= deadline {
+                break;
+            }
             let size = match stream.read(&mut buffer) {
                 Ok(size) => size,
                 Err(error)
                     if matches!(error.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) =>
                 {
-                    break;
+                    continue;
                 }
                 Err(_) => 0,
             };
