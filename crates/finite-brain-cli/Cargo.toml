@@ -18,7 +18,7 @@ base64 = "0.22.1"
 finite-brain-core = { path = "../finite-brain-core" }
 # Shared Finite identity per the Finite Identity Contract v1: one key per
 # user, whichever Finite tool runs first mints it. Pinned to the contract rev.
-finite-identity = { git = "https://github.com/finitecomputer/finite-identity", rev = "8d0c60316ed4b2bcf7d54e79c287eb962007b4f9" }
+finite-identity = { git = "https://github.com/finitecomputer/finite-identity", rev = "0750e8c5c8cadaf9b7638ef93c6dc1522c6fe5fb" }
 finite-nostr = { path = "../finite-nostr" }
 nostr = { version = "0.45.0-alpha.2", features = ["nip44", "os-rng"] }
 serde = { version = "1.0.228", features = ["derive"] }
