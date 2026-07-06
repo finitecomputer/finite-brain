@@ -18,7 +18,7 @@ const FiniteBrainProductClient = (() => {
     activeWorkspaceView: "page",
     activeSidebarMode: "files",
     activeAccessFolderId: null,
-    activeAccessView: "folder",
+    activeAccessView: "vault",
     activeAccessIntent: "overview",
     accessBusy: false,
     accessResult: null,
@@ -747,8 +747,8 @@ const FiniteBrainProductClient = (() => {
     }
   }
 
-  // Folder/Vault tabs share one sidebar panel; intent (overview/people/links) only
-  // affects the Folder tab chrome such as expanded share links or the add-person form.
+  // Vaults/Access tabs share one sidebar panel; intent (overview/people/links) only
+  // affects the Access tab chrome such as expanded share links or the add-person form.
   function applyAccessIntentChrome(row) {
     const intent = accessIntentValue(state.activeAccessIntent);
     const advancedSection = $("accessAdvancedSection");
@@ -2900,6 +2900,12 @@ const FiniteBrainProductClient = (() => {
     return ["files", "search", "access"].includes(mode) ? mode : "files";
   }
 
+  function globalVaultControlState(sidebarMode) {
+    return {
+      hidden: normalizeSidebarMode(sidebarMode) === "access",
+    };
+  }
+
   function commandPaletteCommands() {
     return [
       { id: "files", kind: "command", label: "Files", detail: "Sidebar", target: "files" },
@@ -3013,7 +3019,10 @@ const FiniteBrainProductClient = (() => {
   function renderVaultControlChrome() {
     const details = $("vaultControlDetails");
     if (!details) return;
+    const chrome = globalVaultControlState(state.activeSidebarMode);
+    details.hidden = chrome.hidden;
     setText("vaultControlSummary", activeVaultLabel());
+    if (chrome.hidden) return;
     if (state.metadata && !state.vaultControlsCollapsedAfterLoad) {
       details.open = false;
       state.vaultControlsCollapsedAfterLoad = true;
@@ -4288,6 +4297,27 @@ const FiniteBrainProductClient = (() => {
     return button;
   }
 
+  function accessFolderOptionButton(row, isActive, openedFolders, onClick) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = `folder-option-button ${row.status}${isActive ? " active" : ""}`;
+    button.setAttribute("role", "option");
+    button.setAttribute("aria-selected", String(isActive));
+
+    const title = document.createElement("span");
+    title.className = "folder-option-title";
+    title.textContent = row.path;
+
+    const meta = document.createElement("span");
+    meta.className = "folder-option-meta";
+    meta.textContent = `${row.accessLabel} · ${accessKeySummary(row, openedFolders).toLowerCase()}`;
+
+    button.appendChild(title);
+    button.appendChild(meta);
+    button.addEventListener("click", onClick);
+    return button;
+  }
+
   function renderSidebarMode() {
     const mode = normalizeSidebarMode(state.activeSidebarMode);
     state.activeSidebarMode = mode;
@@ -4438,13 +4468,8 @@ const FiniteBrainProductClient = (() => {
   function renderAccessSidebarCount(folderRows, metadata) {
     const view = normalizeAccessView(state.activeAccessView);
     if (view === "vault") {
-      if (metadata?.kind === "personal") {
-        const folderCount = (metadata.folders || []).length;
-        setPill("accessSidebarCount", `${folderCount}`, folderCount ? "ready" : "muted");
-        return;
-      }
-      const peopleCount = vaultPeopleRows(metadata).length;
-      setPill("accessSidebarCount", `${peopleCount}`, peopleCount ? "ready" : "muted");
+      const vaultCount = visibleVaultOptions().length;
+      setPill("accessSidebarCount", `${vaultCount}`, vaultCount ? "ready" : "muted");
       return;
     }
     const folderCount = folderRows.length;
@@ -4467,8 +4492,8 @@ const FiniteBrainProductClient = (() => {
     if (folderPanel) folderPanel.hidden = view !== "folder";
     if (vaultPanel) vaultPanel.hidden = view !== "vault";
     for (const [id, value] of [
-      ["accessFolderViewButton", "folder"],
       ["accessVaultViewButton", "vault"],
+      ["accessFolderViewButton", "folder"],
     ]) {
       const button = $(id);
       if (!button) continue;
@@ -4660,22 +4685,77 @@ const FiniteBrainProductClient = (() => {
   }
 
   function vaultManagementSummary(metadata) {
-    if (!metadata) return "Load a Vault to open readable Folders and manage access.";
+    if (!metadata) return "Choose a Vault, then Load to decrypt its readable Folders.";
     if (metadata.kind === "personal") {
-      return "Personal Vaults use Folder access and share links; organization member lists are not used here.";
+      return "Personal vault loaded. Use Access for Folder permissions and share links.";
     }
-    return `${countLabel((metadata.members || []).length, "member")} • ${countLabel(
+    return `Organization loaded. ${countLabel((metadata.members || []).length, "member")} • ${countLabel(
       (metadata.admins || []).length,
       "admin"
     )} • ${countLabel((metadata.folders || []).length, "Folder")}`;
   }
 
+  function vaultSwitchRowMeta(vault, isLoaded) {
+    const kind = vault.kind === "personal" ? "personal" : "organization";
+    const role = vault.role || (vault.kind === "personal" ? "owner" : "member");
+    return `${kind} - ${role}${isLoaded ? " - loaded" : ""}`;
+  }
+
+  function vaultSwitchButton(vault) {
+    const isSelected = vault.vaultId === state.activeVaultId;
+    const isLoaded = state.metadata?.vaultId === vault.vaultId;
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = `vault-switch-button${isSelected ? " selected" : ""}${isLoaded ? " loaded" : ""}`;
+    button.setAttribute("aria-pressed", String(isSelected));
+    button.setAttribute(
+      "aria-label",
+      `${vault.name || vault.vaultId}, ${vaultSwitchRowMeta(vault, isLoaded)}, ${
+        isLoaded ? "loaded" : isSelected ? "selected" : "not selected"
+      }`
+    );
+    button.addEventListener("click", () => {
+      if (vault.vaultId === state.activeVaultId) return;
+      setActiveVaultId(vault.vaultId);
+      log("Selected Vault.", { vaultId: vault.vaultId });
+      render();
+    });
+
+    const title = document.createElement("span");
+    title.className = "vault-switch-title";
+    title.textContent = vault.name || vault.vaultId;
+
+    const meta = document.createElement("span");
+    meta.className = "vault-switch-meta";
+    meta.textContent = vaultSwitchRowMeta(vault, isLoaded);
+
+    const status = document.createElement("span");
+    status.className = `pill ${isLoaded ? "ready" : isSelected ? "warn" : "muted"}`;
+    status.textContent = isLoaded ? "loaded" : isSelected ? "selected" : "select";
+    status.setAttribute("aria-hidden", "true");
+
+    button.appendChild(title);
+    button.appendChild(meta);
+    button.appendChild(status);
+    return button;
+  }
+
+  function renderVaultSwitchList() {
+    const rows = visibleVaultOptions();
+    const emptyText = state.signerStatus === "connected"
+      ? "No Vaults available."
+      : "Connect a signer to list Vaults.";
+    setList("vaultSwitchList", rows, emptyText, (item, vault) => {
+      item.appendChild(vaultSwitchButton(vault));
+    });
+  }
+
   function renderVaultManagementPanel(metadata) {
     const signerConnected = state.signerStatus === "connected";
     const organizationVault = hasOrganizationVaultControls(metadata);
-    setText("vaultManagementTitle", metadata?.name || activeVaultLabel() || "No vault loaded");
+    setText("vaultManagementTitle", "Vaults");
     setText("vaultManagementSummary", vaultManagementSummary(metadata));
-    renderAccessBadgeRow("vaultHealthBadges", vaultHealthBadges(metadata));
+    renderVaultSwitchList();
     safeSetHidden("accessConnectSignerButton", signerConnected);
     safeSetHidden("accessCreateOrganizationPanel", !showsCreateOrganizationControl(metadata));
     safeSetHidden("vaultPeopleSection", !organizationVault);
@@ -4932,24 +5012,16 @@ const FiniteBrainProductClient = (() => {
 
     // Populate dropdown list
     setList("accessFolderList", rows, "Load a Vault to inspect access", (item, row) => {
-      const folderButton = obsidianTreeButton(
-        row.path,
-        `${row.accessLabel} - ${accessKeySummary(row, openedFolders).toLowerCase()}`,
-        `obsidian-folder-button ${row.status}${row.id === activeRow?.id ? " active" : ""}`,
+      const folderButton = accessFolderOptionButton(
+        row,
+        row.id === activeRow?.id,
+        openedFolders,
         () => {
           selectAccessFolder(row.id);
           dropdown.hidden = true;
           button.setAttribute("aria-expanded", "false");
-        },
-        {
-          contextTarget: {
-            type: "folder",
-            folderId: row.id,
-            path: row.path,
-          },
         }
       );
-      appendAccessBadges(folderButton, sidebarAccessBadgesForFolder(row, openedFolders));
       item.appendChild(folderButton);
     });
 
@@ -7250,7 +7322,7 @@ const FiniteBrainProductClient = (() => {
     const accessViewSwitch = document.querySelector(".access-view-switch");
     if (accessViewSwitch) {
       accessViewSwitch.addEventListener("keydown", (event) => {
-        const tabs = ["accessFolderViewButton", "accessVaultViewButton"]
+        const tabs = ["accessVaultViewButton", "accessFolderViewButton"]
           .map((id) => $(id))
           .filter(Boolean);
         const activeIndex = tabs.findIndex((tab) => tab.getAttribute("aria-selected") === "true");
@@ -7259,17 +7331,17 @@ const FiniteBrainProductClient = (() => {
           event.preventDefault();
           const direction = event.key === "ArrowRight" ? 1 : -1;
           const nextIndex = (activeIndex + direction + tabs.length) % tabs.length;
-          setAccessView(nextIndex === 0 ? "folder" : "vault");
+          setAccessView(nextIndex === 0 ? "vault" : "folder");
           tabs[nextIndex]?.focus();
         }
         if (event.key === "Home") {
           event.preventDefault();
-          setAccessView("folder");
+          setAccessView("vault");
           tabs[0]?.focus();
         }
         if (event.key === "End") {
           event.preventDefault();
-          setAccessView("vault");
+          setAccessView("folder");
           tabs[tabs.length - 1]?.focus();
         }
       });
@@ -7579,6 +7651,7 @@ const FiniteBrainProductClient = (() => {
     normalizeAccessView,
     normalizeSidebarMode,
     normalizeVisibleVault,
+    globalVaultControlState,
     npubFromHex,
     npubToHex,
     openFolderKeyGrants,

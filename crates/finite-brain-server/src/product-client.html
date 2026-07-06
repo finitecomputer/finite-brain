@@ -69,12 +69,7 @@
                 <option value="personal">Personal vault</option>
               </select>
               <input id="vaultIdInput" type="hidden" value="personal" />
-              <button id="loadVaultButton" class="compact-icon-button" type="button" title="Load vault" aria-label="Load vault">
-                <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
-                  <path d="M21 12a9 9 0 1 1-2.64-6.36" />
-                  <path d="M21 3v6h-6" />
-                </svg>
-              </button>
+              <button id="loadVaultButton" class="vault-load-button" type="button" title="Load and decrypt vault" aria-label="Load and decrypt vault">Load</button>
             </div>
             <button id="connectSignerButton" class="vault-connect-button" type="button">
               <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
@@ -153,32 +148,74 @@
           <div
             class="access-view-switch"
             role="tablist"
-            aria-label="Access management view"
+            aria-label="Vault and access views"
           >
             <button
-              id="accessFolderViewButton"
+              id="accessVaultViewButton"
               class="active"
               type="button"
               role="tab"
               aria-selected="true"
-              aria-controls="accessFolderPanel"
+              aria-controls="accessVaultPanel"
               tabindex="0"
             >
-              Folder
+              Vaults
             </button>
             <button
-              id="accessVaultViewButton"
+              id="accessFolderViewButton"
               type="button"
               role="tab"
               aria-selected="false"
-              aria-controls="accessVaultPanel"
+              aria-controls="accessFolderPanel"
               tabindex="-1"
             >
-              Vault
+              Access
             </button>
           </div>
 
-          <div id="accessFolderPanel" class="access-mode-panel" role="tabpanel" aria-labelledby="accessFolderViewButton">
+          <div
+            id="accessVaultPanel"
+            class="access-mode-panel"
+            role="tabpanel"
+            aria-labelledby="accessVaultViewButton"
+          >
+            <section class="vault-management-section vault-primary-section">
+              <div class="access-header">
+                <h3 id="vaultManagementTitle">Vaults</h3>
+                <p id="vaultManagementSummary" class="access-summary">Choose a Vault, then Load to decrypt its readable Folders.</p>
+              </div>
+              <ol id="vaultGuideSteps" class="vault-guide-steps" hidden></ol>
+              <ol id="vaultSwitchList" class="vault-switch-list" aria-label="Available Vaults"></ol>
+              <div class="access-button-row vault-quick-actions">
+                <button id="accessConnectSignerButton" type="button" class="secondary-action">Connect signer</button>
+                <button id="accessLoadVaultButton" type="button" class="access-add-button">Load</button>
+              </div>
+            </section>
+
+            <details id="accessCreateOrganizationPanel" class="access-vault-create">
+              <summary>Create organization vault</summary>
+              <div class="access-vault-create-body">
+                <label class="access-inline-field">
+                  <input
+                    id="accessOrganizationVaultNameInput"
+                    placeholder="New organization"
+                    autocomplete="off"
+                    spellcheck="false"
+                  />
+                  <button id="accessCreateOrganizationVaultButton" type="button" class="access-add-button">Create</button>
+                </label>
+                <p class="access-field-hint">Create an organization Vault with the active signer as admin.</p>
+              </div>
+            </details>
+          </div>
+
+          <div
+            id="accessFolderPanel"
+            class="access-mode-panel"
+            role="tabpanel"
+            aria-labelledby="accessFolderViewButton"
+            hidden
+          >
             <div class="access-folder-selector">
               <div class="access-folder-picker">
                 <span class="access-selector-label section-title">Folder</span>
@@ -304,43 +341,6 @@
                 </div>
               </details>
             </div>
-          </div>
-
-          <div
-            id="accessVaultPanel"
-            class="access-mode-panel"
-            role="tabpanel"
-            aria-labelledby="accessVaultViewButton"
-            hidden
-          >
-            <section class="vault-management-section vault-primary-section">
-              <div class="access-header">
-                <h3 id="vaultManagementTitle">No vault loaded</h3>
-                <p id="vaultManagementSummary" class="access-summary">Load a Vault to open readable Folders and manage access.</p>
-              </div>
-              <div id="vaultHealthBadges" class="access-badge-row"></div>
-              <ol id="vaultGuideSteps" class="vault-guide-steps" hidden></ol>
-              <div class="access-button-row vault-quick-actions">
-                <button id="accessConnectSignerButton" type="button" class="secondary-action">Connect signer</button>
-                <button id="accessLoadVaultButton" type="button" class="access-add-button">Load</button>
-              </div>
-            </section>
-
-            <details id="accessCreateOrganizationPanel" class="access-vault-create">
-              <summary>Create organization vault</summary>
-              <div class="access-vault-create-body">
-                <label class="access-inline-field">
-                  <input
-                    id="accessOrganizationVaultNameInput"
-                    placeholder="New organization"
-                    autocomplete="off"
-                    spellcheck="false"
-                  />
-                  <button id="accessCreateOrganizationVaultButton" type="button" class="access-add-button">Create</button>
-                </label>
-                <p class="access-field-hint">Create an organization Vault with the active signer as admin.</p>
-              </div>
-            </details>
 
             <section id="vaultPeopleSection" class="vault-management-section">
               <div class="access-section-header">
@@ -350,7 +350,7 @@
               <ol id="vaultPeopleList" class="access-who-has-list">
                 <li class="access-empty-state">Load an organization Vault to manage people.</li>
               </ol>
-              <div class="access-inline-form">
+              <div class="access-inline-form vault-people-form">
                 <label class="access-inline-field">
                   <input
                     id="vaultMemberNpubInput"

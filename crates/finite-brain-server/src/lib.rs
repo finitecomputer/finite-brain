@@ -1570,7 +1570,7 @@ mod tests {
             .await
             .expect("client css response");
         assert_eq!(css_response.status(), StatusCode::OK);
-        let css_body = to_bytes(css_response.into_body(), 64 * 1024)
+        let css_body = to_bytes(css_response.into_body(), 96 * 1024)
             .await
             .expect("client css body");
         let css_body = std::str::from_utf8(&css_body).expect("client css utf8");
@@ -1581,6 +1581,7 @@ mod tests {
         assert!(css_body.contains(".app-ribbon"));
         assert!(css_body.contains(".vault-picker"));
         assert!(css_body.contains(".vault-create-row"));
+        assert!(css_body.contains(".folder-option-button"));
         assert!(css_body.contains(".obsidian-folder-button"));
         assert!(css_body.contains(".context-menu"));
         assert!(css_body.contains(".graph-stage"));

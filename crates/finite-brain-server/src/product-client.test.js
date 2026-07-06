@@ -164,6 +164,8 @@ assert.equal(
   "2 members"
 );
 assert.match(htmlSource, /id="accessFolderButton"/);
+assert.match(htmlSource, /id="loadVaultButton"[^>]*>\s*Load\s*<\/button>/s);
+assert.doesNotMatch(htmlSource, /id="loadVaultButton"[^>]*compact-icon-button/);
 assert.match(htmlSource, /id="accessWhoHasList"/);
 assert.match(htmlSource, /id="accessAdvancedSection"/);
 assert.match(htmlSource, /id="accessSidebarCount"/);
@@ -171,10 +173,14 @@ assert.match(htmlSource, /id="accessShareHint"/);
 assert.match(htmlSource, /role="tablist"/);
 assert.match(htmlSource, /id="accessFolderViewButton"/);
 assert.match(htmlSource, /id="accessVaultViewButton"/);
+assert.match(htmlSource, />\s*Vaults\s*</);
+assert.match(htmlSource, />\s*Access\s*</);
 assert.match(htmlSource, /id="accessFolderPanel"/);
 assert.match(htmlSource, /id="accessVaultPanel"/);
+assert.match(htmlSource, /id="vaultSwitchList"/);
 assert.match(htmlSource, /id="vaultPeopleList"/);
 assert.match(htmlSource, /id="vaultPeopleSection"/);
+assert.match(htmlSource, /class="access-inline-form vault-people-form"/);
 assert.match(htmlSource, /id="vaultInvitationListSection"/);
 assert.match(htmlSource, /id="sharedFolderSection"/);
 assert.match(htmlSource, /id="accessCreateOrganizationPanel"/);
@@ -187,10 +193,26 @@ assert.doesNotMatch(htmlSource, /id="accessManageSection"/);
 assert.match(cssSource, /\[hidden\]\s*\{[^}]*display: none !important;/s);
 assert.match(cssSource, /\.access-view-switch/);
 assert.match(cssSource, /\.vault-management-section/);
+assert.match(cssSource, /#accessSidebarPanel\s*\{[^}]*overflow-x:\s*hidden;/s);
+assert.match(cssSource, /#accessSidebarPanel\s*\{[^}]*--access-panel-inset:\s*12px;/s);
+assert.match(cssSource, /\.access-mode-panel\s*\{[^}]*overflow-x:\s*hidden;/s);
+assert.match(cssSource, /\.access-who-has-list\s+li\s*\{[^}]*flex-wrap:\s*wrap;/s);
+assert.match(cssSource, /\.access-button-row\s*\{[^}]*display:\s*grid;/s);
+assert.doesNotMatch(cssSource, /\.vault-person-action\s*\{[^}]*min-width:\s*max-content/s);
+assert.match(cssSource, /\.vault-management-section\s+\.access-who-has-list\s+li\s*\{[^}]*background:\s*transparent;[^}]*box-shadow:\s*none;/s);
+assert.match(cssSource, /#vaultPeopleSection\s+\.vault-people-form\s*\{[^}]*box-shadow:\s*none;/s);
+assert.match(cssSource, /#vaultPeopleSection\s+\.access-inline-field\s*\{[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\)\s+minmax\(108px,\s*116px\);/s);
+assert.match(cssSource, /\.vault-switch-list/);
+assert.match(cssSource, /\.vault-switch-button/);
 assert.match(cssSource, /\.access-vault-create/);
+assert.match(cssSource, /\.vault-picker\s+\.vault-load-button/);
 assert.match(cssSource, /\.vault-control-strip\s*>\s*summary::before/);
 assert.doesNotMatch(cssSource, /\.vault-control-strip\s+summary::before/);
+assert.doesNotMatch(cssSource, /inset\s+2px\s+0/);
+assert.doesNotMatch(cssSource, /\.ribbon-button\.active::before/);
 assert.doesNotMatch(cssSource, /\.folder-dropdown\s*\{[^}]*position:\s*absolute/s);
+assert.match(cssSource, /\.folder-option-button/);
+assert.doesNotMatch(cssSource, /\.folder-dropdown-list\s+\.obsidian-folder-button/);
 assert.equal(client.normalizeAccessView("vault"), "vault");
 assert.equal(client.normalizeAccessView("folder"), "folder");
 assert.equal(client.normalizeAccessView("other"), "folder");
@@ -1208,6 +1230,10 @@ assert.equal(client.readerPageRows("general", draftPages)[0].label, "Draft Page"
   assert.equal(client.normalizeSidebarMode("bogus"), "files");
   assert.equal(client.sidebarModeLabel("search"), "Search");
   assert.equal(client.sidebarModeLabel("bogus"), "Files");
+  assert.equal(client.globalVaultControlState("files").hidden, false);
+  assert.equal(client.globalVaultControlState("search").hidden, false);
+  assert.equal(client.globalVaultControlState("access").hidden, true);
+  assert.equal(client.globalVaultControlState("bogus").hidden, false);
   assert.equal(
     JSON.stringify(client.commandPaletteCommands().map((row) => row.id)),
     JSON.stringify(["files", "search", "access", "graph", "new-page", "refresh"])
