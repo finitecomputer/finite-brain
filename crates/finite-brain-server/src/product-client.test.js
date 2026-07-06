@@ -1653,6 +1653,39 @@ assert.equal(client.readerPageRows("general", draftPages)[0].label, "Draft Page"
     JSON.stringify(linkContext.backlinks.map((row) => [row.label, row.key])),
     JSON.stringify([["Beta", "general/beta"]])
   );
+  assert.equal(client.pageKeyForReference("Beta", [
+    {
+      folderId: "general",
+      key: "general/beta",
+      objectId: "beta",
+      path: "wiki/beta.md",
+      status: "ready",
+      text: "# Beta\n\nBack to [[Alpha]].",
+      title: "Beta",
+    },
+  ]), "general/beta");
+  assert.equal(client.pageKeyForReference("wiki/beta.md", [
+    {
+      folderId: "general",
+      key: "general/beta",
+      objectId: "beta",
+      path: "wiki/beta.md",
+      status: "ready",
+      text: "# Beta\n\nBack to [[Alpha]].",
+      title: "Beta",
+    },
+  ]), "general/beta");
+  assert.equal(client.pageKeyForReference("Locked", [
+    {
+      folderId: "restricted",
+      key: "restricted/locked",
+      objectId: "locked",
+      path: "locked.md",
+      status: "locked",
+      text: "# Locked",
+      title: "Locked",
+    },
+  ]), null);
   const pathLinkContext = client.pageLinkContext(
     {
       folderId: "docs",

@@ -1842,6 +1842,10 @@ const FiniteBrainProductClient = (() => {
     return page.title || pageTitleFromText(page.text ?? "", pageTitleFromPath(page.path, page.objectId));
   }
 
+  function pageKeyForPage(page) {
+    return page.key || pageKey(page.folderId, page.objectId);
+  }
+
   function normalizePageReference(value) {
     return String(value || "")
       .trim()
@@ -1863,6 +1867,35 @@ const FiniteBrainProductClient = (() => {
       if (!/^https?:\/\//i.test(target)) links.add(normalizePageReference(target));
     }
     return [...links].filter(Boolean);
+  }
+
+  function pageReferencesForPage(page) {
+    return [
+      pageTitleForPage(page),
+      page.path || `${page.objectId}.md`,
+      String(page.path || `${page.objectId}.md`).split("/").pop(),
+    ]
+      .map(normalizePageReference)
+      .filter(Boolean);
+  }
+
+  function pageReferenceMap(pages = readablePages()) {
+    const byReference = new Map();
+    for (const page of pages.filter(isReadablePage)) {
+      for (const reference of pageReferencesForPage(page)) {
+        if (!byReference.has(reference)) byReference.set(reference, page);
+      }
+    }
+    return byReference;
+  }
+
+  function pageForReference(reference, pages = readablePages()) {
+    return pageReferenceMap(pages).get(normalizePageReference(reference)) || null;
+  }
+
+  function pageKeyForReference(reference, pages = readablePages()) {
+    const page = pageForReference(reference, pages);
+    return page ? pageKeyForPage(page) : null;
   }
 
   function inlineLinkSegments(text) {
@@ -2925,24 +2958,10 @@ const FiniteBrainProductClient = (() => {
 
   function pageLinkContext(page, pages = readablePages()) {
     if (!isReadablePage(page)) return { backlinks: [], outgoing: [] };
-    const keyForPage = (candidate) => candidate.key || pageKey(candidate.folderId, candidate.objectId);
     const readable = [...pages].filter(isReadablePage);
-    const referencesForPage = (candidate) =>
-      [
-        pageTitleForPage(candidate),
-        candidate.path || `${candidate.objectId}.md`,
-        String(candidate.path || `${candidate.objectId}.md`).split("/").pop(),
-      ]
-        .map(normalizePageReference)
-        .filter(Boolean);
-    const byReference = new Map();
-    for (const candidate of readable) {
-      for (const reference of referencesForPage(candidate)) {
-        if (!byReference.has(reference)) byReference.set(reference, candidate);
-      }
-    }
-    const currentKey = keyForPage(page);
-    const currentReferences = new Set(referencesForPage(page));
+    const byReference = pageReferenceMap(readable);
+    const currentKey = pageKeyForPage(page);
+    const currentReferences = new Set(pageReferencesForPage(page));
     const outgoing = extractPageLinks(page.text).map((targetRef) => {
       const target = byReference.get(targetRef);
       if (!target) {
@@ -2955,19 +2974,19 @@ const FiniteBrainProductClient = (() => {
       }
       return {
         detail: target.folderId,
-        key: keyForPage(target),
+        key: pageKeyForPage(target),
         label: pageTitleForPage(target),
         status: "resolved",
       };
     });
     const backlinks = readable
-      .filter((candidate) => keyForPage(candidate) !== currentKey)
+      .filter((candidate) => pageKeyForPage(candidate) !== currentKey)
       .filter((candidate) =>
         extractPageLinks(candidate.text).some((targetRef) => currentReferences.has(targetRef))
       )
       .map((candidate) => ({
         detail: candidate.folderId,
-        key: keyForPage(candidate),
+        key: pageKeyForPage(candidate),
         label: pageTitleForPage(candidate),
         status: "resolved",
       }))
@@ -3331,6 +3350,41 @@ const FiniteBrainProductClient = (() => {
     render();
   }
 
+  function linkElementFromEventTarget(target) {
+    const node = target?.nodeType === 3 ? target.parentElement : target;
+    return node?.closest?.(".internal-link, .external-link") || null;
+  }
+
+  function openInternalPageReference(reference) {
+    const key = pageKeyForReference(reference);
+    if (!key) return false;
+    selectReaderPage(key);
+    return true;
+  }
+
+  function activatePageContentLink(event) {
+    const link = linkElementFromEventTarget(event?.target);
+    const content = $("readerPageContent");
+    if (!link || !content?.contains?.(link)) return false;
+    const target = link.dataset?.target || "";
+    if (!target) return false;
+    event.preventDefault?.();
+    if (String(link.className || "").includes("external-link")) {
+      window.open?.(target, "_blank", "noopener,noreferrer");
+      return true;
+    }
+    if (openInternalPageReference(target)) return true;
+    state.lastError = `Page link not found: ${target}`;
+    log("Page link target was not found.", { target });
+    render();
+    return true;
+  }
+
+  function handlePageContentLinkKeydown(event) {
+    if (event.key !== "Enter" && event.key !== " ") return false;
+    return activatePageContentLink(event);
+  }
+
   function existingPagesForImport() {
     const pages = [];
     for (const [key, draft] of state.projection.localDrafts.entries()) {
@@ -3568,6 +3622,8 @@ const FiniteBrainProductClient = (() => {
       link.className = segment.kind === "external" ? "external-link" : "internal-link";
       appendFormattedText(link, segment.text || segment.target);
       if (segment.target) link.dataset.target = segment.target;
+      link.tabIndex = 0;
+      link.setAttribute?.("role", "link");
       parent.appendChild(link);
     }
   }
@@ -7651,7 +7707,11 @@ const FiniteBrainProductClient = (() => {
         refreshEditorSlashMenu();
       }
     });
+    $("readerPageContent").addEventListener("click", (event) => {
+      activatePageContentLink(event);
+    });
     $("readerPageContent").addEventListener("keydown", (event) => {
+      if (handlePageContentLinkKeydown(event)) return;
       handleEditorSlashKeydown(event);
     });
     $("pageDraftInput").addEventListener("input", () => {
@@ -7819,7 +7879,9 @@ const FiniteBrainProductClient = (() => {
     openFolderObject,
     openSyncObjects,
     parseOkfBundle,
+    pageKeyForReference,
     pageLinkContext,
+    pageReferencesForPage,
     pagePathLabel,
     pageStatsForText,
     personalVaultIdForPubkey,

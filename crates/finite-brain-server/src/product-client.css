@@ -2715,7 +2715,17 @@ pre {
 .internal-link,
 .external-link {
   color: #8fb6ff;
+  cursor: pointer;
   font-weight: 650;
+  text-decoration: none;
+}
+
+.internal-link:hover,
+.external-link:hover,
+.internal-link:focus-visible,
+.external-link:focus-visible {
+  color: #a9c7ff;
+  text-decoration: underline;
 }
 
 .note-content-empty {
