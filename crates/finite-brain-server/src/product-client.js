@@ -66,18 +66,26 @@ const FiniteBrainProductClient = (() => {
     [
       "# AGENTS.md",
       "",
-      "This is a FiniteBrain vault. Treat every readable Folder as its own encrypted,",
-      "syncable LLM wiki scope.",
+      "This is a FiniteBrain vault. Start with [[Getting Started]], then use",
+      "[[How FiniteBrain Works]] and [[Access And Folders]] to understand the",
+      "product model. Treat every readable Folder as its own encrypted, syncable",
+      "LLM wiki scope.",
       "",
       "## Operating Model",
       "",
-      "FiniteBrain stores encrypted Vault state on the server. Trusted clients and agent runtimes open Folder Key Grants locally, decrypt accessible Pages and Assets, edit ordinary files, then sync encrypted changes back.",
+      "FiniteBrain stores encrypted Vault state on the server. Trusted clients and",
+      "agent runtimes open Folder Key Grants locally, decrypt accessible Pages and",
+      "Assets, edit ordinary files, then sync encrypted changes back. See",
+      "[[How FiniteBrain Works]] for the technical spine and [[Access And Folders]] for",
+      "the privacy boundary.",
       "",
       "Agents act as the user. They do not have independent Vault membership, Folder access, or attribution unless explicitly modeled as a separate user.",
       "",
       "A Vault is not one giant wiki with folders. It is a namespace of many",
       "Folder-scoped LLM wikis. Folder access determines which wiki scopes can be read",
-      "or written.",
+      "or written. The local scope contract lives in [[Getting Started Config]],",
+      "with navigation in [[Getting Started Index]] and maintenance history in",
+      "[[Getting Started Log]].",
       "",
       "## Use `fbrain`",
       "",
@@ -111,8 +119,9 @@ const FiniteBrainProductClient = (() => {
       "1. Sync.",
       "2. Unlock readable folders.",
       "3. Read this file.",
-      "4. Read `HUMANS.md`.",
-      "5. Read `_index.md`, `index.md`, `log.md`, `config.md`, or `SCHEMA.md` when present.",
+      "4. Read [[HUMANS.md]].",
+      "5. Read [[Getting Started Index]], [[Getting Started Config]],",
+      "   [[Getting Started Log]], `index.md`, or `SCHEMA.md` when present.",
       "6. Search before creating new pages.",
       "",
       "Only edit readable content. Do not edit `.finitebrain/`, encrypted sync evidence, locked metadata-only folders, generated state files, auth files, or key material.",
@@ -130,17 +139,17 @@ const FiniteBrainProductClient = (() => {
       "",
       "Use each readable Folder as a durable LLM wiki scope.",
       "",
-      "- The default `getting-started` Folder is the shared orientation scope for users and agents.",
-      "- The default `restricted` Folder is the starter tighter-boundary scope for sensitive work.",
+      "- The default `getting-started` Folder is the shared orientation scope for users and agents. Its starter map is [[Getting Started]].",
+      "- The default `restricted` Folder is the starter tighter-boundary scope for sensitive work. If readable, its starter note is [[Restricted Folder Example]].",
       "- Keep raw sources immutable under that Folder's `raw/`.",
       "- Store non-Markdown source files under that Folder's `raw/assets/`.",
       "- Pair every Asset with a Markdown Source Note that records provenance, content type, hash or extraction status when known.",
       "- Cite Source Notes from synthesized wiki pages; do not make the blob itself the knowledge surface.",
       "- Put synthesized durable knowledge in that Folder's `wiki/`.",
       "- Prefer updating existing pages over creating duplicates.",
-      "- Use `[[wikilinks]]` for internal relationships.",
-      "- Keep the Folder-local `_index.md` current.",
-      "- Append only to the Folder-local `log.md` after meaningful writes in that Folder.",
+      "- Use wikilinks for internal relationships.",
+      "- Keep the Folder-local `_index.md` current; this starter scope uses [[Getting Started Index]].",
+      "- Append only to the Folder-local `log.md` after meaningful writes in that Folder; this starter scope uses [[Getting Started Log]].",
       "- Use `inventory/` for source candidates, open questions, watch items, and next actions.",
       "- Use `datasets/` for manifests, schemas, samples, and query recipes.",
       "- Use `output/` for reports, plans, summaries, and deliverables.",
@@ -164,14 +173,15 @@ const FiniteBrainProductClient = (() => {
       "archive/",
       "```",
       "",
-      "Local folder instructions may override this layout.",
+      "Local folder instructions may override this layout. Human-facing context is in",
+      "[[HUMANS.md]], and the seeded graph hub is [[Getting Started]].",
       "",
       "## Final Report",
       "",
       "When finished, report:",
       "",
       "- working tree path",
-      "- acting npub, if relevant",
+      "- acting email, if relevant",
       "- folders readable or locked",
       "- pages or sources created/updated/moved/deleted",
       "- index/log updates",
@@ -185,10 +195,12 @@ const FiniteBrainProductClient = (() => {
       "",
       "This vault is your private, encrypted knowledge workspace.",
       "",
-      "FiniteBrain keeps the server blind to page and asset contents. Your client or agent opens the vault locally, decrypts what you can access, edits ordinary files, then syncs encrypted changes back.",
+      "FiniteBrain keeps the server blind to page and asset contents. Your client or agent opens the vault locally, decrypts what you can access, edits ordinary files, then syncs encrypted changes back. [[How FiniteBrain Works]] explains that flow.",
       "",
       "A FiniteBrain vault is a namespace of wiki scopes. Each top-level Folder is its",
-      "own LLM wiki with its own `_index.md`, `config.md`, and `log.md`.",
+      "own LLM wiki with its own `_index.md`, `config.md`, and `log.md`. The",
+      "starter orientation scope is mapped in [[Getting Started Index]], configured",
+      "by [[Getting Started Config]], and recorded in [[Getting Started Log]].",
       "",
       "Inside a Folder:",
       "",
@@ -205,13 +217,24 @@ const FiniteBrainProductClient = (() => {
       "rules. The default `restricted` Folder demonstrates a tighter access boundary",
       "for private work.",
       "",
-      "Agents should read `AGENTS.md` first, sync before editing, avoid duplicates, preserve sources, create Source Notes for assets, and keep the wiki useful for future work.",
+      "Read [[Getting Started]] for the first-page map, [[Access And Folders]] for",
+      "sharing rules, and [[AGENTS.md]] for agent operating instructions. Agents",
+      "should sync before editing, avoid duplicates, preserve sources, create Source",
+      "Notes for assets, and keep the wiki useful for future work.",
     ].join("\n") + "\n";
-  const DEFAULT_SCOPE_CONFIG_MARKDOWN =
+  const defaultScopeConfigMarkdown = (folderId) => {
+    const label = folderId === "restricted" ? "Restricted" : "Getting Started";
+    const peerLabel = folderId === "restricted" ? "Getting Started" : "Restricted";
+    return (
     [
-      "# Wiki Scope Config",
+      `# ${label} Config`,
       "",
       "This Folder is an independent FiniteBrain LLM wiki scope.",
+      "",
+      `Use [[${label} Index]] as the local navigation hub and append meaningful`,
+      `maintenance to [[${label} Log]]. Shared product orientation starts at`,
+      "[[Getting Started]], with related model notes in [[How FiniteBrain Works]]",
+      "and [[Access And Folders]].",
       "",
       "Use this Folder's `raw/`, `raw/assets/`, `wiki/`, `inventory/`, `datasets/`, and `output/`",
       "directories for knowledge that belongs inside this access boundary. Keep this",
@@ -222,29 +245,80 @@ const FiniteBrainProductClient = (() => {
       "",
       "Do not summarize restricted sibling Folder contents here unless the user",
       "explicitly chooses this Folder as an equal-or-more-restricted destination.",
-    ].join("\n") + "\n";
-  const DEFAULT_SCOPE_INDEX_MARKDOWN =
+      "",
+      `Related default scope: ${peerLabel === "Restricted" ? "`restricted`" : "`getting-started`"}. Keep cross-Folder synthesis access-safe.`,
+    ].join("\n") + "\n"
+    );
+  };
+  const defaultScopeIndexMarkdown = (folderId) => {
+    if (folderId === "restricted") {
+      return (
+        [
+          "# Restricted Index",
+          "",
+          "This index maps the restricted starter wiki scope. It should describe only",
+          "content that belongs inside this Folder's access boundary.",
+          "",
+          "## Local Pages",
+          "",
+          "- [[Restricted Folder Example]] explains this default tighter-boundary Folder.",
+          "- [[Restricted Config]] defines the local wiki conventions.",
+          "- [[Restricted Log]] records meaningful writes in this Folder only.",
+          "",
+          "## Related Orientation",
+          "",
+          "- [[Getting Started]] is the shared starter map.",
+          "- [[How FiniteBrain Works]] explains trusted-client encryption and sync.",
+          "- [[Access And Folders]] explains why restricted content must stay inside an equal-or-more-restricted destination.",
+          "- [[AGENTS.md]] gives agent operating rules.",
+        ].join("\n") + "\n"
+      );
+    }
+    return (
+      [
+        "# Getting Started Index",
+        "",
+        "This index maps the shared orientation wiki scope.",
+        "",
+        "## Local Pages",
+        "",
+        "- [[Getting Started]] is the first-page map for a new Vault.",
+        "- [[How FiniteBrain Works]] explains the trusted-client and encrypted-server model.",
+        "- [[Access And Folders]] explains Folder-scoped access boundaries.",
+        "- [[AGENTS.md]] gives agent operating rules.",
+        "- [[HUMANS.md]] gives human-facing orientation.",
+        "- [[Getting Started Config]] defines this scope's wiki conventions.",
+        "- [[Getting Started Log]] records meaningful writes in this Folder only.",
+        "",
+        "## Boundaries",
+        "",
+        "Do not list private titles, summaries, source hints, assets, or activity from",
+        "sibling Folders here. Link out only to product-safe default orientation.",
+      ].join("\n") + "\n"
+    );
+  };
+  const defaultScopeLogMarkdown = (folderId) => {
+    const label = folderId === "restricted" ? "Restricted" : "Getting Started";
+    return (
     [
-      "# Folder Index",
+      `# ${label} Log`,
       "",
-      "This index maps this Folder's local wiki scope.",
-      "",
-      "Add durable pages, Source Notes, outputs, and open questions here as this Folder",
-      "grows. Do not list private titles, summaries, or activity from sibling Folders.",
-    ].join("\n") + "\n";
-  const DEFAULT_SCOPE_LOG_MARKDOWN =
-    [
-      "# Folder Log",
-      "",
-      "Append meaningful changes in this Folder only.",
+      `Append meaningful changes in this Folder only. Keep [[${label} Index]] in`,
+      `sync with durable pages and follow [[${label} Config]] for scope rules.`,
       "",
       "Do not record activity from sibling Folders here.",
-    ].join("\n") + "\n";
+    ].join("\n") + "\n"
+    );
+  };
   const DEFAULT_GETTING_STARTED_README_MARKDOWN =
     [
       "# Getting Started",
       "",
       "This Folder explains the default FiniteBrain vault layout.",
+      "",
+      "For humans, read [[HUMANS.md]]. For agents, read [[AGENTS.md]]. For the local",
+      "scope map, use [[Getting Started Index]], [[Getting Started Config]], and",
+      "[[Getting Started Log]].",
       "",
       "Default Folders:",
       "",
@@ -254,6 +328,12 @@ const FiniteBrainProductClient = (() => {
       "  copy restricted titles, summaries, source notes, assets, or logs back here",
       "  unless the intended audience is allowed to read them.",
       "",
+      "Core starter pages:",
+      "",
+      "- [[How FiniteBrain Works]] explains encrypted server state, local Folder Keys, Pages, Assets, and sync.",
+      "- [[Access And Folders]] explains why every Folder is its own wiki boundary.",
+      "- [[Restricted Folder Example]] is readable only when that Folder's key is open.",
+      "",
       "Inside any Folder, keep non-Markdown source files as encrypted Assets under",
       "`raw/assets/`. Pair each Asset with a Markdown Source Note in the same Folder.",
       "Agents and synthesized wiki pages cite the Source Note; the Asset preserves the",
@@ -261,6 +341,9 @@ const FiniteBrainProductClient = (() => {
       "",
       "Keep durable knowledge inside Folder-scoped `wiki/` pages, and keep private or",
       "sensitive work inside a Folder with an equal or tighter access boundary.",
+      "",
+      "Backlinks to keep this starter graph connected: [[HUMANS.md]], [[AGENTS.md]],",
+      "[[Getting Started Index]], [[How FiniteBrain Works]], and [[Access And Folders]].",
     ].join("\n") + "\n";
   const DEFAULT_HOW_FINITEBRAIN_WORKS_MARKDOWN =
     [
@@ -270,6 +353,10 @@ const FiniteBrainProductClient = (() => {
       "opens Folder Keys locally, decrypts the Pages and Assets it can access, edits",
       "ordinary files, and syncs encrypted updates back.",
       "",
+      "This is the technical companion to [[Getting Started]] and should stay",
+      "consistent with [[Access And Folders]], [[Getting Started Config]], and",
+      "[[AGENTS.md]].",
+      "",
       "Non-Markdown source files are encrypted as Assets and kept under `raw/assets/`.",
       "Agents use Markdown Source Notes to describe those Assets before synthesizing",
       "durable wiki pages from them.",
@@ -277,12 +364,21 @@ const FiniteBrainProductClient = (() => {
       "Each top-level Folder is an LLM wiki scope. A Folder has its own `config.md`,",
       "`_index.md`, and `log.md`, so activity and summaries stay inside the same",
       "access boundary as the content they describe.",
+      "",
+      "Graph View and backlinks are client-side projections over decrypted Pages. The",
+      "server stores encrypted objects and sync records; it does not need plaintext",
+      "page titles, links, backlinks, or wiki indexes.",
+      "",
+      "Related pages: [[Getting Started]], [[Access And Folders]], [[Getting Started Index]], [[HUMANS.md]], and [[AGENTS.md]].",
     ].join("\n") + "\n";
   const DEFAULT_ACCESS_AND_FOLDERS_MARKDOWN =
     [
       "# Access And Folders",
       "",
       "Access is Folder-scoped.",
+      "",
+      "Read this with [[How FiniteBrain Works]]: Folder Keys are why the wiki graph",
+      "is built from readable local Pages instead of server-side plaintext indexing.",
       "",
       "- `getting-started` is the default shared orientation Folder.",
       "- `restricted` is the default example of a tighter access boundary.",
@@ -291,6 +387,11 @@ const FiniteBrainProductClient = (() => {
       "  people.",
       "- Do not copy restricted titles, summaries, Source Notes, Assets, or log entries",
       "  into a less-restricted Folder.",
+      "",
+      "Use [[Getting Started]] and [[Getting Started Index]] for shared orientation.",
+      "Use [[Restricted Folder Example]] only when the restricted Folder is readable.",
+      "Agent rules live in [[AGENTS.md]], and human-facing orientation lives in",
+      "[[HUMANS.md]].",
     ].join("\n") + "\n";
   const DEFAULT_RESTRICTED_EXAMPLE_MARKDOWN =
     [
@@ -298,12 +399,19 @@ const FiniteBrainProductClient = (() => {
       "",
       "This Folder demonstrates a tighter access boundary.",
       "",
+      "It is the restricted counterpart to [[Getting Started]]. Keep local navigation",
+      "in [[Restricted Index]], local rules in [[Restricted Config]], and local history",
+      "in [[Restricted Log]].",
+      "",
       "In an organization Vault, this Folder starts with access for admins only. Add",
       "specific members later when the work in this Folder should be shared with them.",
       "",
       "Keep this Folder's `_index.md` and `log.md` local to this Folder. Do not",
       "summarize this Folder into `getting-started` unless the user explicitly chooses",
       "that destination and the audience is allowed to see the summary.",
+      "",
+      "Related shared pages: [[Access And Folders]], [[How FiniteBrain Works]],",
+      "[[AGENTS.md]], and [[HUMANS.md]].",
     ].join("\n") + "\n";
   const defaultPage = (folderId, objectId, path, markdown) =>
     Object.freeze({ folderId, objectId, path, markdown });
@@ -312,10 +420,10 @@ const FiniteBrainProductClient = (() => {
       folderId,
       `obj_default_${folderId}_scope_config`,
       "config.md",
-      DEFAULT_SCOPE_CONFIG_MARKDOWN
+      defaultScopeConfigMarkdown(folderId)
     ),
-    defaultPage(folderId, `obj_default_${folderId}_scope_index`, "_index.md", DEFAULT_SCOPE_INDEX_MARKDOWN),
-    defaultPage(folderId, `obj_default_${folderId}_scope_log`, "log.md", DEFAULT_SCOPE_LOG_MARKDOWN),
+    defaultPage(folderId, `obj_default_${folderId}_scope_index`, "_index.md", defaultScopeIndexMarkdown(folderId)),
+    defaultPage(folderId, `obj_default_${folderId}_scope_log`, "log.md", defaultScopeLogMarkdown(folderId)),
   ];
   const defaultPrimaryScopePages = (folderId) => [
     defaultPage(folderId, "obj_default_agents", "AGENTS.md", DEFAULT_AGENTS_MARKDOWN),
@@ -441,8 +549,22 @@ const FiniteBrainProductClient = (() => {
     return state.identityByNpub.get(value) || null;
   }
 
+  function looksLikeEmailIdentity(value) {
+    return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(value || "").trim());
+  }
+
+  function identityEmailDisplay(identity) {
+    if (!identity) return null;
+    if (identity.nip05) return identity.nip05;
+    if (looksLikeEmailIdentity(identity.display)) return identity.display;
+    if (looksLikeEmailIdentity(identity.name)) return identity.name;
+    if (looksLikeEmailIdentity(identity.displayName)) return identity.displayName;
+    if (looksLikeEmailIdentity(identity.display_name)) return identity.display_name;
+    return null;
+  }
+
   function identityDisplay(npub) {
-    return identityForNpub(npub)?.display || shortKey(npub);
+    return identityEmailDisplay(identityForNpub(npub)) || "Email not resolved";
   }
 
   async function resolveIdentityInputValue(input, message) {
@@ -619,6 +741,19 @@ const FiniteBrainProductClient = (() => {
     };
   }
 
+  function signEventAdapter(options = {}) {
+    if (options.signEvent) return options.signEvent;
+    const provider = options.provider || window.nostr;
+    if (typeof provider?.signEvent !== "function") return null;
+    return (event) => provider.signEvent.call(provider, event);
+  }
+
+  function requireNip07SignEvent(options = {}) {
+    const signEvent = signEventAdapter(options);
+    if (!signEvent) throw new Error("NIP-07 signer is unavailable");
+    return signEvent;
+  }
+
   function normalizeAccessValue(access) {
     const value = String(access || "unknown")
       .trim()
@@ -761,7 +896,7 @@ const FiniteBrainProductClient = (() => {
     }
 
     const canManage =
-      row.access === "restricted" &&
+      folderAllowsDirectGrant(row) &&
       hasOpenedAccessFolderKey(row) &&
       state.signerStatus === "connected";
     if (intent === "people" && canManage && addForm && manageToggle) {
@@ -861,22 +996,32 @@ const FiniteBrainProductClient = (() => {
 
   function accessPeopleHint(row, metadata) {
     if (!row) return "Choose a Folder first.";
+    if (row.access === "all_members") {
+      return "All Vault members have access; use Add when a late member needs this Folder Key.";
+    }
     if (row.access !== "restricted") return "Direct people grants are only needed for restricted Folders.";
     if (metadata?.kind === "organization") return "Admins can open it; add explicit people when needed.";
-    return "Personal restricted Folders start owner-only; grant one npub when sharing is intentional.";
+    return "Personal restricted Folders start owner-only; grant one email when sharing is intentional.";
+  }
+
+  function folderAllowsDirectGrant(row) {
+    return row?.access === "restricted" || row?.access === "all_members";
   }
 
   function accessFlowHint(row, mode, keyOpen) {
     if (!row) return "Choose a Folder to manage access.";
-    if (mode === "people" && row.access !== "restricted") {
+    if (mode === "people" && !folderAllowsDirectGrant(row)) {
       return "This Folder uses Vault-level access, so there is no direct people list to edit.";
     }
     if (mode === "links" && row.access !== "restricted") {
       return "Create links from restricted Folders so the link carries a bounded Folder Key Grant.";
     }
     if (!keyOpen) return "Open this Folder key before creating grants or links.";
-    if (mode === "people") return "Grant adds one npub. Remove rotates the Folder Key and re-encrypts readable Pages.";
-    if (mode === "links") return "Create a single-use link for a target identity, or accept an existing link.";
+    if (mode === "people" && row.access === "all_members") {
+      return "Grant sends the current Folder Key to an existing Vault member.";
+    }
+    if (mode === "people") return "Grant adds one email. Remove rotates the Folder Key and re-encrypts readable Pages.";
+    if (mode === "links") return "Create a single-use link for a target email, or accept an existing link.";
     return "Choose People or Links when this Folder needs an access change.";
   }
 
@@ -4615,7 +4760,7 @@ const FiniteBrainProductClient = (() => {
       {
         done: Boolean(organizationLoaded && isAdmin),
         id: "admin",
-        label: "Use a Vault admin npub",
+        label: "Use a Vault admin email",
       },
     ];
   }
@@ -5085,7 +5230,10 @@ const FiniteBrainProductClient = (() => {
       return;
     }
 
-    const canManage = row.access === "restricted" && hasOpenedAccessFolderKey(row) && state.signerStatus === "connected";
+    const canManage =
+      folderAllowsDirectGrant(row) &&
+      hasOpenedAccessFolderKey(row) &&
+      state.signerStatus === "connected";
     manageToggle.hidden = !canManage;
     if (!canManage) addForm.hidden = true;
     setText("accessManageToggleLabel", addForm.hidden ? "Manage" : "Cancel");
@@ -5157,12 +5305,7 @@ const FiniteBrainProductClient = (() => {
   function accessPersonName(person) {
     if (!person) return "-";
     if (typeof person === "string") return identityDisplay(person);
-    return (
-      person.name ||
-      person.displayName ||
-      person.display_name ||
-      identityDisplay(accessPersonId(person))
-    );
+    return identityEmailDisplay(person) || identityDisplay(accessPersonId(person));
   }
 
   function addAccessListPerson(accessList, person, role, type, removable = false) {
@@ -5232,10 +5375,10 @@ const FiniteBrainProductClient = (() => {
     addButton.disabled = state.accessBusy || state.signerStatus !== "connected";
 
     addButton.onclick = () => {
-      const npub = addInput.value.trim();
-      if (npub && row) {
+      const email = addInput.value.trim();
+      if (email && row) {
         // Set the target field that the existing function expects
-        $("accessTargetNpubInput").value = npub;
+        $("accessTargetNpubInput").value = email;
         state.activeAccessIntent = "people";
         grantFolderAccessFromPanel();
         addInput.value = "";
@@ -5248,7 +5391,12 @@ const FiniteBrainProductClient = (() => {
       }
     };
 
-    setText("accessAddPersonHint", `Enter npub to grant access to "${row.path}"`);
+    setText(
+      "accessAddPersonHint",
+      row.access === "all_members"
+        ? `Enter an existing Vault member email to send the Folder Key for "${row.path}"`
+        : `Enter an email to grant access to "${row.path}"`
+    );
   }
 
   function removePersonAccess(personId, folderId) {
@@ -5295,7 +5443,7 @@ const FiniteBrainProductClient = (() => {
       } else if (row.access !== "restricted") {
         shareHint.textContent = accessFlowHint(row, "links", keyOpen);
       } else {
-        shareHint.textContent = "Target npub receives a single-use Folder Key Grant through the link.";
+        shareHint.textContent = "Target email receives a single-use Folder Key Grant through the link.";
       }
     }
 
@@ -5462,12 +5610,12 @@ const FiniteBrainProductClient = (() => {
 
   async function signAuthHeader(path, options = {}) {
     if (!state.config) throw new Error("Product Client config has not loaded");
-    if (!window.nostr?.signEvent) throw new Error("NIP-07 signer is unavailable");
+    const signEvent = requireNip07SignEvent();
     const method = options.method || "GET";
     const bodyText = options.body || "";
     const url = `${state.config.publicBaseUrl.replace(/\/$/, "")}${path}`;
     const eventTemplate = await buildAuthEventTemplate(method, url, bodyText);
-    const signed = await window.nostr.signEvent(eventTemplate);
+    const signed = await signEvent(eventTemplate);
     return `${state.config.authScheme} ${utf8Base64(JSON.stringify(signed))}`;
   }
 
@@ -5551,7 +5699,7 @@ const FiniteBrainProductClient = (() => {
     if (!input?.vaultId) throw new Error("Vault bootstrap needs a Vault id");
     if (!input?.kind) throw new Error("Vault bootstrap needs a Vault kind");
     const actorNpub = input.actorNpub || currentActorNpub();
-    const signEvent = input.signEvent || ((event) => window.nostr.signEvent(event));
+    const signEvent = requireNip07SignEvent(input);
     const keyring = input.keyring || createSessionKeyring();
     const bootstrapGrants = [];
     const folderKeys = new Map();
@@ -5590,7 +5738,7 @@ const FiniteBrainProductClient = (() => {
     if (!input?.keyring) throw new Error("Default Vault Pages need an opened keyring");
     if (!input?.vaultId) throw new Error("Default Vault Pages need a Vault id");
     const actorNpub = input.actorNpub || currentActorNpub();
-    const signEvent = input.signEvent || ((event) => window.nostr.signEvent(event));
+    const signEvent = requireNip07SignEvent(input);
     const pages = input.pages || defaultVaultPages(input.kind);
     const writes = [];
     let pageIndex = 0;
@@ -5698,9 +5846,11 @@ const FiniteBrainProductClient = (() => {
     if (state.signerStatus !== "connected") throw new Error("Connect a NIP-07 signer first");
     const vaultId = vaultIdFromName("org", name);
     const metadata = await createVault(vaultId, "organization", name);
+    const createdKeyring = state.keyring;
     if (input) input.value = "";
     rememberVisibleVault(metadata);
     setActiveVaultId(metadata.vaultId);
+    state.keyring = createdKeyring;
     state.metadata = metadata;
     await loadVisibleVaults();
     log("Created organization Vault.", { vaultId: metadata.vaultId });
@@ -5739,9 +5889,9 @@ const FiniteBrainProductClient = (() => {
     if (state.activeVaultId === PERSONAL_VAULT_PLACEHOLDER_ID || state.activeVaultId === state.config?.defaultVaultId) {
       setActiveVaultId(personalVaultIdForPubkey(pubkey), { reset: false });
     }
-    setText("signerDetail", `Connected as ${shortKey(pubkey)}.`);
+    setText("signerDetail", "Signer connected.");
     setText("authDetail", "Signed requests are ready for protected Vault routes.");
-    log("Connected NIP-07 signer.", { pubkey: shortKey(pubkey) });
+    log("Connected signer.", { status: "connected" });
     await loadVisibleVaults().catch((error) => {
       state.lastError = error.message;
       log("Failed to load visible Vaults.", { error: error.message });
@@ -6004,6 +6154,15 @@ const FiniteBrainProductClient = (() => {
     return row;
   }
 
+  function requireGrantableAccessRow() {
+    const row = activeAccessRow();
+    if (!row) throw new Error("Select a Folder first");
+    if (!folderAllowsDirectGrant(row)) {
+      throw new Error("Folder key grants are available for restricted or all-members Folders");
+    }
+    return row;
+  }
+
   function openedAccessFolderKey(row) {
     const keyVersion = row.currentKeyVersion || currentFolderKeyVersion(row.id);
     const key = state.keyring?.keys.get(folderKeyId(state.activeVaultId, row.id, keyVersion));
@@ -6018,7 +6177,7 @@ const FiniteBrainProductClient = (() => {
   }
 
   async function normalizedTargetNpub() {
-    return normalizedNpubInput("accessTargetNpubInput", "Paste a target identity first");
+    return normalizedNpubInput("accessTargetNpubInput", "Paste an email first");
   }
 
   async function normalizedNpubInput(inputId, message) {
@@ -6207,7 +6366,7 @@ const FiniteBrainProductClient = (() => {
 
   function activeSignerInviteDetail() {
     if (state.signerStatus !== "connected" || !state.pubkeyHex) return "Connect signer";
-    return `Active signer ${shortKey(npubFromHex(state.pubkeyHex))}. Invites are bound to the target identity.`;
+    return "Active signer connected. Invites are bound to the target email.";
   }
 
   function vaultInvitationCreatePath(vaultId) {
@@ -6304,8 +6463,7 @@ const FiniteBrainProductClient = (() => {
   }
 
   async function buildAdminAccessChangeEvent(input) {
-    const signEvent = input.signEvent || window.nostr?.signEvent;
-    if (!signEvent) throw new Error("NIP-07 signer is unavailable");
+    const signEvent = requireNip07SignEvent(input);
     const createdAtUnix = input.createdAtUnix || Math.floor(Date.now() / 1000);
     const createdAt = accessChangeCreatedAt(createdAtUnix);
     const adminNpub = input.adminNpub || currentActorNpub();
@@ -6340,8 +6498,7 @@ const FiniteBrainProductClient = (() => {
   }
 
   async function buildFolderKeyGrantRequest(input) {
-    const signEvent = input.signEvent || window.nostr?.signEvent;
-    if (!signEvent) throw new Error("NIP-07 signer is unavailable");
+    const signEvent = requireNip07SignEvent(input);
     const encrypt = nip44EncryptAdapter(input);
     if (!encrypt && !input.allowPlaintextDevelopmentGrant) {
       throw new Error("NIP-44 encryption is unavailable");
@@ -6457,7 +6614,7 @@ const FiniteBrainProductClient = (() => {
   }
 
   async function addVaultMemberFromPanel() {
-    const targetNpub = await normalizedNpubInput("vaultMemberNpubInput", "Paste a member identity first");
+    const targetNpub = await normalizedNpubInput("vaultMemberNpubInput", "Paste a member email first");
     state.accessBusy = true;
     state.accessResult = null;
     render();
@@ -6480,7 +6637,7 @@ const FiniteBrainProductClient = (() => {
   }
 
   async function addVaultAdminFromPanel() {
-    const targetNpub = await normalizedNpubInput("vaultAdminNpubInput", "Paste an admin identity first");
+    const targetNpub = await normalizedNpubInput("vaultAdminNpubInput", "Paste an admin email first");
     state.accessBusy = true;
     state.accessResult = null;
     render();
@@ -6577,8 +6734,7 @@ const FiniteBrainProductClient = (() => {
     const folderKey = bytesToBase64(newRawKey);
     const createdAtUnix = input.createdAtUnix || Math.floor(Date.now() / 1000);
     const actorNpub = input.actorNpub || currentActorNpub();
-    const signEvent = input.signEvent || window.nostr?.signEvent;
-    if (!signEvent) throw new Error("NIP-07 signer is unavailable");
+    const signEvent = requireNip07SignEvent(input);
     await importFolderKey(keyring, {
       vaultId,
       folderId: row.id,
@@ -6644,7 +6800,7 @@ const FiniteBrainProductClient = (() => {
   }
 
   async function grantFolderAccessFromPanel() {
-    const row = requireRestrictedAccessRow();
+    const row = requireGrantableAccessRow();
     const targetNpub = await normalizedTargetNpub();
     state.accessBusy = true;
     state.accessResult = null;
@@ -6667,10 +6823,11 @@ const FiniteBrainProductClient = (() => {
         { method: "POST", body }
       );
       state.metadata = metadata;
-      setAccessResult("ready", "Access granted", `${identityDisplay(targetNpub)} can open ${row.path}.`, {
+      const title = row.access === "all_members" ? "Folder key granted" : "Access granted";
+      setAccessResult("ready", title, `${identityDisplay(targetNpub)} can open ${row.path}.`, {
         grantId: grant.id,
       });
-      log("Granted restricted Folder access.", { folderId: row.id, targetNpub: identityDisplay(targetNpub) });
+      log("Granted Folder key/access.", { folderId: row.id, targetNpub: identityDisplay(targetNpub) });
     } catch (error) {
       setAccessResult("error", "Grant failed", error.message);
       throw error;
@@ -6732,7 +6889,7 @@ const FiniteBrainProductClient = (() => {
 
   async function createShareLinkFromPanel() {
     const row = requireRestrictedAccessRow();
-    const recipientNpub = await normalizedNpubInput("accessShareTargetInput", "Paste a share target identity first");
+    const recipientNpub = await normalizedNpubInput("accessShareTargetInput", "Paste a share target email first");
     state.accessBusy = true;
     state.accessResult = null;
     render();
@@ -6833,7 +6990,7 @@ const FiniteBrainProductClient = (() => {
   }
 
   async function createVaultInvitationFromPanel() {
-    const targetNpub = await normalizedNpubInput("vaultInviteTargetNpubInput", "Paste an invite identity first");
+    const targetNpub = await normalizedNpubInput("vaultInviteTargetNpubInput", "Paste an invite email first");
     state.accessBusy = true;
     state.accessResult = null;
     render();
@@ -6857,7 +7014,7 @@ const FiniteBrainProductClient = (() => {
         invitationId: invitation.id,
         acceptPath: invitation.acceptPath,
         expiresAt: invitation.expiresAt,
-        "target identity": identityDisplay(invitation.userId),
+        "target email": identityDisplay(invitation.userId),
       });
       log("Created Vault invitation.", { invitationId: invitation.id, vaultId: invitation.vaultId });
       await refreshVaultAdminLists();
@@ -6884,8 +7041,8 @@ const FiniteBrainProductClient = (() => {
         vaultId: invitation.vaultId,
         invitationId: invitation.id,
         acceptPath: invitation.acceptPath,
-        "target identity": identityDisplay(invitation.userId),
-        signer: state.pubkeyHex ? shortKey(npubFromHex(state.pubkeyHex)) : "none",
+        "target email": identityDisplay(invitation.userId),
+        signer: state.pubkeyHex ? "connected" : "none",
       });
       log("Loaded Vault invitation.", { invitationId: invitation.id, vaultId: invitation.vaultId });
       return invitation;
@@ -6919,8 +7076,9 @@ const FiniteBrainProductClient = (() => {
         `${invitation.vaultId} is now available to this signer.`,
         {
           status: invitation.status,
-          "folders granted": (invitation.initialFolderAccess || []).join(", ") || "none",
-          signer: state.pubkeyHex ? shortKey(npubFromHex(state.pubkeyHex)) : "none",
+          "initial access metadata": (invitation.initialFolderAccess || []).join(", ") || "none",
+          "folder keys": "grant or share separately",
+          signer: state.pubkeyHex ? "connected" : "none",
         }
       );
       log("Accepted Vault invitation.", { invitationId: invitation.id, vaultId: invitation.vaultId });
@@ -7635,6 +7793,7 @@ const FiniteBrainProductClient = (() => {
     encodeFolderObjectPagePlaintext,
     editorSlashCommandRows,
     extractPageLinks,
+    folderAllowsDirectGrant,
     folderShareLinkRows,
     graphEmptyStateCopy,
     graphLayout,

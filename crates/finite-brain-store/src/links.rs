@@ -208,9 +208,23 @@ impl BrainStore {
         }
         ensure_invitation_available(&invitation, user_id, now)?;
         let already_member = self.member_exists(&invitation.vault_id, user_id)?;
+        let vault = self.load_core_vault(&invitation.vault_id)?;
+        let restricted_initial_folder_access = invitation
+            .initial_folder_access
+            .iter()
+            .filter(|folder_id| {
+                vault.folders.iter().any(|folder| {
+                    folder.id == **folder_id && folder.access == FolderAccessMode::Restricted
+                })
+            })
+            .cloned()
+            .collect::<Vec<_>>();
 
         let tx = self.conn.transaction()?;
         insert_member_if_missing(&tx, &invitation.vault_id, user_id)?;
+        for folder_id in restricted_initial_folder_access {
+            insert_folder_access_if_missing(&tx, &invitation.vault_id, &folder_id, user_id)?;
+        }
         tx.execute(
             r#"
             UPDATE vault_invitations

@@ -151,6 +151,10 @@ assert.equal(
 assert.equal(client.accessActionRoute("delete-folder", { folderId: "restricted" }), null);
 assert.equal(client.accessIntentValue("share"), "links");
 assert.equal(client.accessIntentValue("manage"), "people");
+assert.equal(client.folderAllowsDirectGrant(folderRows[0]), true);
+assert.equal(client.folderAllowsDirectGrant(folderRows[1]), true);
+assert.equal(client.folderAllowsDirectGrant({ access: "admin_only" }), false);
+assert.equal(client.folderAllowsDirectGrant({ access: "owner" }), false);
 assert.equal(client.accessPanelState("links", folderRows[1]).status, "restricted");
 assert.equal(client.accessPanelState("links", folderRows[1]).mode, "links");
 assert.equal(client.accessPanelState("people", folderRows[1]).title, "Restricted");
@@ -170,6 +174,8 @@ assert.match(htmlSource, /id="accessWhoHasList"/);
 assert.match(htmlSource, /id="accessAdvancedSection"/);
 assert.match(htmlSource, /id="accessSidebarCount"/);
 assert.match(htmlSource, /id="accessShareHint"/);
+assert.match(htmlSource, /placeholder="name@example\.com"/);
+assert.doesNotMatch(htmlSource, /placeholder="[^"]*(npub|hex|NIP-05)/);
 assert.match(htmlSource, /role="tablist"/);
 assert.match(htmlSource, /id="accessFolderViewButton"/);
 assert.match(htmlSource, /id="accessVaultViewButton"/);
@@ -229,14 +235,14 @@ assert.equal(
   JSON.stringify([
     {
       id: "npub-admin",
-      name: "npub-admin",
+      name: "Email not resolved",
       role: "admin",
       type: "admin",
       removable: true,
     },
     {
       id: "npub-member",
-      name: "npub-member",
+      name: "Email not resolved",
       role: "member",
       type: "member",
       removable: true,
@@ -251,7 +257,7 @@ assert.equal(
   JSON.stringify([
     {
       id: "npub-owner",
-      name: "npub-owner",
+      name: "Email not resolved",
       role: "owner",
       type: "owner",
       removable: false,
@@ -360,6 +366,7 @@ assert.equal(client.readerPageRows("general", draftPages)[0].label, "Draft Page"
     verifiedAt: "2026-07-06T00:00:00Z",
   });
   assert.equal(client.identityDisplay(authorNpub), "alice@example.com");
+  assert.equal(client.identityDisplay(otherNpub), "Email not resolved");
   assert.equal(
     client.vaultPeopleRows({
       kind: "organization",
@@ -367,6 +374,14 @@ assert.equal(client.readerPageRows("general", draftPages)[0].label, "Draft Page"
       admins: [authorNpub],
     })[0].name,
     "alice@example.com"
+  );
+  assert.equal(
+    client.vaultPeopleRows({
+      kind: "organization",
+      members: [authorNpub, otherNpub],
+      admins: [authorNpub],
+    })[1].name,
+    "Email not resolved"
   );
 
   const devGrant = {
@@ -463,6 +478,29 @@ assert.equal(client.readerPageRows("general", draftPages)[0].label, "Draft Page"
   assert.equal(accessEvent.kind, 30078);
   assert.equal(JSON.stringify(accessEvent.tags), JSON.stringify(client.adminAccessChangeTags(accessPayload)));
   assert.equal(accessEvent.content, client.canonicalAdminAccessChangePayload(accessPayload));
+  let providerBoundSignCalls = 0;
+  const providerBoundSigner = {
+    signEvent(template) {
+      if (this !== providerBoundSigner) {
+        throw new TypeError("Cannot read properties of undefined (reading 'enable')");
+      }
+      providerBoundSignCalls += 1;
+      return {
+        ...template,
+        id: "provider-bound-access-change",
+        pubkey: "00".repeat(32),
+        sig: "provider-bound-signature",
+      };
+    },
+  };
+  const providerSignedAccessEvent = await client.buildAdminAccessChangeEvent({
+    ...accessPayload,
+    changeId: "access-change-provider-bound",
+    provider: providerBoundSigner,
+    createdAtUnix: Date.parse(accessPayload.createdAt) / 1000,
+  });
+  assert.equal(providerBoundSignCalls, 1);
+  assert.equal(providerSignedAccessEvent.id, "provider-bound-access-change");
 
   assert.equal(
     JSON.stringify(client.initialVaultInvitationFolders("getting-started restricted getting-started")),
@@ -666,6 +704,29 @@ assert.equal(client.readerPageRows("general", draftPages)[0].label, "Draft Page"
   assert.match(defaultPages[1].markdown, /Source Notes/);
   assert.match(defaultPages[2].markdown, /raw\/assets\//);
   assert.match(defaultPages[2].markdown, /Source Note/);
+  const seedGraphPages = defaultPages.map((page) => ({
+    ...page,
+    key: `${page.folderId}/${page.objectId}`,
+    status: "ready",
+    text: page.markdown,
+  }));
+  const missingSeedLinks = seedGraphPages.flatMap((page) =>
+    client
+      .pageLinkContext(page, seedGraphPages)
+      .outgoing.filter((row) => row.status !== "resolved")
+      .map((row) => `${page.folderId}/${page.path}->${row.label}`)
+  );
+  assert.equal(JSON.stringify(missingSeedLinks), JSON.stringify([]));
+  assert.equal(
+    seedGraphPages.filter((page) => client.extractPageLinks(page.markdown).length > 0).length,
+    defaultPages.length
+  );
+  assert.equal(
+    seedGraphPages.filter((page) => client.pageLinkContext(page, seedGraphPages).backlinks.length > 0).length,
+    defaultPages.length
+  );
+  assert.match(defaultPages[3].markdown, /# Getting Started Index/);
+  assert.match(defaultPages[9].markdown, /# Restricted Index/);
 
   let bootstrapSignedIndex = 0;
   const bootstrapSigner = async (template) => ({

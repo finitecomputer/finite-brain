@@ -145,11 +145,19 @@ impl BrainStore {
                     .cloned()
                     .unwrap_or_default();
                 if current_access.contains(user_id) {
-                    return Err(StoreError::BrokenInvariant {
-                        reason: "folder access is already granted".to_owned(),
-                    });
+                    if stored.grants.iter().any(|existing| {
+                        existing.folder_id == *folder_id
+                            && existing.key_version == folder.current_key_version
+                            && existing.recipient_npub == *user_id
+                    }) {
+                        return Err(StoreError::BrokenInvariant {
+                            reason: "folder key grant is already present".to_owned(),
+                        });
+                    }
+                    false
+                } else {
+                    true
                 }
-                true
             }
             FolderAccessMode::AllMembers => {
                 if stored.grants.iter().any(|existing| {

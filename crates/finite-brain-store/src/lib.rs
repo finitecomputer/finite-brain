@@ -2655,6 +2655,62 @@ mod tests {
     }
 
     #[test]
+    fn grants_restricted_folder_key_after_invitation_access_metadata() {
+        let mut store = store_with_strategy_folder();
+        let vault_id = VaultId::new("acme").unwrap();
+        let folder_id = FolderId::new("strategy").unwrap();
+        let member = UserId::new("npub-invited-member").unwrap();
+        let admin = UserId::new("npub-admin").unwrap();
+        let now = "2026-06-23T00:00:00.000Z";
+
+        store
+            .create_vault_invitation(
+                &vault_id,
+                "invitation-initial-strategy",
+                &member,
+                "invite-initial-strategy0123456789ab",
+                "/_admin/vault-invitation-links/invite-initial-strategy0123456789ab/accept",
+                std::slice::from_ref(&folder_id),
+                &admin,
+                "2026-06-30T00:00:00.000Z",
+                now,
+            )
+            .unwrap();
+        store
+            .accept_vault_invitation_by_code("invite-initial-strategy0123456789ab", &member, now)
+            .unwrap();
+
+        let stored = store.load_vault(&vault_id).unwrap();
+        assert_eq!(
+            stored.folder_access.get(&folder_id),
+            Some(&BTreeSet::from([member.clone()]))
+        );
+        assert!(!stored.grants.iter().any(|grant| {
+            grant.folder_id == folder_id && grant.key_version == 1 && grant.recipient_npub == member
+        }));
+
+        store
+            .grant_folder_access(
+                &vault_id,
+                &folder_id,
+                &member,
+                &grant(
+                    "grant-strategy-invited-member",
+                    "strategy",
+                    1,
+                    "npub-admin",
+                    member.as_str(),
+                ),
+            )
+            .unwrap();
+
+        let stored = store.load_vault(&vault_id).unwrap();
+        assert!(stored.grants.iter().any(|grant| {
+            grant.folder_id == folder_id && grant.key_version == 1 && grant.recipient_npub == member
+        }));
+    }
+
+    #[test]
     fn grants_all_members_folder_key_without_restricted_access_row() {
         let mut store = bootstrapped_org_store();
         let vault_id = VaultId::new("acme").unwrap();
@@ -2787,6 +2843,7 @@ mod tests {
     fn vault_invitation_is_single_user_single_use_and_retry_safe() {
         let mut store = bootstrapped_org_store();
         let vault_id = VaultId::new("acme").unwrap();
+        let restricted = FolderId::new("restricted").unwrap();
         let target = UserId::new("npub-target").unwrap();
         let wrong_user = UserId::new("npub-wrong").unwrap();
         let admin = UserId::new("npub-admin").unwrap();
@@ -2799,17 +2856,14 @@ mod tests {
                 &target,
                 "invite-0123456789abcdef0123456789abcdef",
                 "/_admin/vault-invitation-links/invite-0123456789abcdef0123456789abcdef/accept",
-                &[FolderId::new("getting-started").unwrap()],
+                std::slice::from_ref(&restricted),
                 &admin,
                 "2026-06-30T00:00:00.000Z",
                 now,
             )
             .unwrap();
         assert_eq!(invitation.status, LinkStatus::Pending);
-        assert_eq!(
-            invitation.initial_folder_access,
-            vec![FolderId::new("getting-started").unwrap()]
-        );
+        assert_eq!(invitation.initial_folder_access, vec![restricted.clone()]);
 
         assert_eq!(
             store
@@ -2853,6 +2907,10 @@ mod tests {
                 .members
                 .iter()
                 .any(|member| member.user_id == target)
+        );
+        assert_eq!(
+            stored.folder_access.get(&restricted),
+            Some(&BTreeSet::from([target.clone()]))
         );
 
         let retry = store
