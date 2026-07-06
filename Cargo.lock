@@ -336,7 +336,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -448,7 +448,7 @@ dependencies = [
 [[package]]
 name = "finite-identity"
 version = "0.1.0"
-source = "git+https://github.com/finitecomputer/finite-identity?rev=8d0c60316ed4b2bcf7d54e79c287eb962007b4f9#8d0c60316ed4b2bcf7d54e79c287eb962007b4f9"
+source = "git+https://github.com/finitecomputer/finite-identity?rev=0750e8c5c8cadaf9b7638ef93c6dc1522c6fe5fb#0750e8c5c8cadaf9b7638ef93c6dc1522c6fe5fb"
 dependencies = [
  "axum",
  "base64",
@@ -463,6 +463,7 @@ dependencies = [
  "thiserror",
  "time",
  "tokio",
+ "ureq",
 ]
 
 [[package]]
@@ -1152,7 +1153,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -1377,7 +1378,7 @@ dependencies = [
  "getrandom 0.4.3",
  "once_cell",
  "rustix",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -1583,6 +1584,8 @@ dependencies = [
  "once_cell",
  "rustls",
  "rustls-pki-types",
+ "serde",
+ "serde_json",
  "url",
  "webpki-roots 0.26.11",
 ]
