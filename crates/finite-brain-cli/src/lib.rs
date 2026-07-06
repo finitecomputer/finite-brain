@@ -6,6 +6,7 @@ mod clock;
 mod environment;
 mod error;
 mod http;
+mod identity_authority;
 mod models;
 mod output;
 mod signer;
@@ -20,6 +21,7 @@ pub(crate) use admin::*;
 pub(crate) use args::*;
 pub(crate) use clock::*;
 pub(crate) use http::*;
+pub(crate) use identity_authority::*;
 pub(crate) use models::*;
 pub(crate) use output::*;
 pub(crate) use signer::*;
@@ -117,7 +119,7 @@ where
 fn help<W: Write>(output: &mut W) -> Result<(), CliError> {
     writeln!(
         output,
-        "fbrain [--config-dir <path>] doctor\nauth status|import [--file <path>]\nsigner status|public-key|sign|encrypt|decrypt\ndaemon status|start|stop|logs|tick|watch\nsync status|now [--summary]\nopen <vault-id> [path]\nstatus [--json]\nunlock [folder|--all]\nconflicts\nresolve <id>\nactivity\naccess explain|list|grant|revoke\nvault create|metadata|export\nfolder create|list\nmount list\npermissions add-member|remove-member|add-admin|remove-admin|grant-folder --target <NIP-05|npub|hex>\ninvites create --target <NIP-05|npub|hex>|show --code invite-...|accept --code invite-...|accept --vault <vault-id> --id invitation-...|revoke\nshare link --target <NIP-05|npub|hex>|accept|revoke|source|folder-invite --destination-admin <NIP-05|npub|hex>|folder-accept"
+        "fbrain [--config-dir <path>] doctor\nauth status|import [--file <path>]|login <email>|redeem <email> <token>\nsigner status|public-key|sign|encrypt|decrypt\ndaemon status|start|stop|logs|tick|watch\nsync status|now [--summary]\nopen <vault-id> [path]\nstatus [--json]\nunlock [folder|--all]\nconflicts\nresolve <id>\nactivity\naccess explain|list|grant|revoke\nvault create|metadata|export\nfolder create|list\nmount list\npermissions add-member|remove-member|add-admin|remove-admin|grant-folder --target <NIP-05|npub|hex>\ninvites create --target <NIP-05|npub|hex>|show --code invite-...|accept --code invite-...|accept --vault <vault-id> --id invitation-...|revoke\nshare link --target <NIP-05|npub|hex>|accept|revoke|source|folder-invite --destination-admin <NIP-05|npub|hex>|folder-accept"
     )?;
     Ok(())
 }
@@ -263,14 +265,79 @@ fn auth<W: Write>(
             }
         }
         // Hard cut: the plaintext auth.json prototype is gone. Keep explicit
-        // guidance for the removed verbs instead of "unknown command".
-        "login" => Err(CliError::Unsupported(
+        // guidance for the removed secret-login shape instead of accepting
+        // secrets in argv again.
+        "login"
+            if args[1..]
+                .iter()
+                .any(|arg| arg == "--nsec" || arg.starts_with("--nsec=")) =>
+        {
+            Err(CliError::Unsupported(
             "fbrain auth login was replaced by fbrain auth import; pipe the secret via stdin or --file <path> (never argv)".to_owned(),
-        )),
+            ))
+        }
+        "login" => auth_email_login(&args[1..], env, json, output),
+        "redeem" => auth_email_redeem(&args[1..], env, json, output),
         "logout" => Err(CliError::Unsupported(
             "fbrain auth logout was removed: the identity is shared by every Finite tool; move ~/.finite/identity/identity.json aside by hand if you mean it".to_owned(),
         )),
         other => Err(CliError::InvalidCommand(format!("auth {other}"))),
+    }
+}
+
+fn auth_email_login<W: Write>(
+    args: &[String],
+    env: &CliEnvironment,
+    json: bool,
+    output: &mut W,
+) -> Result<(), CliError> {
+    let positionals = positional_values(args);
+    let [email] = positionals.as_slice() else {
+        return Err(CliError::MissingArgument("email"));
+    };
+    let identity_authority = IdentityAuthorityClient::from_environment(env)?;
+    let report = identity_authority.request_email_challenge(email)?;
+    if json {
+        write_json(output, &report)
+    } else {
+        writeln!(output, "sent email challenge for {}", report.email)?;
+        writeln!(
+            output,
+            "run fbrain auth redeem {} TOKEN_FROM_EMAIL",
+            report.email
+        )?;
+        Ok(())
+    }
+}
+
+fn auth_email_redeem<W: Write>(
+    args: &[String],
+    env: &CliEnvironment,
+    json: bool,
+    output: &mut W,
+) -> Result<(), CliError> {
+    let positionals = positional_values(args);
+    let [email, token] = positionals.as_slice() else {
+        return Err(CliError::MissingArgument("email token"));
+    };
+    let identity_authority = IdentityAuthorityClient::from_environment(env)?;
+    let report = identity_authority.redeem_email(env, email, token)?;
+    if json {
+        write_json(output, &report)
+    } else {
+        writeln!(
+            output,
+            "verified {} as {}",
+            report.email, report.principal_kind
+        )?;
+        writeln!(output, "pubkey: {}", report.pubkey)?;
+        if let Some(nip05) = &report.nip05 {
+            writeln!(output, "nip05: {nip05}")?;
+        }
+        if let Some(limitation) = &report.limitation {
+            writeln!(output, "note: {limitation}")?;
+        }
+        Ok(())
     }
 }
 
@@ -1964,8 +2031,18 @@ mod tests {
             cwd: tmp.path().to_path_buf(),
             config_dir: tmp.path().join("config"),
             now: Some("2026-06-24T20:46:36Z".to_owned()),
+            identity_authority_url: None,
             finite_home: Some(tmp.path().join("finite-home")),
         }
+    }
+
+    fn env_with_identity_authority(
+        tmp: &TempDir,
+        identity_authority_url: String,
+    ) -> CliEnvironment {
+        let mut env = env_for(tmp);
+        env.identity_authority_url = Some(identity_authority_url);
+        env
     }
 
     fn run(tmp: &TempDir, args: &[&str]) -> String {
@@ -2574,6 +2651,34 @@ mod tests {
         (url, handle)
     }
 
+    fn start_identity_authority_server(
+        response_body: Value,
+    ) -> (String, thread::JoinHandle<Vec<(String, String)>>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let handle = thread::spawn(move || {
+            let started = Instant::now();
+            let mut requests = Vec::new();
+            while requests.is_empty() && started.elapsed() < Duration::from_secs(5) {
+                let Ok((mut stream, _)) = listener.accept() else {
+                    thread::sleep(Duration::from_millis(10));
+                    continue;
+                };
+                let (request_line, body) = read_http_request(&mut stream);
+                requests.push((request_line, body));
+                let response_body = response_body.to_string();
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{response_body}",
+                    response_body.len()
+                );
+                stream.write_all(response.as_bytes()).unwrap();
+            }
+            requests
+        });
+        (url, handle)
+    }
+
     fn write_opened_test_folder_key(tree: &Path, folder_id: &str, folder_key: &FolderKey) {
         fs::create_dir_all(tree.join(".finitebrain")).unwrap();
         let mut state = AgentState::new("acme", "2026-06-24T20:46:36Z");
@@ -2780,6 +2885,10 @@ mod tests {
             .unwrap()
     }
 
+    fn pubkey_hex_for_secret(secret: &str) -> String {
+        Keys::parse(secret).unwrap().public_key().to_hex()
+    }
+
     fn identity_file_for(tmp: &TempDir) -> std::path::PathBuf {
         identity_paths(&env_for(tmp)).unwrap().identity_file()
     }
@@ -2863,6 +2972,110 @@ mod tests {
         );
         assert!(identity_file_for(&tmp).exists());
         assert_config_dir_has_no_secret(&tmp, TEST_SECRET_HEX);
+    }
+
+    #[test]
+    fn auth_login_requests_identity_authority_challenge_without_minting() {
+        let tmp = TempDir::new().unwrap();
+        let (identity_authority_url, server) =
+            start_identity_authority_server(serde_json::json!({ "email": "paul@finite.vip" }));
+        let mut output = Vec::new();
+        run_with_env(
+            ["auth", "login", "paul@finite.vip", "--json"],
+            env_with_identity_authority(&tmp, identity_authority_url),
+            &mut output,
+        )
+        .unwrap();
+
+        let json: Value = serde_json::from_slice(&output).unwrap();
+        assert_eq!(json["email"], "paul@finite.vip");
+        assert!(!identity_file_for(&tmp).exists());
+
+        let requests = server.join().unwrap();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].0, "POST /api/v1/email-challenges HTTP/1.1");
+        let body: Value = serde_json::from_str(&requests[0].1).unwrap();
+        assert_eq!(body["email"], "paul@finite.vip");
+    }
+
+    #[test]
+    fn auth_redeem_binds_finite_vip_email_through_identity_authority() {
+        let tmp = TempDir::new().unwrap();
+        import_identity_secret(&tmp, TEST_SECRET_HEX);
+        let pubkey = pubkey_hex_for_secret(TEST_SECRET_HEX);
+        let (identity_authority_url, server) = start_identity_authority_server(serde_json::json!({
+            "email": "paul@finite.vip",
+            "pubkey": pubkey,
+            "nip05": "paul@finite.vip"
+        }));
+        let mut output = Vec::new();
+        run_with_env(
+            ["auth", "redeem", "paul@finite.vip", "token-123", "--json"],
+            env_with_identity_authority(&tmp, identity_authority_url),
+            &mut output,
+        )
+        .unwrap();
+
+        let json: Value = serde_json::from_slice(&output).unwrap();
+        assert_eq!(json["email"], "paul@finite.vip");
+        assert_eq!(json["pubkey"], pubkey_hex_for_secret(TEST_SECRET_HEX));
+        assert_eq!(json["principalKind"], "native");
+        assert_eq!(json["nip05"], "paul@finite.vip");
+        assert_eq!(json["limitation"], Value::Null);
+
+        let requests = server.join().unwrap();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(
+            requests[0].0,
+            "POST /api/v1/vip-email-bindings/redeem HTTP/1.1"
+        );
+        let body: Value = serde_json::from_str(&requests[0].1).unwrap();
+        assert_eq!(body["email"], "paul@finite.vip");
+        assert_eq!(body["token"], "token-123");
+    }
+
+    #[test]
+    fn auth_redeem_external_email_reports_email_only_brain_limitation() {
+        let tmp = TempDir::new().unwrap();
+        import_identity_secret(&tmp, TEST_SECRET_HEX);
+        let pubkey = pubkey_hex_for_secret(TEST_SECRET_HEX);
+        let (identity_authority_url, server) = start_identity_authority_server(serde_json::json!({
+            "email": "friend@example.com",
+            "pubkey": pubkey,
+            "principal": {
+                "kind": "email_only",
+                "email": "friend@example.com",
+                "pubkey": pubkey_hex_for_secret(TEST_SECRET_HEX)
+            }
+        }));
+        let mut output = Vec::new();
+        run_with_env(
+            [
+                "auth",
+                "redeem",
+                "friend@example.com",
+                "token-456",
+                "--json",
+            ],
+            env_with_identity_authority(&tmp, identity_authority_url),
+            &mut output,
+        )
+        .unwrap();
+
+        let json: Value = serde_json::from_slice(&output).unwrap();
+        assert_eq!(json["email"], "friend@example.com");
+        assert_eq!(json["principalKind"], "email_only");
+        assert_eq!(json["nip05"], Value::Null);
+        assert!(json["limitation"].as_str().unwrap().contains("npub"));
+
+        let requests = server.join().unwrap();
+        assert_eq!(
+            requests[0].0,
+            "POST /api/v1/email-only-principals/redeem HTTP/1.1"
+        );
+        let body: Value = serde_json::from_str(&requests[0].1).unwrap();
+        assert_eq!(body["email"], "friend@example.com");
+        assert_eq!(body["token"], "token-456");
     }
 
     #[test]
@@ -4088,6 +4301,7 @@ mod tests {
             cwd: tmp.path().to_path_buf(),
             config_dir: agent_a_config.clone(),
             now: Some("2026-06-24T20:46:36Z".to_owned()),
+            identity_authority_url: None,
             finite_home: Some(tmp.path().join("finite-home")),
         };
         // Both agents share the one Finite identity: import once.
@@ -4102,6 +4316,7 @@ mod tests {
             cwd: agent_b_tree.clone(),
             config_dir: agent_b_config,
             now: Some("2026-06-24T20:46:36Z".to_owned()),
+            identity_authority_url: None,
             finite_home: Some(tmp.path().join("finite-home")),
         };
         let mut output_b = Vec::new();
@@ -4119,6 +4334,7 @@ mod tests {
             cwd: agent_a_tree.clone(),
             config_dir: agent_a_config,
             now: Some("2026-06-24T20:46:36Z".to_owned()),
+            identity_authority_url: None,
             finite_home: Some(tmp.path().join("finite-home")),
         };
         let mut output_a = Vec::new();
