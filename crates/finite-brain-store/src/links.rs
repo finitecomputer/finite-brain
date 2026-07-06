@@ -89,6 +89,34 @@ impl BrainStore {
             })
     }
 
+    /// List Vault Invitations for one Vault, newest first, bounded by MAX_LINK_LIST_ROWS.
+    pub fn list_vault_invitations(
+        &self,
+        vault_id: &VaultId,
+    ) -> Result<Vec<StoredVaultInvitation>, StoreError> {
+        self.require_vault_exists(vault_id)?;
+        let mut stmt = self.conn.prepare(
+            r#"
+            SELECT id, vault_id, user_id, status, invite_code, accept_path,
+                   initial_folder_access_json, created_by_npub, expires_at,
+                   created_at, updated_at, accepted_at
+            FROM vault_invitations
+            WHERE vault_id = ?1
+            ORDER BY created_at DESC, id
+            LIMIT ?2
+            "#,
+        )?;
+        let rows = stmt.query_map(
+            params![vault_id.as_str(), MAX_LINK_LIST_ROWS],
+            vault_invitation_from_row,
+        )?;
+        let mut invitations = Vec::new();
+        for row in rows {
+            invitations.push(row?);
+        }
+        Ok(invitations)
+    }
+
     /// Load a pending Vault Invitation by invite code for its target user only.
     pub fn load_available_vault_invitation_by_code(
         &self,
@@ -309,6 +337,36 @@ impl BrainStore {
             )
             .optional()?
             .ok_or(StoreError::UnavailableLink { kind: "share link" })
+    }
+
+    /// List Share Links for one Folder, newest first, bounded by MAX_LINK_LIST_ROWS.
+    pub fn list_folder_share_links(
+        &self,
+        vault_id: &VaultId,
+        folder_id: &FolderId,
+    ) -> Result<Vec<StoredShareLink>, StoreError> {
+        ensure_folder_exists(&self.conn, vault_id, folder_id)?;
+        let mut stmt = self.conn.prepare(
+            r#"
+            SELECT id, vault_id, folder_id, recipient_npub, created_by_npub, status,
+                   accept_path, expires_at, created_at, updated_at, accepted_at,
+                   grant_id, grant_key_version, grant_wrapped_event_json,
+                   access_change_event_json, create_personal_mount, personal_mount_id
+            FROM share_links
+            WHERE vault_id = ?1 AND folder_id = ?2
+            ORDER BY created_at DESC, id
+            LIMIT ?3
+            "#,
+        )?;
+        let rows = stmt.query_map(
+            params![vault_id.as_str(), folder_id.as_str(), MAX_LINK_LIST_ROWS],
+            share_link_from_row,
+        )?;
+        let mut share_links = Vec::new();
+        for row in rows {
+            share_links.push(row?);
+        }
+        Ok(share_links)
     }
 
     /// Load a pending Share Link for its recipient only.

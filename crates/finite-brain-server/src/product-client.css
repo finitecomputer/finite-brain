@@ -55,15 +55,19 @@
   background: transparent;
 }
 
+html {
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
 body {
   margin: 0;
   min-height: 100vh;
   background: var(--bg);
   color: var(--text);
   font: 14px/1.45 ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-  -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
   overflow: hidden;
+  text-wrap: pretty;
 }
 
 button,
@@ -95,8 +99,10 @@ button,
 
 button:hover,
 .dev-link:hover {
-  border-color: var(--blue);
-  color: var(--blue);
+  border-color: rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.035);
+  box-shadow: var(--shadow-obsi-ring);
+  color: var(--text);
 }
 
 button:disabled {
@@ -114,7 +120,7 @@ button:focus-visible,
 input:focus-visible,
 select:focus-visible,
 textarea:focus-visible {
-  outline: 2px solid rgba(110, 168, 255, 0.72);
+  outline: 2px solid rgba(124, 108, 255, 0.72);
   outline-offset: 2px;
 }
 
@@ -444,43 +450,87 @@ label,
 }
 
 .primary-action {
-  border-color: rgba(110, 168, 255, 0.58);
-  background: #1d2a40;
-  color: #8dbcff;
+  border-color: rgba(124, 108, 255, 0.42);
+  background: rgba(124, 108, 255, 0.18);
+  box-shadow: var(--shadow-access-ring);
+  color: #f3f0ff;
+}
+
+.primary-action:hover {
+  border-color: rgba(124, 108, 255, 0.72);
+  background: rgba(124, 108, 255, 0.26);
+  box-shadow: 0 0 0 1px rgba(124, 108, 255, 0.16);
+  color: #faf8ff;
 }
 
 .secondary-action {
-  border-color: rgba(69, 212, 131, 0.4);
-  color: var(--green);
+  border-color: transparent;
+  background: rgba(255, 255, 255, 0.035);
+  box-shadow: var(--shadow-access-ring-hover);
+  color: #e8e8e8;
+}
+
+.secondary-action:hover {
+  border-color: transparent;
+  background: rgba(255, 255, 255, 0.06);
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.18);
+  color: #f7f7f7;
+}
+
+.ghost-action {
+  border-color: transparent;
+  background: rgba(255, 255, 255, 0.02);
+  box-shadow: var(--shadow-access-ring);
+  color: #c6c6c6;
+  font-weight: 650;
+}
+
+.ghost-action:hover {
+  border-color: transparent;
+  background: rgba(255, 255, 255, 0.045);
+  box-shadow: var(--shadow-access-ring-hover);
+  color: #eeeeee;
+}
+
+.secondary-action:disabled,
+.ghost-action:disabled {
+  background: transparent;
+  box-shadow: var(--shadow-access-ring);
+  color: var(--muted);
+  opacity: 0.45;
 }
 
 .pill {
   display: inline-flex;
   align-items: center;
+  justify-content: center;
   max-width: 100%;
-  min-height: 24px;
-  border: 1px solid var(--line);
+  min-width: 22px;
+  min-height: 22px;
+  border: 0;
   border-radius: 999px;
-  padding: 3px 9px;
+  box-shadow: var(--shadow-access-ring);
+  padding: 2px 7px;
   color: var(--muted);
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 750;
   font-variant-numeric: tabular-nums;
+  line-height: 1;
   white-space: nowrap;
 }
 
 .pill.ready {
-  border-color: rgba(69, 212, 131, 0.45);
-  color: var(--green);
+  box-shadow: 0 0 0 1px rgba(124, 108, 255, 0.34);
+  color: #ddd8ff;
 }
 
 .pill.warn {
-  border-color: rgba(242, 189, 92, 0.48);
+  box-shadow: 0 0 0 1px rgba(242, 189, 92, 0.48);
   color: var(--amber);
 }
 
 .pill.error {
-  border-color: rgba(244, 109, 117, 0.5);
+  box-shadow: 0 0 0 1px rgba(244, 109, 117, 0.5);
   color: var(--red);
 }
 
@@ -913,14 +963,19 @@ pre {
   gap: 6px;
   min-width: 0;
   overflow: hidden;
-  color: var(--green);
+  border-color: transparent;
+  background: transparent;
+  box-shadow: var(--shadow-access-ring);
+  color: var(--text);
   font-weight: 750;
   text-align: left;
 }
 
 .vault-connect-button:hover {
-  background: #333333;
-  color: #eeeeee;
+  border-color: transparent;
+  background: rgba(124, 108, 255, 0.08);
+  box-shadow: 0 0 0 1px rgba(124, 108, 255, 0.24);
+  color: #f3f0ff;
 }
 
 .vault-connect-button .icon {
@@ -970,6 +1025,13 @@ pre {
   background: transparent;
   color: #a0a0a0;
   padding: 0;
+  transition-duration: 140ms;
+  transition-property: background-color, box-shadow, color, transform;
+  transition-timing-function: cubic-bezier(0.2, 0, 0, 1);
+}
+
+.sidebar-icon-button:not(:disabled):active {
+  transform: scale(0.96);
 }
 
 .sidebar-icon-button:hover {
@@ -1029,8 +1091,51 @@ pre {
   display: none;
 }
 
+#accessSidebarPanel > .sidebar-section-title {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+}
+
+/* Opaque cover bands around the sticky title so scrolled content cannot
+   peek through the panel's 8px top padding above it or the gap between
+   the title and the sticky view switch below it. */
+#accessSidebarPanel > .sidebar-section-title::before {
+  content: "";
+  position: absolute;
+  bottom: 100%;
+  right: 0;
+  left: 0;
+  z-index: -1;
+  height: 8px;
+  background: var(--obsi-panel);
+}
+
+#accessSidebarPanel > .sidebar-section-title::after {
+  content: "";
+  position: absolute;
+  top: 100%;
+  right: 0;
+  left: 0;
+  z-index: -1;
+  height: 47px;
+  background: var(--obsi-panel);
+}
+
+#accessSidebarPanel > .access-view-switch {
+  position: sticky;
+  top: 33px;
+  z-index: 2;
+  margin-bottom: 10px;
+  background: var(--obsi-panel);
+}
+
 #accessSidebarPanel > * + * {
   margin-top: 8px;
+}
+
+#accessSidebarPanel > .access-view-switch + * {
+  margin-top: 0;
 }
 
 /* Legacy access inspector (keeping for compatibility during transition) */
@@ -1046,6 +1151,85 @@ pre {
 
 /* NEW OBSIDIAN-STYLE ACCESS UI */
 
+.access-view-switch {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 2px;
+  margin: 0 12px 12px;
+  padding: 3px;
+  border-radius: 10px;
+  background: #181818;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.06);
+}
+
+.access-view-switch button {
+  min-width: 0;
+  min-height: 32px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: #9b9b9b;
+  font-size: 12px;
+  font-weight: 680;
+  cursor: pointer;
+  transition-duration: 140ms;
+  transition-property: background-color, box-shadow, color, transform;
+  transition-timing-function: cubic-bezier(0.2, 0, 0, 1);
+}
+
+.access-view-switch button.active {
+  background: #2d2d2d;
+  box-shadow:
+    var(--shadow-access-ring),
+    0 1px 2px rgba(0, 0, 0, 0.28),
+    inset 0 1px 0 rgba(255, 255, 255, 0.04);
+  color: #f1f1f1;
+}
+
+.access-view-switch button:not(.active):hover {
+  color: #dadada;
+}
+
+.access-view-switch button:active {
+  transform: scale(0.96);
+}
+
+.access-view-switch button:focus-visible {
+  outline: 2px solid rgba(124, 108, 255, 0.72);
+  outline-offset: 1px;
+}
+
+.access-mode-panel:not([hidden]) {
+  animation: accessPanelEnter 180ms cubic-bezier(0.2, 0, 0, 1) both;
+}
+
+@keyframes accessPanelEnter {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+    filter: blur(2px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+    filter: blur(0);
+  }
+}
+
+.access-mode-panel {
+  min-width: 0;
+}
+
+.access-mode-panel.is-busy {
+  opacity: 0.72;
+  pointer-events: none;
+}
+
+.access-mode-panel[hidden] {
+  display: none !important;
+}
+
 /* Compact Folder Selector */
 .access-folder-selector {
   position: relative;
@@ -1058,12 +1242,17 @@ pre {
 
 .access-selector-label {
   display: block;
+  margin-bottom: 6px;
+}
+
+.section-title,
+.access-selector-label.section-title {
   color: #a6a6a6;
   font-size: 11px;
-  font-weight: 560;
-  margin-bottom: 6px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
   text-transform: uppercase;
-  letter-spacing: 0.5px;
+  text-wrap: balance;
 }
 
 .folder-selector-button {
@@ -1076,7 +1265,7 @@ pre {
   padding: 9px 12px;
   background: #252525;
   border: 0;
-  border-radius: 8px;
+  border-radius: 10px;
   box-shadow: var(--shadow-access-ring);
   color: #dadada;
   font-size: 13px;
@@ -1084,6 +1273,10 @@ pre {
   transition-property: background-color, box-shadow, color, transform;
   transition-duration: 150ms;
   transition-timing-function: cubic-bezier(0.2, 0, 0, 1);
+}
+
+.folder-selector-button:not(:disabled):active {
+  transform: scale(0.96);
 }
 
 .folder-selector-button #accessFolderTitle {
@@ -1210,14 +1403,6 @@ pre {
   margin-bottom: 8px;
 }
 
-.section-title {
-  color: #dadada;
-  font-size: 12px;
-  font-weight: 560;
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
-}
-
 .access-inline-button {
   display: flex;
   align-items: center;
@@ -1254,6 +1439,10 @@ pre {
   transform: rotate(45deg);
 }
 
+.access-inline-button:not(:disabled):active {
+  transform: scale(0.96);
+}
+
 /* Who Has Access List */
 .access-who-has-list {
   display: grid;
@@ -1282,11 +1471,24 @@ pre {
 }
 
 .access-empty-state {
-  color: #a6a6a6;
-  font-style: italic;
+  color: #8f8f8f;
+  font-size: 12px;
+  font-style: normal;
+  font-weight: 540;
   justify-content: flex-start !important;
   min-height: 48px !important;
   padding: 10px 12px !important;
+  text-align: left;
+  text-wrap: pretty;
+}
+
+.access-who-has-list .empty-row {
+  color: #8f8f8f;
+  font-size: 12px;
+  font-style: normal;
+  font-weight: 540;
+  justify-content: flex-start;
+  min-height: 48px;
   text-align: left;
   text-wrap: pretty;
 }
@@ -1353,8 +1555,12 @@ pre {
   padding: 10px;
   background: rgba(255, 255, 255, 0.02);
   border: 0;
-  border-radius: 10px;
+  border-radius: 12px;
   box-shadow: var(--shadow-access-ring);
+}
+
+.access-inline-form .access-inline-field + .access-inline-field {
+  margin-top: 8px;
 }
 
 .access-inline-field {
@@ -1364,30 +1570,34 @@ pre {
 }
 
 .access-inline-field input {
+  min-width: 0;
   flex: 1;
   width: 100%;
   min-height: 40px;
   margin: 0;
   padding: 7px 9px;
   background: #1a1a1a;
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  border-radius: 7px;
+  border: 0;
+  border-radius: 6px;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.08);
   color: #dadada;
   font-size: 12px;
 }
 
 .access-inline-field input:focus {
   outline: none;
-  border-color: #7c6cff;
-  box-shadow: 0 0 0 2px rgba(124, 108, 255, 0.1);
+  box-shadow:
+    inset 0 0 0 1px rgba(124, 108, 255, 0.72),
+    0 0 0 2px rgba(124, 108, 255, 0.1);
 }
 
 .access-add-button {
+  flex-shrink: 0;
   min-height: 40px;
   padding: 7px 12px;
   background: #7c6cff;
   border: none;
-  border-radius: 7px;
+  border-radius: 6px;
   color: #fff;
   font-size: 12px;
   font-weight: 700;
@@ -1397,9 +1607,21 @@ pre {
   transition-timing-function: cubic-bezier(0.2, 0, 0, 1);
 }
 
+.access-add-button:not(:disabled):active,
+.ghost-action:not(:disabled):active,
+.secondary-action:not(:disabled):active,
+.primary-action:not(:disabled):active {
+  transform: scale(0.96);
+}
+
 .access-add-button:hover {
   background: #6b59e8;
   box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.08);
+}
+
+.access-add-button:disabled {
+  cursor: default;
+  opacity: 0.48;
 }
 
 .access-field-hint {
@@ -1545,17 +1767,21 @@ pre {
 .access-field {
   display: grid;
   gap: 5px;
-  color: #a8a8a8;
+  color: #a6a6a6;
   font-size: 11px;
-  font-weight: 750;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
 }
 
 .access-field input {
   width: 100%;
   min-height: 40px;
   margin: 0;
-  border-color: #3a3a3a;
+  border: 0;
+  border-radius: 6px;
   background: #1a1a1a;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.08);
   font-size: 12px;
 }
 
@@ -1670,6 +1896,7 @@ pre {
 }
 
 .access-result {
+  margin: 0 12px 10px;
   overflow-wrap: anywhere;
   border-radius: 8px;
   background: #181818;
@@ -1677,7 +1904,18 @@ pre {
   color: #cfcfcf;
   font-size: 11px;
   line-height: 1.4;
-  padding: 8px;
+  padding: 8px 10px;
+}
+
+.access-busy-status {
+  margin: 0 12px 10px;
+  color: #8f8f8f;
+  font-size: 11px;
+  font-style: normal;
+  font-weight: 540;
+  line-height: 1.35;
+  text-align: center;
+  text-wrap: pretty;
 }
 
 .access-result.ready {
@@ -1752,6 +1990,11 @@ pre {
   font-size: 12px;
   font-weight: 650;
   text-transform: none;
+  text-wrap: balance;
+}
+
+.sidebar-section-title .pill {
+  flex: 0 0 auto;
 }
 
 .obsidian-file-tree,
@@ -1770,6 +2013,7 @@ pre {
   margin: 10px 12px;
   color: #858585;
   font-size: 12px;
+  font-style: normal;
   font-weight: 540;
   line-height: 1.35;
   text-wrap: pretty;
@@ -2360,9 +2604,11 @@ pre {
   display: flex;
   align-items: center;
   justify-content: center;
-  color: #8f97a6;
+  color: #8f8f8f;
   font: 14px/1.5 ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-weight: 540;
   text-align: center;
+  text-wrap: pretty;
 }
 
 .editor-drawer {
@@ -2380,11 +2626,15 @@ pre {
   color: #9f9f9f;
   font-size: 12px;
   font-weight: 650;
+  text-wrap: balance;
 }
 
 #editorStatusText {
   color: #787878;
-  font-weight: 650;
+  font-size: 11px;
+  font-weight: 620;
+  letter-spacing: 0.01em;
+  text-wrap: pretty;
 }
 
 .graph-workspace {
@@ -2699,7 +2949,7 @@ pre {
 .access-advanced-section {
   margin-top: 18px;
   border: 0;
-  border-radius: 10px;
+  border-radius: 12px;
   background: rgba(255, 255, 255, 0.018);
   box-shadow: var(--shadow-access-ring);
   overflow: hidden;
@@ -2808,6 +3058,18 @@ pre {
   margin-bottom: 16px;
 }
 
+.access-share-hint {
+  margin-bottom: 2px;
+}
+
+.access-share-form.is-ready .access-share-hint {
+  color: rgba(69, 212, 131, 0.88);
+}
+
+.access-share-form.is-locked .access-share-hint {
+  color: #a6a6a6;
+}
+
 .access-share-existing {
   padding-top: 14px;
   border-top: 1px solid rgba(255, 255, 255, 0.06);
@@ -2851,6 +3113,139 @@ pre {
   border-color: rgba(244, 109, 117, 0.72);
   background: rgba(244, 109, 117, 0.1);
   color: #ffd2d5;
+}
+
+/* Vault Management */
+.vault-management-section {
+  min-width: 0;
+  margin: 0 12px 14px;
+  padding: 12px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.015);
+  box-shadow: var(--shadow-access-ring);
+}
+
+.vault-management-section .access-header {
+  margin-bottom: 10px;
+  padding-bottom: 10px;
+}
+
+.vault-management-section .access-badge-row {
+  margin-bottom: 10px;
+}
+
+.vault-quick-actions {
+  margin-top: 10px;
+}
+
+.vault-quick-actions button {
+  flex: 1 1 112px;
+  min-width: 0;
+}
+
+.vault-person-action {
+  min-width: max-content;
+}
+
+/* Link lifecycle status inside access lists */
+.access-link-status {
+  flex-shrink: 0;
+  border-radius: 999px;
+  padding: 2px 7px;
+  box-shadow: var(--shadow-access-ring);
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  line-height: 1.4;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.access-link-status.pending,
+.access-link-status.active {
+  box-shadow: 0 0 0 1px rgba(124, 108, 255, 0.34);
+  color: #ddd8ff;
+}
+
+.access-link-status.accepted {
+  box-shadow: 0 0 0 1px rgba(129, 199, 132, 0.4);
+  color: #c4e8c6;
+}
+
+.access-link-status.revoked {
+  box-shadow: 0 0 0 1px rgba(244, 109, 117, 0.4);
+  color: var(--red);
+}
+
+/* Guided setup steps in the Vault tab */
+.vault-guide-steps {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.015);
+  box-shadow: var(--shadow-access-ring);
+  list-style: none;
+  counter-reset: vault-guide;
+}
+
+.vault-guide-step {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 24px;
+  color: #dadada;
+  font-size: 12px;
+  font-weight: 540;
+  text-wrap: pretty;
+}
+
+.vault-guide-step.done {
+  color: #8f8f8f;
+  text-decoration: line-through;
+  text-decoration-color: rgba(143, 143, 143, 0.55);
+}
+
+.vault-guide-marker {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 18px;
+  height: 18px;
+  border-radius: 999px;
+  box-shadow: 0 0 0 1px rgba(124, 108, 255, 0.34);
+  color: #ddd8ff;
+  counter-increment: vault-guide;
+}
+
+.vault-guide-marker:empty::before {
+  content: counter(vault-guide);
+  font-size: 10px;
+  font-weight: 750;
+  font-variant-numeric: tabular-nums;
+}
+
+.vault-guide-marker .icon {
+  width: 11px;
+  height: 11px;
+  stroke: currentColor;
+  stroke-width: 2.4;
+  fill: none;
+}
+
+.vault-guide-step.done .vault-guide-marker {
+  box-shadow: 0 0 0 1px rgba(129, 199, 132, 0.4);
+  color: #c4e8c6;
+}
+
+/* Share link list inside the Folder share section */
+.access-share-list {
+  display: grid;
+  gap: 8px;
+  margin-top: 12px;
 }
 
 /* Vault Administration */
@@ -2901,7 +3296,11 @@ pre {
 .access-admin-summary span {
   grid-area: title;
   min-width: 0;
-  font-weight: 600;
+  color: #dadada;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
   text-wrap: balance;
 }
 
@@ -2936,11 +3335,12 @@ pre {
 
 .access-admin-section h4 {
   margin: 0 0 8px 0;
-  color: #f1f1f1;
-  font-size: 12px;
-  font-weight: 600;
+  color: #a6a6a6;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
   text-transform: uppercase;
-  letter-spacing: 0.5px;
+  text-wrap: balance;
 }
 
 @media (max-width: 1180px) {
@@ -2949,4 +3349,56 @@ pre {
     grid-template-rows: minmax(0, 1fr);
   }
 
+  .vault-quick-actions {
+    flex-direction: column;
+  }
+
+  .vault-quick-actions button {
+    flex: 1 1 auto;
+    width: 100%;
+  }
+
+  .access-advanced-summary small {
+    max-width: 110px;
+  }
+}
+
+@media (max-width: 640px) {
+  .obsidian-shell,
+  .obsidian-shell[data-workspace-view="graph"] {
+    grid-template-columns: 44px minmax(0, 1fr);
+    overflow: hidden;
+  }
+
+  .file-sidebar {
+    grid-column: 2;
+    min-width: 0;
+    max-width: 100%;
+    overflow-x: hidden;
+    z-index: 2;
+  }
+
+  .obsidian-workspace {
+    display: none;
+  }
+
+  .access-folder-selector,
+  .access-inspector-new,
+  .vault-management-section,
+  .access-vault-admin,
+  .access-result,
+  .access-busy-status {
+    margin-left: 8px;
+    margin-right: 8px;
+  }
+
+  .access-view-switch {
+    margin-left: 8px;
+    margin-right: 8px;
+  }
+
+  .sidebar-section-title {
+    padding-left: 8px;
+    padding-right: 8px;
+  }
 }

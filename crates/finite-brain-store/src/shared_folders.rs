@@ -165,6 +165,79 @@ impl BrainStore {
             })
     }
 
+    /// List Shared Folder Invitations for one Vault as source or destination,
+    /// newest first, bounded by MAX_LINK_LIST_ROWS.
+    pub fn list_shared_folder_invitations(
+        &self,
+        vault_id: &VaultId,
+        direction: SharedFolderDirection,
+    ) -> Result<Vec<StoredSharedFolderInvitation>, StoreError> {
+        self.require_vault_exists(vault_id)?;
+        let column = match direction {
+            SharedFolderDirection::Source => "source_vault_id",
+            SharedFolderDirection::Destination => "destination_vault_id",
+        };
+        let mut stmt = self.conn.prepare(&format!(
+            r#"
+            SELECT id, source_vault_id, source_folder_id, destination_vault_id,
+                   destination_admin_npub, created_by_npub, status, current_key_version,
+                   accept_path, created_at, updated_at, accepted_at, grant_id,
+                   grant_wrapped_event_json, access_change_event_json
+            FROM shared_folder_invitations
+            WHERE {column} = ?1
+            ORDER BY created_at DESC, id
+            LIMIT ?2
+            "#
+        ))?;
+        let rows = stmt.query_map(
+            params![vault_id.as_str(), MAX_LINK_LIST_ROWS],
+            shared_folder_invitation_from_row,
+        )?;
+        let mut invitations = Vec::new();
+        for row in rows {
+            invitations.push(row?);
+        }
+        Ok(invitations)
+    }
+
+    /// List Shared Folder Connections for one Vault as source or destination,
+    /// newest first, bounded by MAX_LINK_LIST_ROWS. Members are included per connection.
+    pub fn list_shared_folder_connections(
+        &self,
+        vault_id: &VaultId,
+        direction: SharedFolderDirection,
+    ) -> Result<Vec<StoredSharedFolderConnection>, StoreError> {
+        self.require_vault_exists(vault_id)?;
+        let column = match direction {
+            SharedFolderDirection::Source => "source_vault_id",
+            SharedFolderDirection::Destination => "destination_vault_id",
+        };
+        let connection_ids = {
+            let mut stmt = self.conn.prepare(&format!(
+                r#"
+                SELECT id
+                FROM shared_folder_connections
+                WHERE {column} = ?1
+                ORDER BY created_at DESC, id
+                LIMIT ?2
+                "#
+            ))?;
+            let rows = stmt.query_map(params![vault_id.as_str(), MAX_LINK_LIST_ROWS], |row| {
+                row.get::<_, String>(0)
+            })?;
+            let mut ids = Vec::new();
+            for row in rows {
+                ids.push(row?);
+            }
+            ids
+        };
+        let mut connections = Vec::new();
+        for connection_id in connection_ids {
+            connections.push(self.load_shared_folder_connection(&connection_id)?);
+        }
+        Ok(connections)
+    }
+
     /// Revoke a pending or accepted Shared Folder Invitation delivery handle.
     pub fn revoke_shared_folder_invitation(
         &mut self,

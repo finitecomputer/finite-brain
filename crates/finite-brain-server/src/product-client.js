@@ -18,12 +18,18 @@ const FiniteBrainProductClient = (() => {
     activeWorkspaceView: "page",
     activeSidebarMode: "files",
     activeAccessFolderId: null,
+    activeAccessView: "folder",
     activeAccessIntent: "overview",
     accessBusy: false,
     accessResult: null,
     lastShareLinkId: null,
     lastVaultInvitationCode: null,
     lastVaultInvitationId: null,
+    vaultInvitations: null,
+    folderShareLinks: null,
+    folderShareLinksFolderId: null,
+    sharedFolderInvitations: null,
+    sharedFolderConnections: null,
     readerMode: "reading",
     editorMode: "visual",
     vaultControlsCollapsedAfterLoad: false,
@@ -431,6 +437,11 @@ const FiniteBrainProductClient = (() => {
     state.accessResult = null;
     state.okfPlan = null;
     state.expandedFolderIds = new Set();
+    state.vaultInvitations = null;
+    state.folderShareLinks = null;
+    state.folderShareLinksFolderId = null;
+    state.sharedFolderInvitations = null;
+    state.sharedFolderConnections = null;
   }
 
   function setActiveVaultId(vaultId, options = {}) {
@@ -646,6 +657,43 @@ const FiniteBrainProductClient = (() => {
     if (intent === "share" || intent === "links") return "links";
     if (intent === "manage" || intent === "people") return "people";
     return "overview";
+  }
+
+  function normalizeAccessView(view) {
+    return view === "vault" ? "vault" : "folder";
+  }
+
+  function setAccessView(view) {
+    state.activeAccessView = normalizeAccessView(view);
+    state.accessResult = null;
+    render();
+    if (state.activeAccessView === "vault" && state.vaultInvitations === null) {
+      refreshAccessManagementListsInBackground();
+    }
+  }
+
+  // Folder/Vault tabs share one sidebar panel; intent (overview/people/links) only
+  // affects the Folder tab chrome such as expanded share links or the add-person form.
+  function applyAccessIntentChrome(row) {
+    const intent = accessIntentValue(state.activeAccessIntent);
+    const advancedSection = $("accessAdvancedSection");
+    const addForm = $("accessAddPersonForm");
+    const manageToggle = $("accessManageToggle");
+    if (!row || normalizeAccessView(state.activeAccessView) !== "folder") return;
+
+    if (intent === "links" && advancedSection) {
+      advancedSection.open = true;
+    }
+
+    const canManage =
+      row.access === "restricted" &&
+      hasOpenedAccessFolderKey(row) &&
+      state.signerStatus === "connected";
+    if (intent === "people" && canManage && addForm && manageToggle) {
+      addForm.hidden = false;
+      manageToggle.setAttribute("aria-expanded", "true");
+      setText("accessManageToggleLabel", "Cancel");
+    }
   }
 
   function accessPanelState(intent, row) {
@@ -3008,9 +3056,17 @@ const FiniteBrainProductClient = (() => {
     if (state.activeAccessFolderId !== folderId || state.activeAccessIntent !== intent) {
       state.accessResult = null;
     }
+    const folderChanged = state.activeAccessFolderId !== folderId;
     state.activeAccessFolderId = folderId;
     state.activeAccessIntent = intent;
     selectReaderFolder(folderId, { selectFirstPage: false });
+    if (folderChanged && state.folderShareLinksFolderId !== folderId) {
+      refreshFolderShareLinks(folderId)
+        .then(() => render())
+        .catch((error) => {
+          log("Failed to refresh Folder share links.", { error: error.message });
+        });
+    }
   }
 
   function toggleReaderFolder(folderId) {
@@ -3583,7 +3639,17 @@ const FiniteBrainProductClient = (() => {
     const page = selectedReaderPage();
     const canEditInline = isReadablePage(page) && state.readerMode !== "source" && state.editorMode !== "source";
     if (source) source.hidden = state.editorMode !== "source";
-    setText("editorStatusText", canEditInline ? "Inline editor active" : "Markdown source");
+    let statusText = "Reading mode";
+    if (!isReadablePage(page)) {
+      statusText = "No page loaded";
+    } else if (state.editorMode === "source") {
+      statusText = "Raw Markdown editor";
+    } else if (canEditInline) {
+      statusText = "Click to edit inline";
+    } else if (state.readerMode === "source") {
+      statusText = "Source reading mode";
+    }
+    setText("editorStatusText", statusText);
     updateSaveControls();
   }
 
@@ -4079,6 +4145,7 @@ const FiniteBrainProductClient = (() => {
     const accessRoute = accessActionRoute(item.action, target);
     if (accessRoute) {
       state.accessResult = null;
+      state.activeAccessView = "folder";
       state.activeAccessFolderId = accessRoute.folderId;
       state.activeAccessIntent = accessRoute.intent;
       state.selectedFolderId = accessRoute.folderId;
@@ -4274,8 +4341,9 @@ const FiniteBrainProductClient = (() => {
       state.activeAccessFolderId = activeRow.id;
     }
 
-    // Update folder count
-    setPill("accessFolderCount", `${rows.length}`, rows.length ? "ready" : "muted");
+    renderAccessSidebarCount(rows, state.metadata);
+    renderAccessViewSwitch();
+    renderAccessBusyChrome();
 
     // Render folder selector
     renderFolderSelector(activeRow, rows, openedFolders);
@@ -4283,11 +4351,467 @@ const FiniteBrainProductClient = (() => {
     // Render main access inspector
     renderAccessInspector(activeRow, state.metadata, openedFolders);
 
+    renderVaultManagementPanel(state.metadata);
+
     // Update access result panel (for feedback)
     renderAccessResultPanel();
 
     // Render vault admin panel
     renderVaultInvitationPanel();
+  }
+
+  function renderAccessSidebarCount(folderRows, metadata) {
+    const view = normalizeAccessView(state.activeAccessView);
+    if (view === "vault") {
+      const peopleCount = vaultPeopleRows(metadata).length;
+      setPill("accessSidebarCount", `${peopleCount}`, peopleCount ? "ready" : "muted");
+      return;
+    }
+    const folderCount = folderRows.length;
+    setPill("accessSidebarCount", `${folderCount}`, folderCount ? "ready" : "muted");
+  }
+
+  function renderAccessBusyChrome() {
+    const busy = state.accessBusy;
+    safeSetHidden("accessBusyStatus", !busy);
+    for (const id of ["accessFolderPanel", "accessVaultPanel"]) {
+      safeSetElement(id, (panel) => panel.classList.toggle("is-busy", busy));
+    }
+  }
+
+  function renderAccessViewSwitch() {
+    const view = normalizeAccessView(state.activeAccessView);
+    state.activeAccessView = view;
+    const folderPanel = $("accessFolderPanel");
+    const vaultPanel = $("accessVaultPanel");
+    if (folderPanel) folderPanel.hidden = view !== "folder";
+    if (vaultPanel) vaultPanel.hidden = view !== "vault";
+    for (const [id, value] of [
+      ["accessFolderViewButton", "folder"],
+      ["accessVaultViewButton", "vault"],
+    ]) {
+      const button = $(id);
+      if (!button) continue;
+      const active = view === value;
+      button.className = active ? "active" : "";
+      button.setAttribute("aria-selected", String(active));
+      button.setAttribute("tabindex", active ? "0" : "-1");
+    }
+  }
+
+  function actorIsVaultAdmin(metadata) {
+    if (metadata?.kind === "personal") return true;
+    const actorNpub = state.pubkeyHex ? npubFromHex(state.pubkeyHex) : null;
+    return Boolean(actorNpub && (metadata?.admins || []).includes(actorNpub));
+  }
+
+  function canManageVaultPeople(metadata) {
+    return (
+      Boolean(metadata) &&
+      metadata.kind === "organization" &&
+      state.signerStatus === "connected" &&
+      actorIsVaultAdmin(metadata) &&
+      !state.accessBusy
+    );
+  }
+
+  function linkStatusRank(status) {
+    if (status === "pending" || status === "active") return 0;
+    if (status === "accepted") return 1;
+    return 2;
+  }
+
+  function vaultInvitationRows(invitations) {
+    return [...(invitations || [])]
+      .sort(
+        (left, right) =>
+          linkStatusRank(left.status) - linkStatusRank(right.status) ||
+          String(right.createdAt).localeCompare(String(left.createdAt))
+      )
+      .map((invitation) => ({
+        expiresAt: invitation.expiresAt,
+        id: invitation.id,
+        inviteCode: invitation.inviteCode,
+        revocable: invitation.status === "pending",
+        status: invitation.status,
+        targetNpub: invitation.userId,
+      }));
+  }
+
+  function folderShareLinkRows(shareLinks) {
+    return [...(shareLinks || [])]
+      .sort(
+        (left, right) =>
+          linkStatusRank(left.status) - linkStatusRank(right.status) ||
+          String(right.createdAt).localeCompare(String(left.createdAt))
+      )
+      .map((shareLink) => ({
+        expiresAt: shareLink.expiresAt,
+        id: shareLink.id,
+        recipientNpub: shareLink.recipientNpub,
+        revocable: shareLink.status === "pending",
+        status: shareLink.status,
+      }));
+  }
+
+  function sharedFolderRelationshipRows(invitationLists, connectionLists) {
+    const rows = [];
+    for (const direction of ["outgoing", "incoming"]) {
+      for (const connection of connectionLists?.[direction] || []) {
+        rows.push({
+          acceptable: false,
+          counterpartVaultId:
+            direction === "outgoing" ? connection.destinationVaultId : connection.sourceVaultId,
+          direction,
+          folderId: connection.sourceFolderId,
+          id: connection.id,
+          kind: "connection",
+          memberCount: (connection.memberNpubs || []).length,
+          revocable: false,
+          status: connection.status,
+        });
+      }
+    }
+    for (const direction of ["outgoing", "incoming"]) {
+      for (const invitation of invitationLists?.[direction] || []) {
+        rows.push({
+          acceptable: direction === "incoming" && invitation.status === "pending",
+          counterpartVaultId:
+            direction === "outgoing" ? invitation.destinationVaultId : invitation.sourceVaultId,
+          direction,
+          folderId: invitation.sourceFolderId,
+          id: invitation.id,
+          kind: "invitation",
+          memberCount: null,
+          revocable: direction === "outgoing" && invitation.status === "pending",
+          status: invitation.status,
+        });
+      }
+    }
+    return rows.sort(
+      (left, right) => linkStatusRank(left.status) - linkStatusRank(right.status)
+    );
+  }
+
+  function vaultGuideStepRows(signerStatus, metadata, isAdmin) {
+    const signerDone = signerStatus === "connected";
+    const organizationLoaded = metadata?.kind === "organization";
+    return [
+      { done: signerDone, id: "signer", label: "Connect a NIP-07 signer" },
+      { done: organizationLoaded, id: "vault", label: "Load or create an organization Vault" },
+      {
+        done: Boolean(organizationLoaded && isAdmin),
+        id: "admin",
+        label: "Use a Vault admin npub",
+      },
+    ];
+  }
+
+  function vaultPeopleRows(metadata) {
+    if (!metadata) return [];
+    if (metadata.kind === "personal") {
+      const owner = metadata.ownerUserId || metadata.owner_user_id || null;
+      return owner
+        ? [
+            {
+              id: owner,
+              name: accessPersonName(owner),
+              role: "owner",
+              type: "owner",
+              removable: false,
+            },
+          ]
+        : [];
+    }
+    const rows = [];
+    const admins = uniqueNpubs(metadata.admins || []);
+    const members = uniqueNpubs(metadata.members || []);
+    for (const admin of admins) {
+      rows.push({
+        id: admin,
+        name: accessPersonName(admin),
+        role: "admin",
+        type: "admin",
+        removable: true,
+      });
+    }
+    for (const member of members) {
+      if (admins.includes(member)) continue;
+      rows.push({
+        id: member,
+        name: accessPersonName(member),
+        role: "member",
+        type: "member",
+        removable: true,
+      });
+    }
+    return rows;
+  }
+
+  function vaultHealthBadges(metadata, signerStatus = state.signerStatus) {
+    if (!metadata) {
+      return [{ label: "no vault", tone: "muted" }];
+    }
+    const badges = [
+      { label: metadata.kind === "organization" ? "organization" : "personal", tone: "ready" },
+      { label: `${(metadata.folders || []).length} folders`, tone: "muted" },
+      { label: `${metadata.grantCount || 0} grants`, tone: "muted" },
+    ];
+    badges.unshift(
+      signerStatus === "connected"
+        ? { label: "signer connected", tone: "ready" }
+        : { label: "signer missing", tone: "warn" }
+    );
+    if ((metadata.mountedFolders || []).length) {
+      badges.push({ label: `${metadata.mountedFolders.length} mounts`, tone: "muted" });
+    }
+    if (state.lastVaultInvitationCode) {
+      badges.push({ label: "invite ready", tone: "ready" });
+    }
+    return badges;
+  }
+
+  function vaultManagementSummary(metadata) {
+    if (!metadata) return "Load a Vault to manage membership and invitations.";
+    if (metadata.kind === "personal") {
+      return "Personal Vaults use Folder access and share links; organization member lists are not used here.";
+    }
+    return `${countLabel((metadata.members || []).length, "member")} • ${countLabel(
+      (metadata.admins || []).length,
+      "admin"
+    )} • ${countLabel((metadata.folders || []).length, "Folder")}`;
+  }
+
+  function renderVaultManagementPanel(metadata) {
+    setText("vaultManagementTitle", metadata?.name || activeVaultLabel() || "No vault loaded");
+    setText("vaultManagementSummary", vaultManagementSummary(metadata));
+    renderAccessBadgeRow("vaultHealthBadges", vaultHealthBadges(metadata));
+    setOptionalDisabled("accessConnectSignerButton", !deriveSignerState(window.nostr).canConnect);
+    setOptionalDisabled("accessLoadVaultButton", state.signerStatus !== "connected" || !state.config);
+    setOptionalDisabled("accessOpenAccessibleVaultButton", state.readerBusy || !state.config);
+    setOptionalDisabled(
+      "accessCreateOrganizationVaultButton",
+      state.signerStatus !== "connected" || state.readerBusy || !state.config
+    );
+    renderVaultPeopleList(metadata);
+    renderVaultPeopleControls(metadata);
+    renderVaultGuide(metadata);
+    renderVaultInvitationList();
+    renderSharedFolderList();
+  }
+
+  function renderVaultPeopleList(metadata) {
+    const rows = vaultPeopleRows(metadata);
+    setPill("vaultPeopleCount", `${rows.length}`, rows.length ? "ready" : "muted");
+    const emptyText = metadata?.kind === "personal"
+      ? "Personal Vaults do not use a member list."
+      : "Load an organization Vault to manage people.";
+    const canManage = canManageVaultPeople(metadata);
+    setList("vaultPeopleList", rows, emptyText, (item, person) => {
+      const personInfo = document.createElement("div");
+      personInfo.className = "access-person-info";
+
+      const icon = document.createElement("svg");
+      icon.className = "access-person-icon icon";
+      icon.setAttribute("viewBox", "0 0 24 24");
+      icon.innerHTML = person.type === "admin"
+        ? '<path d="M12 2L15.09 8.26L22 9.27L17 14.14L18.18 21.02L12 17.77L5.82 21.02L7 14.14L2 9.27L8.91 8.26L12 2Z" />'
+        : '<circle cx="12" cy="8" r="4"/><path d="M12 12c-4 0-7 2-7 6v2h14v-2c0-4-3-6-7-6z"/>';
+
+      const nameSpan = document.createElement("span");
+      nameSpan.className = "access-person-name";
+      nameSpan.textContent = person.name;
+
+      const roleSpan = document.createElement("span");
+      roleSpan.className = "access-person-role";
+      roleSpan.textContent = person.role;
+
+      personInfo.appendChild(icon);
+      personInfo.appendChild(nameSpan);
+      personInfo.appendChild(roleSpan);
+      item.appendChild(personInfo);
+
+      if (!person.removable || !canManage) return;
+      const removeButton = document.createElement("button");
+      removeButton.className = "access-remove-person vault-person-action";
+      removeButton.type = "button";
+      removeButton.textContent = person.type === "admin" ? "Remove admin" : "Remove";
+      removeButton.addEventListener("click", () => {
+        const action = person.type === "admin" ? removeVaultAdminFromPanel : removeVaultMemberFromPanel;
+        action(person.id).catch((error) => {
+          state.lastError = error.message;
+          log("Failed to update Vault people.", { error: error.message });
+        });
+      });
+      item.appendChild(removeButton);
+    });
+  }
+
+  function renderVaultPeopleControls(metadata) {
+    const canManage = canManageVaultPeople(metadata);
+    setOptionalDisabled("addVaultMemberButton", !canManage);
+    setOptionalDisabled("addVaultAdminButton", !canManage);
+    const hint = !metadata
+      ? "Load an organization Vault to manage people."
+      : metadata.kind !== "organization"
+        ? "Personal Vaults use Folder access and share links instead of member lists."
+        : actorIsVaultAdmin(metadata)
+          ? "Admins must already be Vault members."
+          : "Only Vault admins can change organization members and admins.";
+    setText("vaultPeopleHint", hint);
+  }
+
+  function linkRowActionButton(label, onClick, options = {}) {
+    const button = document.createElement("button");
+    button.className = `access-remove-person vault-person-action${options.danger ? " danger-action" : ""}`;
+    button.type = "button";
+    button.textContent = label;
+    button.disabled = state.accessBusy;
+    button.addEventListener("click", () => {
+      onClick().catch((error) => {
+        state.lastError = error.message;
+        log("Access list action failed.", { error: error.message });
+      });
+    });
+    return button;
+  }
+
+  function linkRowInfo(item, title, status, detail) {
+    const info = document.createElement("div");
+    info.className = "access-person-info";
+    const name = document.createElement("span");
+    name.className = "access-person-name";
+    name.textContent = title;
+    info.appendChild(name);
+    if (detail) {
+      const detailSpan = document.createElement("span");
+      detailSpan.className = "access-person-role";
+      detailSpan.textContent = detail;
+      info.appendChild(detailSpan);
+    }
+    const statusSpan = document.createElement("span");
+    statusSpan.className = `access-link-status ${status}`;
+    statusSpan.textContent = status;
+    info.appendChild(statusSpan);
+    item.appendChild(info);
+  }
+
+  function renderVaultGuide(metadata) {
+    const list = $("vaultGuideSteps");
+    if (!list) return;
+    const isAdmin = actorIsVaultAdmin(metadata);
+    const fullyManaged =
+      metadata?.kind === "organization" && state.signerStatus === "connected" && isAdmin;
+    list.hidden = fullyManaged;
+    if (fullyManaged) {
+      list.replaceChildren();
+      return;
+    }
+    list.replaceChildren();
+    for (const step of vaultGuideStepRows(state.signerStatus, metadata, isAdmin)) {
+      const item = document.createElement("li");
+      item.className = `vault-guide-step${step.done ? " done" : ""}`;
+      const marker = document.createElement("span");
+      marker.className = "vault-guide-marker";
+      marker.innerHTML = step.done
+        ? '<svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m5 13 4 4L19 7" /></svg>'
+        : "";
+      const label = document.createElement("span");
+      label.className = "vault-guide-label";
+      label.textContent = step.label;
+      item.appendChild(marker);
+      item.appendChild(label);
+      list.appendChild(item);
+    }
+  }
+
+  function renderVaultInvitationList() {
+    const rows = vaultInvitationRows(state.vaultInvitations);
+    const pendingCount = rows.filter((row) => row.status === "pending").length;
+    setPill("vaultInvitationCount", `${pendingCount}`, pendingCount ? "ready" : "muted");
+    const emptyText = canLoadVaultAdminLists()
+      ? "No invitations yet. Create one under Vault invitations below."
+      : "Vault admins see pending invitations here.";
+    setList("vaultInvitationList", rows, emptyText, (item, row) => {
+      linkRowInfo(item, shortKey(row.targetNpub), row.status, `expires ${row.expiresAt.slice(0, 10)}`);
+      if (!row.revocable) return;
+      item.appendChild(
+        linkRowActionButton("Use code", async () => {
+          $("vaultInviteCodeInput").value = row.inviteCode;
+          setAccessResult("ready", "Invite code loaded", `${row.inviteCode} is in the invite field.`, {
+            invitationId: row.id,
+          });
+        })
+      );
+      item.appendChild(
+        linkRowActionButton("Revoke", () => revokeVaultInvitationById(row.id), { danger: true })
+      );
+    });
+  }
+
+  function renderSharedFolderList() {
+    const rows = sharedFolderRelationshipRows(
+      state.sharedFolderInvitations,
+      state.sharedFolderConnections
+    );
+    const activeCount = rows.filter(
+      (row) => row.status === "active" || row.status === "pending"
+    ).length;
+    setPill("sharedFolderCount", `${activeCount}`, activeCount ? "ready" : "muted");
+    const emptyText = canLoadVaultAdminLists()
+      ? "No shared Folders yet. Sharing across Vaults starts with a shared Folder invitation."
+      : "Vault admins see cross-Vault shared Folders here.";
+    setList("sharedFolderList", rows, emptyText, (item, row) => {
+      const directionLabel = row.direction === "outgoing" ? "to" : "from";
+      const title = `${row.folderId} ${directionLabel} ${row.counterpartVaultId}`;
+      const detail =
+        row.kind === "connection"
+          ? countLabel(row.memberCount, "member")
+          : `${row.direction} invite`;
+      linkRowInfo(item, title, row.status, detail);
+      if (row.acceptable) {
+        item.appendChild(
+          linkRowActionButton("Accept", () => acceptSharedFolderInvitationById(row.id))
+        );
+      }
+      if (row.revocable) {
+        item.appendChild(
+          linkRowActionButton("Revoke", () => revokeSharedFolderInvitationById(row.id), {
+            danger: true,
+          })
+        );
+      }
+    });
+  }
+
+  function renderFolderShareLinkList(row) {
+    const listMatchesFolder = Boolean(row) && state.folderShareLinksFolderId === row.id;
+    const rows = listMatchesFolder ? folderShareLinkRows(state.folderShareLinks) : [];
+    const pendingCount = rows.filter((linkRow) => linkRow.status === "pending").length;
+    setPill("folderShareLinkCount", `${pendingCount}`, pendingCount ? "ready" : "muted");
+    const emptyText = canLoadVaultAdminLists()
+      ? "No share links for this Folder yet."
+      : "Vault admins see this Folder's share links here.";
+    setList("folderShareLinkList", rows, emptyText, (item, linkRow) => {
+      linkRowInfo(
+        item,
+        shortKey(linkRow.recipientNpub),
+        linkRow.status,
+        `expires ${linkRow.expiresAt.slice(0, 10)}`
+      );
+      if (!linkRow.revocable) return;
+      item.appendChild(
+        linkRowActionButton("Use link", async () => {
+          $("accessShareLinkInput").value = linkRow.id;
+          setAccessResult("ready", "Share link loaded", `${linkRow.id} is in the link field.`, {
+            recipient: shortKey(linkRow.recipientNpub),
+          });
+        })
+      );
+      item.appendChild(
+        linkRowActionButton("Revoke", () => revokeShareLinkById(linkRow.id), { danger: true })
+      );
+    });
   }
 
   function renderFolderSelector(activeRow, rows, openedFolders) {
@@ -4352,6 +4876,7 @@ const FiniteBrainProductClient = (() => {
       setText("accessCurrentFolder", "No folder selected");
       setText("accessSummaryLine", "Load a Vault and select a Folder to inspect access.");
       renderWhoHasAccessList(null, metadata, openedFolders);
+      renderAccessFlowPanel(null);
       return;
     }
 
@@ -4361,6 +4886,10 @@ const FiniteBrainProductClient = (() => {
 
     // Render who has access
     renderWhoHasAccessList(activeRow, metadata, openedFolders);
+    applyAccessIntentChrome(activeRow);
+
+    // Share-link defaults and legacy hidden controls stay in sync here.
+    renderAccessFlowPanel(activeRow);
 
     // Update advanced options
     updateAdvancedOptions(activeRow, metadata, openedFolders);
@@ -4560,6 +5089,8 @@ const FiniteBrainProductClient = (() => {
 
   function updateAdvancedOptions(row, metadata, openedFolders) {
     const section = $("accessAdvancedSection");
+    const shareForm = $("accessShareForm");
+    const shareHint = $("accessShareHint");
     const createShareButton = $("createShareLinkButton");
     const acceptShareButton = $("acceptShareLinkButton");
     const revokeShareButton = $("revokeShareLinkButton");
@@ -4579,6 +5110,22 @@ const FiniteBrainProductClient = (() => {
     acceptShareButton.disabled = state.accessBusy || state.signerStatus !== "connected";
     revokeShareButton.disabled = state.accessBusy || state.signerStatus !== "connected";
 
+    if (shareForm) {
+      shareForm.classList.toggle("is-ready", canShare);
+      shareForm.classList.toggle("is-locked", !canShare);
+    }
+    if (shareHint) {
+      if (state.signerStatus !== "connected") {
+        shareHint.textContent = "Connect a signer to create or accept share links.";
+      } else if (!keyOpen) {
+        shareHint.textContent = accessFlowHint(row, "links", keyOpen);
+      } else if (row.access !== "restricted") {
+        shareHint.textContent = accessFlowHint(row, "links", keyOpen);
+      } else {
+        shareHint.textContent = "Target npub receives a single-use Folder Key Grant through the link.";
+      }
+    }
+
     // Setup expiry defaults if not set
     if (!$("accessShareExpiresAtInput").value) {
       $("accessShareExpiresAtInput").value = defaultShareExpiryDateTimeLocal();
@@ -4586,6 +5133,8 @@ const FiniteBrainProductClient = (() => {
     if (state.lastShareLinkId && !$("accessShareLinkInput").value) {
       $("accessShareLinkInput").value = state.lastShareLinkId;
     }
+
+    renderFolderShareLinkList(row);
   }
 
   // Legacy compatibility - handle missing elements gracefully
@@ -4968,13 +5517,14 @@ const FiniteBrainProductClient = (() => {
     await loadVisibleVaults();
   }
 
-  async function createOrganizationVaultFromInput() {
-    const name = $("organizationVaultNameInput").value.trim() || "New organization";
+  async function createOrganizationVaultFromInput(inputId = "organizationVaultNameInput") {
+    const input = $(inputId);
+    const name = input?.value.trim() || "New organization";
     if (state.signerStatus !== "connected") await connectSigner();
     if (state.signerStatus !== "connected") throw new Error("Connect a NIP-07 signer first");
     const vaultId = vaultIdFromName("org", name);
     const metadata = await createVault(vaultId, "organization", name);
-    $("organizationVaultNameInput").value = "";
+    if (input) input.value = "";
     rememberVisibleVault(metadata);
     setActiveVaultId(metadata.vaultId);
     state.metadata = metadata;
@@ -5035,6 +5585,146 @@ const FiniteBrainProductClient = (() => {
     rememberVisibleVault(metadata);
     log("Loaded Vault metadata.", metadata);
     render();
+    if (state.activeSidebarMode === "access") refreshAccessManagementListsInBackground();
+  }
+
+  function canLoadVaultAdminLists() {
+    return Boolean(
+      state.metadata &&
+        state.metadata.kind === "organization" &&
+        state.signerStatus === "connected" &&
+        actorIsVaultAdmin(state.metadata)
+    );
+  }
+
+  async function refreshVaultAdminLists() {
+    if (!canLoadVaultAdminLists()) {
+      state.vaultInvitations = null;
+      state.sharedFolderInvitations = null;
+      state.sharedFolderConnections = null;
+      return;
+    }
+    const vaultPath = `/_admin/vaults/${encodeURIComponent(state.activeVaultId)}`;
+    const invitationList = await protectedRequest(`${vaultPath}/invitations`);
+    state.vaultInvitations = invitationList.invitations || [];
+    state.sharedFolderInvitations = await protectedRequest(
+      `${vaultPath}/shared-folder-invitations`
+    );
+    state.sharedFolderConnections = await protectedRequest(
+      `${vaultPath}/shared-folder-connections`
+    );
+  }
+
+  async function refreshFolderShareLinks(folderId) {
+    if (!folderId || !canLoadVaultAdminLists()) {
+      state.folderShareLinks = null;
+      state.folderShareLinksFolderId = null;
+      return;
+    }
+    const path = `/_admin/vaults/${encodeURIComponent(
+      state.activeVaultId
+    )}/folders/${encodeURIComponent(folderId)}/share-links`;
+    const list = await protectedRequest(path);
+    state.folderShareLinks = list.shareLinks || [];
+    state.folderShareLinksFolderId = folderId;
+  }
+
+  function refreshAccessManagementListsInBackground() {
+    const work = async () => {
+      await refreshVaultAdminLists();
+      await refreshFolderShareLinks(state.activeAccessFolderId);
+      render();
+    };
+    work().catch((error) => {
+      log("Failed to refresh access management lists.", { error: error.message });
+    });
+  }
+
+  async function revokeVaultInvitationById(invitationId) {
+    state.accessBusy = true;
+    state.accessResult = null;
+    render();
+    try {
+      const invitation = await protectedRequest(
+        vaultInvitationRevokePath(state.activeVaultId, invitationId),
+        { method: "DELETE" }
+      );
+      setAccessResult("warn", "Invitation revoked", `${invitation.id} is ${invitation.status}.`, {
+        updatedAt: invitation.updatedAt,
+      });
+      log("Revoked Vault invitation from pending list.", { invitationId });
+      await refreshVaultAdminLists();
+    } finally {
+      state.accessBusy = false;
+      render();
+    }
+  }
+
+  async function revokeShareLinkById(shareLinkId) {
+    state.accessBusy = true;
+    state.accessResult = null;
+    render();
+    try {
+      const shareLink = await protectedRequest(
+        `/_admin/share-links/${encodeURIComponent(shareLinkId)}`,
+        { method: "DELETE" }
+      );
+      setAccessResult("warn", "Share link revoked", `${shareLink.id} is ${shareLink.status}.`, {
+        updatedAt: shareLink.updatedAt,
+      });
+      log("Revoked Folder share link from list.", { shareLinkId });
+      await refreshFolderShareLinks(state.activeAccessFolderId);
+    } finally {
+      state.accessBusy = false;
+      render();
+    }
+  }
+
+  async function acceptSharedFolderInvitationById(invitationId) {
+    state.accessBusy = true;
+    state.accessResult = null;
+    render();
+    try {
+      const invitation = await protectedRequest(
+        `/_admin/shared-folder-invitations/${encodeURIComponent(invitationId)}/accept`,
+        { method: "POST" }
+      );
+      setAccessResult(
+        "ready",
+        "Shared Folder mounted",
+        `${invitation.sourceFolderId} from ${invitation.sourceVaultId} is now mounted.`,
+        { invitationId: invitation.id, status: invitation.status }
+      );
+      log("Accepted shared Folder invitation.", { invitationId });
+      await loadVaultMetadata();
+      await refreshVaultAdminLists();
+    } finally {
+      state.accessBusy = false;
+      render();
+    }
+  }
+
+  async function revokeSharedFolderInvitationById(invitationId) {
+    state.accessBusy = true;
+    state.accessResult = null;
+    render();
+    try {
+      const invitation = await protectedRequest(
+        `/_admin/shared-folder-invitations/${encodeURIComponent(invitationId)}`,
+        { method: "DELETE" }
+      );
+      setAccessResult(
+        "warn",
+        "Shared Folder invitation revoked",
+        `${invitation.id} is ${invitation.status}.`,
+        { updatedAt: invitation.updatedAt }
+      );
+      log("Revoked shared Folder invitation.", { invitationId });
+      await refreshVaultAdminLists();
+    } finally {
+      state.accessBusy = false;
+      render();
+    }
   }
 
   async function openAvailableFolderKeyGrants() {
@@ -5563,6 +6253,127 @@ const FiniteBrainProductClient = (() => {
     });
   }
 
+  async function buildVaultPeopleMutationRequest(action, targetNpub) {
+    npubToHex(targetNpub);
+    return {
+      targetNpub,
+      accessChangeEvent: await buildAdminAccessChangeEvent({
+        action,
+        targetNpub,
+      }),
+    };
+  }
+
+  async function mutateVaultPeople(path, options) {
+    const metadata = await protectedRequest(path, options);
+    state.metadata = metadata;
+    rememberVisibleVault(metadata);
+    await loadVisibleVaults().catch((error) => {
+      log("Failed to refresh visible Vaults after Vault people mutation.", { error: error.message });
+    });
+    return metadata;
+  }
+
+  async function addVaultMemberFromPanel() {
+    const targetNpub = normalizedNpubInput("vaultMemberNpubInput", "Paste a member npub first");
+    state.accessBusy = true;
+    state.accessResult = null;
+    render();
+    try {
+      const body = JSON.stringify(await buildVaultPeopleMutationRequest("add-member", targetNpub));
+      await mutateVaultPeople(`/_admin/vaults/${encodeURIComponent(state.activeVaultId)}/members`, {
+        method: "POST",
+        body,
+      });
+      $("vaultMemberNpubInput").value = "";
+      setAccessResult("ready", "Member added", `${shortKey(targetNpub)} can now belong to this Vault.`);
+      log("Added Vault member.", { targetNpub: shortKey(targetNpub), vaultId: state.activeVaultId });
+    } catch (error) {
+      setAccessResult("error", "Add member failed", error.message);
+      throw error;
+    } finally {
+      state.accessBusy = false;
+      render();
+    }
+  }
+
+  async function addVaultAdminFromPanel() {
+    const targetNpub = normalizedNpubInput("vaultAdminNpubInput", "Paste an admin npub first");
+    state.accessBusy = true;
+    state.accessResult = null;
+    render();
+    try {
+      const body = JSON.stringify(await buildVaultPeopleMutationRequest("add-admin", targetNpub));
+      await mutateVaultPeople(`/_admin/vaults/${encodeURIComponent(state.activeVaultId)}/admins`, {
+        method: "POST",
+        body,
+      });
+      $("vaultAdminNpubInput").value = "";
+      setAccessResult("ready", "Admin added", `${shortKey(targetNpub)} can manage this Vault.`);
+      log("Added Vault admin.", { targetNpub: shortKey(targetNpub), vaultId: state.activeVaultId });
+    } catch (error) {
+      setAccessResult("error", "Add admin failed", error.message);
+      throw error;
+    } finally {
+      state.accessBusy = false;
+      render();
+    }
+  }
+
+  async function removeVaultMemberFromPanel(targetNpub) {
+    state.accessBusy = true;
+    state.accessResult = null;
+    render();
+    try {
+      const accessChangeEvent = await buildAdminAccessChangeEvent({
+        action: "remove-member",
+        targetNpub,
+      });
+      await mutateVaultPeople(
+        `/_admin/vaults/${encodeURIComponent(state.activeVaultId)}/members/${encodeURIComponent(targetNpub)}`,
+        {
+          method: "DELETE",
+          body: JSON.stringify({ accessChangeEvent }),
+        }
+      );
+      setAccessResult("warn", "Member removed", `${shortKey(targetNpub)} was removed from this Vault.`);
+      log("Removed Vault member.", { targetNpub: shortKey(targetNpub), vaultId: state.activeVaultId });
+    } catch (error) {
+      setAccessResult("error", "Remove member failed", error.message);
+      throw error;
+    } finally {
+      state.accessBusy = false;
+      render();
+    }
+  }
+
+  async function removeVaultAdminFromPanel(targetNpub) {
+    state.accessBusy = true;
+    state.accessResult = null;
+    render();
+    try {
+      const accessChangeEvent = await buildAdminAccessChangeEvent({
+        action: "remove-admin",
+        targetNpub,
+      });
+      await mutateVaultPeople(
+        `/_admin/vaults/${encodeURIComponent(state.activeVaultId)}/admins/${encodeURIComponent(targetNpub)}`,
+        {
+          method: "DELETE",
+          body: JSON.stringify({ accessChangeEvent }),
+        }
+      );
+      setAccessResult("warn", "Admin removed", `${shortKey(targetNpub)} is still a member.`);
+      log("Removed Vault admin.", { targetNpub: shortKey(targetNpub), vaultId: state.activeVaultId });
+    } catch (error) {
+      setAccessResult("error", "Remove admin failed", error.message);
+      throw error;
+    } finally {
+      state.accessBusy = false;
+      render();
+    }
+  }
+
   async function buildFolderAccessRemovalRequest(keyring, input) {
     if (!keyring) throw new Error("Open this Folder key before removing access");
     const row = input.row;
@@ -5739,7 +6550,7 @@ const FiniteBrainProductClient = (() => {
 
   async function createShareLinkFromPanel() {
     const row = requireRestrictedAccessRow();
-    const recipientNpub = normalizedTargetNpub();
+    const recipientNpub = normalizedNpubInput("accessShareTargetInput", "Paste a share target npub first");
     state.accessBusy = true;
     state.accessResult = null;
     render();
@@ -5770,6 +6581,7 @@ const FiniteBrainProductClient = (() => {
         expiresAt: shareLink.expiresAt,
       });
       log("Created Folder share link.", { folderId: row.id, shareLinkId: shareLink.id });
+      await refreshFolderShareLinks(row.id);
     } catch (error) {
       setAccessResult("error", "Share failed", error.message);
       throw error;
@@ -5828,6 +6640,7 @@ const FiniteBrainProductClient = (() => {
         updatedAt: shareLink.updatedAt,
       });
       log("Revoked Folder share link.", { shareLinkId: shareLink.id });
+      await refreshFolderShareLinks(state.folderShareLinksFolderId);
     } catch (error) {
       setAccessResult("error", "Revoke failed", error.message);
       throw error;
@@ -5865,6 +6678,7 @@ const FiniteBrainProductClient = (() => {
         "target npub": shortKey(invitation.userId),
       });
       log("Created Vault invitation.", { invitationId: invitation.id, vaultId: invitation.vaultId });
+      await refreshVaultAdminLists();
     } catch (error) {
       setAccessResult("error", "Invite failed", vaultInvitationUnavailableDetail(error));
       throw error;
@@ -5966,6 +6780,7 @@ const FiniteBrainProductClient = (() => {
         updatedAt: invitation.updatedAt,
       });
       log("Revoked Vault invitation.", { invitationId: invitation.id, vaultId: invitation.vaultId });
+      await refreshVaultAdminLists();
     } catch (error) {
       setAccessResult("error", "Revoke failed", error.message);
       throw error;
@@ -6320,12 +7135,108 @@ const FiniteBrainProductClient = (() => {
     onOptionalClick("accessShareButton", () => {
       const folderId = state.activeAccessFolderId || state.selectedFolderId;
       if (!folderId) return;
+      state.activeAccessView = "folder";
       state.activeAccessIntent = "links";
       state.activeAccessFolderId = folderId;
       state.accessResult = null;
       log("Opened Folder links panel.", { folderId });
       render();
     });
+    onOptionalClick("accessFolderViewButton", () => setAccessView("folder"));
+    onOptionalClick("accessVaultViewButton", () => setAccessView("vault"));
+    const accessViewSwitch = document.querySelector(".access-view-switch");
+    if (accessViewSwitch) {
+      accessViewSwitch.addEventListener("keydown", (event) => {
+        const tabs = ["accessFolderViewButton", "accessVaultViewButton"]
+          .map((id) => $(id))
+          .filter(Boolean);
+        const activeIndex = tabs.findIndex((tab) => tab.getAttribute("aria-selected") === "true");
+        if (activeIndex < 0) return;
+        if (event.key === "ArrowRight" || event.key === "ArrowLeft") {
+          event.preventDefault();
+          const direction = event.key === "ArrowRight" ? 1 : -1;
+          const nextIndex = (activeIndex + direction + tabs.length) % tabs.length;
+          setAccessView(nextIndex === 0 ? "folder" : "vault");
+          tabs[nextIndex]?.focus();
+        }
+        if (event.key === "Home") {
+          event.preventDefault();
+          setAccessView("folder");
+          tabs[0]?.focus();
+        }
+        if (event.key === "End") {
+          event.preventDefault();
+          setAccessView("vault");
+          tabs[tabs.length - 1]?.focus();
+        }
+      });
+    }
+    onOptionalClick("accessConnectSignerButton", () => {
+      connectSigner().catch((error) => {
+        state.lastError = error.message;
+        log("Failed to connect signer.", { error: error.message });
+        render();
+      });
+    });
+    onOptionalClick("accessLoadVaultButton", () => {
+      loadVaultMetadata().catch((error) => {
+        state.lastError = error.message;
+        log("Failed to load Vault metadata.", { error: error.message });
+        render();
+      });
+    });
+    onOptionalClick("accessOpenAccessibleVaultButton", () => {
+      openAccessibleVaultReader().catch((error) => {
+        state.lastError = error.message;
+        log("Failed to open accessible Vault reader.", { error: error.message });
+        state.readerBusy = false;
+        render();
+      });
+    });
+    onOptionalClick("accessCreateOrganizationVaultButton", () => {
+      createOrganizationVaultFromInput("accessOrganizationVaultNameInput").catch((error) => {
+        state.lastError = error.message;
+        log("Failed to create organization Vault.", { error: error.message });
+        render();
+      });
+    });
+    const accessOrgNameInput = $("accessOrganizationVaultNameInput");
+    if (accessOrgNameInput) {
+      accessOrgNameInput.addEventListener("keydown", (event) => {
+        if (event.key !== "Enter") return;
+        event.preventDefault();
+        createOrganizationVaultFromInput("accessOrganizationVaultNameInput").catch((error) => {
+          state.lastError = error.message;
+          log("Failed to create organization Vault.", { error: error.message });
+          render();
+        });
+      });
+    }
+    onOptionalClick("addVaultMemberButton", () => {
+      addVaultMemberFromPanel().catch((error) => {
+        state.lastError = error.message;
+        log("Failed to add Vault member.", { error: error.message });
+      });
+    });
+    onOptionalClick("addVaultAdminButton", () => {
+      addVaultAdminFromPanel().catch((error) => {
+        state.lastError = error.message;
+        log("Failed to add Vault admin.", { error: error.message });
+      });
+    });
+    for (const [inputId, buttonId] of [
+      ["vaultMemberNpubInput", "addVaultMemberButton"],
+      ["vaultAdminNpubInput", "addVaultAdminButton"],
+    ]) {
+      const input = $(inputId);
+      if (!input) continue;
+      input.addEventListener("keydown", (event) => {
+        if (event.key !== "Enter") return;
+        event.preventDefault();
+        const button = $(buttonId);
+        if (!button?.disabled) button.click();
+      });
+    }
     onOptionalClick("grantFolderAccessButton", () => {
       grantFolderAccessFromPanel().catch((error) => {
         state.lastError = error.message;
@@ -6556,6 +7467,7 @@ const FiniteBrainProductClient = (() => {
     encodeFolderObjectPagePlaintext,
     editorSlashCommandRows,
     extractPageLinks,
+    folderShareLinkRows,
     graphEmptyStateCopy,
     graphLayout,
     graphNeighborIds,
@@ -6568,6 +7480,7 @@ const FiniteBrainProductClient = (() => {
     metadataFolderRows,
     metadataMountRows,
     nextDraftObjectId,
+    normalizeAccessView,
     normalizeSidebarMode,
     normalizeVisibleVault,
     npubFromHex,
@@ -6592,11 +7505,13 @@ const FiniteBrainProductClient = (() => {
     readerPageDetail,
     readerPageRows,
     searchPageRows,
+    sharedFolderRelationshipRows,
     sidebarAccessBadgesForFolder,
     sidebarModeLabel,
     shortKey,
     start,
     visibleVaultOptions,
+    vaultHealthBadges,
     workspaceChromeState,
     workspaceTabTitle,
     vaultInvitationAcceptPath,
@@ -6604,7 +7519,10 @@ const FiniteBrainProductClient = (() => {
     vaultInvitationIdentifierHint,
     vaultInvitationLinkPath,
     vaultInvitationRevokePath,
+    vaultInvitationRows,
     vaultInvitationUnavailableDetail,
+    vaultGuideStepRows,
+    vaultPeopleRows,
   };
 })();
 

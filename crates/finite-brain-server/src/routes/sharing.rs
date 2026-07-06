@@ -70,6 +70,27 @@ pub(crate) async fn create_share_link_handler(
     Ok(Json(share_link_response(share_link)))
 }
 
+pub(crate) async fn list_folder_share_links_handler(
+    State(state): State<ServerState>,
+    headers: HeaderMap,
+    method: Method,
+    OriginalUri(uri): OriginalUri,
+    AxumPath((vault_id, folder_id)): AxumPath<(String, String)>,
+) -> Result<Json<ShareLinkListResponse>, ApiError> {
+    let actor = validate_request_auth(&state, &headers, &method, &uri, None)?;
+    let vault_id = VaultId::new(vault_id)?;
+    let folder_id = FolderId::new(folder_id)?;
+    let share_links = {
+        let store = state.store.lock().map_err(lock_error)?;
+        let stored = store.load_vault(&vault_id)?;
+        ensure_vault_admin(&stored, &actor)?;
+        store.list_folder_share_links(&vault_id, &folder_id)?
+    };
+    Ok(Json(ShareLinkListResponse {
+        share_links: share_links.into_iter().map(share_link_response).collect(),
+    }))
+}
+
 pub(crate) async fn get_share_link_handler(
     State(state): State<ServerState>,
     headers: HeaderMap,
@@ -436,6 +457,66 @@ pub(crate) async fn revoke_shared_folder_connection_handler(
         connection
     };
     Ok(Json(shared_folder_connection_response(connection)))
+}
+
+pub(crate) async fn list_shared_folder_invitations_handler(
+    State(state): State<ServerState>,
+    headers: HeaderMap,
+    method: Method,
+    OriginalUri(uri): OriginalUri,
+    AxumPath(vault_id): AxumPath<String>,
+) -> Result<Json<SharedFolderInvitationListResponse>, ApiError> {
+    let actor = validate_request_auth(&state, &headers, &method, &uri, None)?;
+    let vault_id = VaultId::new(vault_id)?;
+    let (outgoing, incoming) = {
+        let store = state.store.lock().map_err(lock_error)?;
+        let stored = store.load_vault(&vault_id)?;
+        ensure_vault_admin(&stored, &actor)?;
+        (
+            store.list_shared_folder_invitations(&vault_id, SharedFolderDirection::Source)?,
+            store.list_shared_folder_invitations(&vault_id, SharedFolderDirection::Destination)?,
+        )
+    };
+    Ok(Json(SharedFolderInvitationListResponse {
+        outgoing: outgoing
+            .into_iter()
+            .map(shared_folder_invitation_response)
+            .collect(),
+        incoming: incoming
+            .into_iter()
+            .map(shared_folder_invitation_response)
+            .collect(),
+    }))
+}
+
+pub(crate) async fn list_shared_folder_connections_handler(
+    State(state): State<ServerState>,
+    headers: HeaderMap,
+    method: Method,
+    OriginalUri(uri): OriginalUri,
+    AxumPath(vault_id): AxumPath<String>,
+) -> Result<Json<SharedFolderConnectionListResponse>, ApiError> {
+    let actor = validate_request_auth(&state, &headers, &method, &uri, None)?;
+    let vault_id = VaultId::new(vault_id)?;
+    let (outgoing, incoming) = {
+        let store = state.store.lock().map_err(lock_error)?;
+        let stored = store.load_vault(&vault_id)?;
+        ensure_vault_admin(&stored, &actor)?;
+        (
+            store.list_shared_folder_connections(&vault_id, SharedFolderDirection::Source)?,
+            store.list_shared_folder_connections(&vault_id, SharedFolderDirection::Destination)?,
+        )
+    };
+    Ok(Json(SharedFolderConnectionListResponse {
+        outgoing: outgoing
+            .into_iter()
+            .map(shared_folder_connection_response)
+            .collect(),
+        incoming: incoming
+            .into_iter()
+            .map(shared_folder_connection_response)
+            .collect(),
+    }))
 }
 
 pub(crate) async fn organization_folder_mounts_handler(

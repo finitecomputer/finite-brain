@@ -25,10 +25,10 @@ use finite_brain_core::{
 use finite_brain_store::{
     BrainStore, ControlSyncRecord, EncryptedVaultExport, FolderKeyGrantMetadata,
     FolderObjectRevisionSyncRecord, FolderObjectTombstoneSyncRecord, LinkStatus,
-    MountedFolderProjection, MountedFolderState, SharedFolderConnectionStatus, StoreError,
-    StoredShareLink, StoredSharedFolderConnection, StoredSharedFolderInvitation, StoredSyncRecord,
-    StoredVault, StoredVaultInvitation, SyncRecordInput, SyncRecordType, VisibleVault,
-    VisibleVaultRole,
+    MountedFolderProjection, MountedFolderState, SharedFolderConnectionStatus,
+    SharedFolderDirection, StoreError, StoredShareLink, StoredSharedFolderConnection,
+    StoredSharedFolderInvitation, StoredSyncRecord, StoredVault, StoredVaultInvitation,
+    SyncRecordInput, SyncRecordType, VisibleVault, VisibleVaultRole,
 };
 use finite_nostr::{NostrPublicKey, validate_gift_wrap};
 use nostr::Event;
@@ -295,7 +295,7 @@ pub fn router_with_state(state: ServerState) -> Router {
         )
         .route(
             "/_admin/vaults/{vault_id}/invitations",
-            post(create_vault_invitation_handler),
+            get(list_vault_invitations_handler).post(create_vault_invitation_handler),
         )
         .route(
             "/_admin/vaults/{vault_id}/invitations/{invitation_id}",
@@ -331,7 +331,7 @@ pub fn router_with_state(state: ServerState) -> Router {
         )
         .route(
             "/_admin/vaults/{vault_id}/folders/{folder_id}/share-links",
-            post(create_share_link_handler),
+            get(list_folder_share_links_handler).post(create_share_link_handler),
         )
         .route(
             "/_admin/vaults/{vault_id}/folders/{folder_id}/share-source",
@@ -365,6 +365,14 @@ pub fn router_with_state(state: ServerState) -> Router {
         .route(
             "/_admin/shared-folder-connections/{connection_id}",
             axum::routing::delete(revoke_shared_folder_connection_handler),
+        )
+        .route(
+            "/_admin/vaults/{vault_id}/shared-folder-invitations",
+            get(list_shared_folder_invitations_handler),
+        )
+        .route(
+            "/_admin/vaults/{vault_id}/shared-folder-connections",
+            get(list_shared_folder_connections_handler),
         )
         .route(
             "/_admin/vaults/{vault_id}/organization-folder-mounts",
@@ -1199,7 +1207,6 @@ mod tests {
         assert!(!client_body.contains("pageTabButton"));
         assert!(!client_body.contains("graphTabButton"));
         assert!(!client_body.contains("titlebarNewTabButton"));
-        assert!(!client_body.contains("role=\"tablist\""));
         assert!(client_body.contains("app-ribbon"));
         assert!(client_body.contains("file-sidebar"));
         assert!(client_body.contains("Connect signer"));
@@ -2825,6 +2832,37 @@ mod tests {
             vec!["getting-started".to_owned()]
         );
 
+        let list = authed_request(
+            router.clone(),
+            &admin_keys,
+            "GET",
+            "/_admin/vaults/acme/invitations",
+            None,
+            TEST_NOW,
+        )
+        .await;
+        assert_eq!(list.status(), StatusCode::OK);
+        let listed: VaultInvitationListResponse = read_json(list).await;
+        assert_eq!(listed.invitations.len(), 1);
+        assert_eq!(listed.invitations[0].id, invitation.id);
+        assert_eq!(listed.invitations[0].status, "pending");
+
+        let non_admin_list = authed_request(
+            router.clone(),
+            &target_keys,
+            "GET",
+            "/_admin/vaults/acme/invitations",
+            None,
+            TEST_NOW,
+        )
+        .await;
+        assert_error(
+            non_admin_list,
+            StatusCode::FORBIDDEN,
+            "vault admin access required",
+        )
+        .await;
+
         let link_path = format!("/_admin/vault-invitation-links/{}", invitation.invite_code);
         let wrong_view = authed_request(
             router.clone(),
@@ -2903,11 +2941,32 @@ mod tests {
         assert!(metadata.members.contains(&target_npub));
 
         let revoke_path = format!("/_admin/vaults/acme/invitations/{}", invitation.id);
-        let revoke =
-            authed_request(router, &admin_keys, "DELETE", &revoke_path, None, TEST_NOW).await;
+        let revoke = authed_request(
+            router.clone(),
+            &admin_keys,
+            "DELETE",
+            &revoke_path,
+            None,
+            TEST_NOW,
+        )
+        .await;
         assert_eq!(revoke.status(), StatusCode::OK);
         let revoked: VaultInvitationResponse = read_json(revoke).await;
         assert_eq!(revoked.status, "revoked");
+
+        let list_after_revoke = authed_request(
+            router,
+            &admin_keys,
+            "GET",
+            "/_admin/vaults/acme/invitations",
+            None,
+            TEST_NOW + 3,
+        )
+        .await;
+        assert_eq!(list_after_revoke.status(), StatusCode::OK);
+        let listed: VaultInvitationListResponse = read_json(list_after_revoke).await;
+        assert_eq!(listed.invitations.len(), 1);
+        assert_eq!(listed.invitations[0].status, "revoked");
     }
 
     #[tokio::test]
@@ -3010,6 +3069,37 @@ mod tests {
         assert_eq!(share_link.status, "pending");
         assert_eq!(share_link.recipient_npub, recipient_npub);
 
+        let list = authed_request(
+            router.clone(),
+            &admin_keys,
+            "GET",
+            "/_admin/vaults/acme/folders/strategy/share-links",
+            None,
+            TEST_NOW,
+        )
+        .await;
+        assert_eq!(list.status(), StatusCode::OK);
+        let listed: ShareLinkListResponse = read_json(list).await;
+        assert_eq!(listed.share_links.len(), 1);
+        assert_eq!(listed.share_links[0].id, share_link.id);
+        assert_eq!(listed.share_links[0].status, "pending");
+
+        let non_admin_list = authed_request(
+            router.clone(),
+            &recipient_keys,
+            "GET",
+            "/_admin/vaults/acme/folders/strategy/share-links",
+            None,
+            TEST_NOW,
+        )
+        .await;
+        assert_error(
+            non_admin_list,
+            StatusCode::FORBIDDEN,
+            "vault admin access required",
+        )
+        .await;
+
         let share_path = format!("/_admin/share-links/{}", share_link.id);
         let wrong_view = authed_request(
             router.clone(),
@@ -3074,11 +3164,32 @@ mod tests {
         assert_eq!(strategy.access_user_ids, vec![recipient_npub]);
         assert_eq!(metadata.grant_count, 4);
 
-        let revoke =
-            authed_request(router, &admin_keys, "DELETE", &share_path, None, TEST_NOW).await;
+        let revoke = authed_request(
+            router.clone(),
+            &admin_keys,
+            "DELETE",
+            &share_path,
+            None,
+            TEST_NOW,
+        )
+        .await;
         assert_eq!(revoke.status(), StatusCode::OK);
         let revoked: ShareLinkResponse = read_json(revoke).await;
         assert_eq!(revoked.status, "revoked");
+
+        let list_after_revoke = authed_request(
+            router,
+            &admin_keys,
+            "GET",
+            "/_admin/vaults/acme/folders/strategy/share-links",
+            None,
+            TEST_NOW + 2,
+        )
+        .await;
+        assert_eq!(list_after_revoke.status(), StatusCode::OK);
+        let listed: ShareLinkListResponse = read_json(list_after_revoke).await;
+        assert_eq!(listed.share_links.len(), 1);
+        assert_eq!(listed.share_links[0].status, "revoked");
     }
 
     #[tokio::test]
@@ -3261,6 +3372,72 @@ mod tests {
         assert_eq!(mount.source_vault_id, "acme");
         assert_eq!(mount.source_folder_id, "strategy");
         let connection_id = mount.connection_id.clone();
+
+        let source_invitations = authed_request(
+            router.clone(),
+            &source_admin_keys,
+            "GET",
+            "/_admin/vaults/acme/shared-folder-invitations",
+            None,
+            TEST_NOW,
+        )
+        .await;
+        assert_eq!(source_invitations.status(), StatusCode::OK);
+        let source_invitations: SharedFolderInvitationListResponse =
+            read_json(source_invitations).await;
+        assert_eq!(source_invitations.outgoing.len(), 1);
+        assert_eq!(source_invitations.outgoing[0].id, invitation.id);
+        assert_eq!(source_invitations.outgoing[0].status, "accepted");
+        assert!(source_invitations.incoming.is_empty());
+
+        let destination_invitations = authed_request(
+            router.clone(),
+            &destination_admin_keys,
+            "GET",
+            "/_admin/vaults/dest/shared-folder-invitations",
+            None,
+            TEST_NOW,
+        )
+        .await;
+        assert_eq!(destination_invitations.status(), StatusCode::OK);
+        let destination_invitations: SharedFolderInvitationListResponse =
+            read_json(destination_invitations).await;
+        assert!(destination_invitations.outgoing.is_empty());
+        assert_eq!(destination_invitations.incoming.len(), 1);
+        assert_eq!(destination_invitations.incoming[0].id, invitation.id);
+
+        let source_connections = authed_request(
+            router.clone(),
+            &source_admin_keys,
+            "GET",
+            "/_admin/vaults/acme/shared-folder-connections",
+            None,
+            TEST_NOW,
+        )
+        .await;
+        assert_eq!(source_connections.status(), StatusCode::OK);
+        let source_connections: SharedFolderConnectionListResponse =
+            read_json(source_connections).await;
+        assert_eq!(source_connections.outgoing.len(), 1);
+        assert_eq!(source_connections.outgoing[0].id, connection_id);
+        assert_eq!(source_connections.outgoing[0].status, "active");
+        assert!(source_connections.incoming.is_empty());
+
+        let destination_connections = authed_request(
+            router.clone(),
+            &destination_admin_keys,
+            "GET",
+            "/_admin/vaults/dest/shared-folder-connections",
+            None,
+            TEST_NOW,
+        )
+        .await;
+        assert_eq!(destination_connections.status(), StatusCode::OK);
+        let destination_connections: SharedFolderConnectionListResponse =
+            read_json(destination_connections).await;
+        assert!(destination_connections.outgoing.is_empty());
+        assert_eq!(destination_connections.incoming.len(), 1);
+        assert_eq!(destination_connections.incoming[0].id, connection_id);
 
         let add_destination_member_body = serde_json::json!({
             "targetNpub": destination_member_npub,

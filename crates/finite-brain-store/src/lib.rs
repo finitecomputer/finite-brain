@@ -27,6 +27,7 @@ const GRANT_FORMAT_NIP59: &str = "NIP-59";
 const MAX_PULL_LIMIT: u64 = 1_000;
 const MAX_BOOTSTRAP_FOLDERS: usize = 1_000;
 const MAX_BOOTSTRAP_GRANTS: usize = 10_000;
+const MAX_LINK_LIST_ROWS: i64 = 200;
 const APP_SPECIFIC_KIND: u16 = 30_078;
 const NIP59_GIFT_WRAP_KIND: u16 = 1_059;
 const MIGRATION_TIMESTAMP: &str = "2026-06-23T00:00:00.000Z";
@@ -572,6 +573,15 @@ pub struct StoredOrganizationFolderMount {
     pub created_at: String,
     /// Last update timestamp.
     pub updated_at: String,
+}
+
+/// Direction of a shared-folder relationship relative to one Vault.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum SharedFolderDirection {
+    /// The Vault is the source that shares one of its Folders.
+    Source,
+    /// The Vault is the destination that mounts a shared Folder.
+    Destination,
 }
 
 /// Client-visible mounted Folder projection state.

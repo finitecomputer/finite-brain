@@ -166,9 +166,75 @@ assert.equal(
 assert.match(htmlSource, /id="accessFolderButton"/);
 assert.match(htmlSource, /id="accessWhoHasList"/);
 assert.match(htmlSource, /id="accessAdvancedSection"/);
+assert.match(htmlSource, /id="accessSidebarCount"/);
+assert.match(htmlSource, /id="accessShareHint"/);
+assert.match(htmlSource, /role="tablist"/);
+assert.match(htmlSource, /id="accessFolderViewButton"/);
+assert.match(htmlSource, /id="accessVaultViewButton"/);
+assert.match(htmlSource, /id="accessFolderPanel"/);
+assert.match(htmlSource, /id="accessVaultPanel"/);
+assert.match(htmlSource, /id="vaultPeopleList"/);
+assert.match(htmlSource, /id="accessShareTargetInput"/);
+assert.match(htmlSource, /id="addVaultMemberButton"/);
+assert.match(htmlSource, /id="addVaultAdminButton"/);
 assert.doesNotMatch(htmlSource, /id="accessChangeMode"/);
 assert.doesNotMatch(htmlSource, /id="accessManageSection"/);
 assert.match(cssSource, /\[hidden\]\s*\{[^}]*display: none !important;/s);
+assert.match(cssSource, /\.access-view-switch/);
+assert.match(cssSource, /\.vault-management-section/);
+assert.equal(client.normalizeAccessView("vault"), "vault");
+assert.equal(client.normalizeAccessView("folder"), "folder");
+assert.equal(client.normalizeAccessView("other"), "folder");
+assert.equal(
+  JSON.stringify(client.vaultPeopleRows({
+    kind: "organization",
+    members: ["npub-admin", "npub-member"],
+    admins: ["npub-admin"],
+  })),
+  JSON.stringify([
+    {
+      id: "npub-admin",
+      name: "npub-admin",
+      role: "admin",
+      type: "admin",
+      removable: true,
+    },
+    {
+      id: "npub-member",
+      name: "npub-member",
+      role: "member",
+      type: "member",
+      removable: true,
+    },
+  ])
+);
+assert.equal(
+  JSON.stringify(client.vaultPeopleRows({
+    kind: "personal",
+    ownerUserId: "npub-owner",
+  })),
+  JSON.stringify([
+    {
+      id: "npub-owner",
+      name: "npub-owner",
+      role: "owner",
+      type: "owner",
+      removable: false,
+    },
+  ])
+);
+assert.equal(
+  JSON.stringify(client.vaultHealthBadges(
+    {
+      kind: "organization",
+      folders: [{ id: "getting-started" }],
+      grantCount: 2,
+      mountedFolders: [{ id: "mount-1" }],
+    },
+    "connected"
+  ).map((badge) => badge.label)),
+  JSON.stringify(["signer connected", "organization", "1 folders", "2 grants", "1 mounts"])
+);
 assert.equal(client.personalVaultIdForPubkey("ab".repeat(32)), "personal-abababababababab");
 assert.equal(
   client.normalizeVisibleVault({
@@ -1864,6 +1930,134 @@ assert.equal(client.readerPageRows("general", draftPages)[0].label, "Draft Page"
   assert.equal(replay[0].nodeCount, 1);
   assert.equal(replay[1].nodeCount, 2);
   assert.equal(replay[1].edgeCount, 1);
+
+  const invitationRows = client.vaultInvitationRows([
+    {
+      createdAt: "2026-07-01T00:00:00.000Z",
+      expiresAt: "2026-07-30T00:00:00.000Z",
+      id: "invitation-old",
+      inviteCode: "invite-old",
+      status: "accepted",
+      userId: "npub1older",
+    },
+    {
+      createdAt: "2026-07-02T00:00:00.000Z",
+      expiresAt: "2026-07-30T00:00:00.000Z",
+      id: "invitation-new",
+      inviteCode: "invite-new",
+      status: "pending",
+      userId: "npub1newer",
+    },
+    {
+      createdAt: "2026-07-03T00:00:00.000Z",
+      expiresAt: "2026-07-30T00:00:00.000Z",
+      id: "invitation-revoked",
+      inviteCode: "invite-revoked",
+      status: "revoked",
+      userId: "npub1revoked",
+    },
+  ]);
+  assert.deepEqual(
+    Array.from(invitationRows.map((row) => row.id)),
+    ["invitation-new", "invitation-old", "invitation-revoked"]
+  );
+  assert.equal(invitationRows[0].revocable, true);
+  assert.equal(invitationRows[1].revocable, false);
+  assert.equal(client.vaultInvitationRows(null).length, 0);
+
+  const shareLinkRows = client.folderShareLinkRows([
+    {
+      createdAt: "2026-07-01T00:00:00.000Z",
+      expiresAt: "2026-07-30T00:00:00.000Z",
+      id: "share-link-revoked",
+      recipientNpub: "npub1gone",
+      status: "revoked",
+    },
+    {
+      createdAt: "2026-07-02T00:00:00.000Z",
+      expiresAt: "2026-07-30T00:00:00.000Z",
+      id: "share-link-pending",
+      recipientNpub: "npub1waiting",
+      status: "pending",
+    },
+  ]);
+  assert.deepEqual(
+    Array.from(shareLinkRows.map((row) => row.id)),
+    ["share-link-pending", "share-link-revoked"]
+  );
+  assert.equal(shareLinkRows[0].revocable, true);
+
+  const relationshipRows = client.sharedFolderRelationshipRows(
+    {
+      incoming: [
+        {
+          destinationVaultId: "dest",
+          id: "sfi-incoming",
+          sourceFolderId: "strategy",
+          sourceVaultId: "acme",
+          status: "pending",
+        },
+      ],
+      outgoing: [
+        {
+          destinationVaultId: "partner",
+          id: "sfi-outgoing",
+          sourceFolderId: "playbooks",
+          sourceVaultId: "dest",
+          status: "revoked",
+        },
+      ],
+    },
+    {
+      incoming: [],
+      outgoing: [
+        {
+          destinationVaultId: "partner",
+          id: "sfc-outgoing",
+          memberNpubs: ["npub1a", "npub1b"],
+          sourceFolderId: "playbooks",
+          sourceVaultId: "dest",
+          status: "active",
+        },
+      ],
+    }
+  );
+  assert.deepEqual(
+    Array.from(relationshipRows.map((row) => row.id)),
+    ["sfc-outgoing", "sfi-incoming", "sfi-outgoing"]
+  );
+  const incomingInvitationRow = relationshipRows.find((row) => row.id === "sfi-incoming");
+  assert.equal(incomingInvitationRow.acceptable, true);
+  assert.equal(incomingInvitationRow.counterpartVaultId, "acme");
+  const outgoingConnectionRow = relationshipRows.find((row) => row.id === "sfc-outgoing");
+  assert.equal(outgoingConnectionRow.memberCount, 2);
+  assert.equal(outgoingConnectionRow.counterpartVaultId, "partner");
+  assert.equal(outgoingConnectionRow.acceptable, false);
+  assert.equal(client.sharedFolderRelationshipRows(null, null).length, 0);
+
+  const guideAllTodo = client.vaultGuideStepRows("missing", null, false);
+  assert.deepEqual(
+    Array.from(guideAllTodo.map((step) => step.done)),
+    [false, false, false]
+  );
+  const guideAdminReady = client.vaultGuideStepRows(
+    "connected",
+    { kind: "organization" },
+    true
+  );
+  assert.deepEqual(
+    Array.from(guideAdminReady.map((step) => step.done)),
+    [true, true, true]
+  );
+  const guidePersonalVault = client.vaultGuideStepRows(
+    "connected",
+    { kind: "personal" },
+    true
+  );
+  assert.deepEqual(
+    Array.from(guidePersonalVault.map((step) => step.done)),
+    [true, false, false]
+  );
 
   console.log("product-client deterministic seams ok");
 })().catch((error) => {

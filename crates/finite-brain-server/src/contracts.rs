@@ -366,6 +366,13 @@ pub struct VaultInvitationResponse {
     pub duplicate_accept: bool,
 }
 
+/// Vault Invitation list response.
+#[derive(Debug, Clone, Eq, PartialEq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VaultInvitationListResponse {
+    pub invitations: Vec<VaultInvitationResponse>,
+}
+
 /// Create Share Link request.
 #[derive(Debug, Clone, Eq, PartialEq, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -396,6 +403,13 @@ pub struct ShareLinkResponse {
     pub create_personal_mount: bool,
     pub personal_mount_id: Option<String>,
     pub duplicate_accept: bool,
+}
+
+/// Share Link list response for one Folder.
+#[derive(Debug, Clone, Eq, PartialEq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ShareLinkListResponse {
+    pub share_links: Vec<ShareLinkResponse>,
 }
 
 /// Mark Shared Folder Source request.
@@ -448,6 +462,22 @@ pub struct SharedFolderConnectionResponse {
     pub created_at: String,
     pub updated_at: String,
     pub member_npubs: Vec<String>,
+}
+
+/// Shared Folder Invitation list response for one Vault, split by direction.
+#[derive(Debug, Clone, Eq, PartialEq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SharedFolderInvitationListResponse {
+    pub outgoing: Vec<SharedFolderInvitationResponse>,
+    pub incoming: Vec<SharedFolderInvitationResponse>,
+}
+
+/// Shared Folder Connection list response for one Vault, split by direction.
+#[derive(Debug, Clone, Eq, PartialEq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SharedFolderConnectionListResponse {
+    pub outgoing: Vec<SharedFolderConnectionResponse>,
+    pub incoming: Vec<SharedFolderConnectionResponse>,
 }
 
 /// Update Shared Folder Connection members request.

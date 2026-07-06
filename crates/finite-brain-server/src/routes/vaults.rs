@@ -230,6 +230,29 @@ pub(crate) async fn remove_admin_handler(
     .map(Json)
 }
 
+pub(crate) async fn list_vault_invitations_handler(
+    State(state): State<ServerState>,
+    headers: HeaderMap,
+    method: Method,
+    OriginalUri(uri): OriginalUri,
+    AxumPath(vault_id): AxumPath<String>,
+) -> Result<Json<VaultInvitationListResponse>, ApiError> {
+    let actor = validate_request_auth(&state, &headers, &method, &uri, None)?;
+    let vault_id = VaultId::new(vault_id)?;
+    let invitations = {
+        let store = state.store.lock().map_err(lock_error)?;
+        let stored = store.load_vault(&vault_id)?;
+        ensure_vault_admin(&stored, &actor)?;
+        store.list_vault_invitations(&vault_id)?
+    };
+    Ok(Json(VaultInvitationListResponse {
+        invitations: invitations
+            .into_iter()
+            .map(vault_invitation_response)
+            .collect(),
+    }))
+}
+
 pub(crate) async fn create_vault_invitation_handler(
     State(state): State<ServerState>,
     headers: HeaderMap,
