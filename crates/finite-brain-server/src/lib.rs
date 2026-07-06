@@ -1,9 +1,10 @@
 //! FiniteBrain HTTP server and API surface.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::io::Read;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use axum::body::Bytes;
 use axum::extract::{DefaultBodyLimit, OriginalUri, Path as AxumPath, Query, State};
@@ -24,13 +25,16 @@ use finite_brain_core::{
 };
 use finite_brain_store::{
     BrainStore, ControlSyncRecord, EncryptedVaultExport, FolderKeyGrantMetadata,
-    FolderObjectRevisionSyncRecord, FolderObjectTombstoneSyncRecord, LinkStatus,
+    FolderObjectRevisionSyncRecord, FolderObjectTombstoneSyncRecord, IdentityAlias, LinkStatus,
     MountedFolderProjection, MountedFolderState, SharedFolderConnectionStatus,
     SharedFolderDirection, StoreError, StoredShareLink, StoredSharedFolderConnection,
     StoredSharedFolderInvitation, StoredSyncRecord, StoredVault, StoredVaultInvitation,
     SyncRecordInput, SyncRecordType, VisibleVault, VisibleVaultRole,
 };
-use finite_nostr::{NostrPublicKey, validate_gift_wrap};
+use finite_nostr::{
+    MAX_NIP05_DOCUMENT_BYTES, Nip05Identifier, Nip05WellKnownDocument, Nip05WellKnownRequest,
+    NostrPrimitiveError, NostrPublicKey, validate_gift_wrap,
+};
 use nostr::Event;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -59,6 +63,11 @@ const MAX_SYNC_RECORDS_LIMIT: u64 = 1_000;
 const NOSTR_AUTHORIZATION_HEADER: &str = "x-nostr-authorization";
 const FINITEBRAIN_NOSTR_HEADER: &str = "x-finitebrain-nostr";
 const APP_SPECIFIC_KIND: u16 = 30_078;
+const NIP05_CONNECT_TIMEOUT_SECONDS: u64 = 3;
+const NIP05_READ_TIMEOUT_SECONDS: u64 = 5;
+
+type Nip05Fetcher =
+    Arc<dyn Fn(&Nip05WellKnownRequest) -> Result<Vec<u8>, String> + Send + Sync + 'static>;
 
 /// Development status returned by the first smoke path.
 #[derive(Debug, Clone, Eq, PartialEq, Deserialize, Serialize)]
@@ -90,6 +99,7 @@ pub struct ServerState {
     rate_limit_hits: Arc<Mutex<BTreeMap<String, Vec<u64>>>>,
     rate_limit: RateLimitConfig,
     cors_allowed_origins: Arc<BTreeSet<String>>,
+    nip05_fetcher: Nip05Fetcher,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -115,6 +125,7 @@ impl ServerState {
                 window_seconds: DEFAULT_RATE_LIMIT_WINDOW_SECONDS,
             },
             cors_allowed_origins: Arc::new(cors_allowed_origins),
+            nip05_fetcher: default_nip05_fetcher(),
         }
     }
 
@@ -137,6 +148,19 @@ impl ServerState {
     /// Override CORS allowed origins.
     pub fn with_cors_allowed_origins(mut self, origins: impl IntoIterator<Item = String>) -> Self {
         self.cors_allowed_origins = Arc::new(origins.into_iter().collect());
+        self
+    }
+
+    #[cfg(test)]
+    fn with_nip05_fixture(mut self, url: String, document: impl Into<Vec<u8>>) -> Self {
+        let document = Arc::new(document.into());
+        self.nip05_fetcher = Arc::new(move |request| {
+            if request.url == url {
+                Ok((*document).clone())
+            } else {
+                Err(format!("unexpected NIP-05 URL {}", request.url))
+            }
+        });
         self
     }
 
@@ -268,6 +292,7 @@ pub fn router_with_state(state: ServerState) -> Router {
             "/_admin/vaults",
             get(list_vaults_handler).post(create_vault_handler),
         )
+        .route("/_admin/identities/resolve", post(resolve_identity_handler))
         .route(
             "/_admin/vaults/{vault_id}/metadata",
             get(vault_metadata_handler),
@@ -408,6 +433,242 @@ mod routes;
 
 use routes::*;
 
+#[derive(Debug, Clone, Eq, PartialEq)]
+struct ResolvedIdentity {
+    public_key: NostrPublicKey,
+    npub: String,
+    hex: String,
+    nip05: Option<String>,
+    relays: Vec<String>,
+}
+
+fn default_nip05_fetcher() -> Nip05Fetcher {
+    Arc::new(|request| {
+        let agent = ureq::AgentBuilder::new()
+            .timeout_connect(Duration::from_secs(NIP05_CONNECT_TIMEOUT_SECONDS))
+            .timeout_read(Duration::from_secs(NIP05_READ_TIMEOUT_SECONDS))
+            .redirects(0)
+            .build();
+        let response = agent
+            .get(&request.url)
+            .call()
+            .map_err(|error| format!("NIP-05 lookup failed: {error}"))?;
+        let mut bytes = Vec::new();
+        let mut reader = response
+            .into_reader()
+            .take(request.max_response_bytes.saturating_add(1) as u64);
+        reader
+            .read_to_end(&mut bytes)
+            .map_err(|error| format!("NIP-05 response read failed: {error}"))?;
+        if bytes.len() > request.max_response_bytes {
+            return Err(format!(
+                "NIP-05 document exceeded {} bytes",
+                request.max_response_bytes
+            ));
+        }
+        Ok(bytes)
+    })
+}
+
+fn resolve_identity_input(state: &ServerState, input: &str) -> Result<ResolvedIdentity, ApiError> {
+    let input = input.trim();
+    if input.is_empty() {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "identity input is required",
+        ));
+    }
+
+    if let Ok(public_key) = NostrPublicKey::parse(input) {
+        return resolved_identity(public_key, None, Vec::new());
+    }
+
+    let identifier = Nip05Identifier::parse(input).map_err(nostr_identity_error)?;
+    let request = identifier.well_known_request();
+    let document = (state.nip05_fetcher)(&request)
+        .map_err(|error| ApiError::new(StatusCode::BAD_REQUEST, error))?;
+    if document.len() > MAX_NIP05_DOCUMENT_BYTES {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            format!("NIP-05 document exceeded {MAX_NIP05_DOCUMENT_BYTES} bytes"),
+        ));
+    }
+    let document = Nip05WellKnownDocument::from_json(&document).map_err(nostr_identity_error)?;
+    let verified = document
+        .resolve(&identifier)
+        .map_err(nostr_identity_error)?;
+    resolved_identity(
+        verified.public_key(),
+        Some(verified.identifier().as_str().to_owned()),
+        verified.relays().to_vec(),
+    )
+}
+
+fn resolve_and_record_identity(
+    state: &ServerState,
+    input: &str,
+) -> Result<ResolvedIdentityResponse, ApiError> {
+    let resolved = resolve_identity_input(state, input)?;
+    let now = server_timestamp(state);
+    let alias = IdentityAlias {
+        npub: UserId::new(resolved.npub.clone())?,
+        hex_public_key: resolved.hex.clone(),
+        preferred_nip05: resolved.nip05.clone(),
+        nip05_verified_at: resolved.nip05.as_ref().map(|_| now.clone()),
+        nip05_relays: resolved.relays.clone(),
+        updated_at: now.clone(),
+    };
+    {
+        let mut store = state.store.lock().map_err(lock_error)?;
+        store.record_identity_alias(&alias)?;
+    }
+
+    Ok(ResolvedIdentityResponse {
+        npub: resolved.npub.clone(),
+        response: identity_response_from_resolved(resolved, alias.nip05_verified_at),
+    })
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+struct ResolvedIdentityResponse {
+    npub: String,
+    response: IdentityResponse,
+}
+
+fn resolved_identity(
+    public_key: NostrPublicKey,
+    nip05: Option<String>,
+    relays: Vec<String>,
+) -> Result<ResolvedIdentity, ApiError> {
+    let npub = public_key.to_npub().map_err(nostr_identity_error)?;
+    Ok(ResolvedIdentity {
+        public_key,
+        npub,
+        hex: public_key.to_hex(),
+        nip05,
+        relays,
+    })
+}
+
+fn nostr_identity_error(error: NostrPrimitiveError) -> ApiError {
+    ApiError::new(
+        StatusCode::BAD_REQUEST,
+        format!("invalid identity input: {error}"),
+    )
+}
+
+fn identity_response_from_resolved(
+    resolved: ResolvedIdentity,
+    verified_at: Option<String>,
+) -> IdentityResponse {
+    IdentityResponse {
+        display: resolved
+            .nip05
+            .clone()
+            .unwrap_or_else(|| resolved.npub.clone()),
+        npub: resolved.npub,
+        hex: resolved.hex,
+        nip05: resolved.nip05,
+        relays: resolved.relays,
+        verified_at,
+    }
+}
+
+fn identity_response_from_alias(alias: IdentityAlias) -> IdentityResponse {
+    IdentityResponse {
+        display: alias
+            .preferred_nip05
+            .clone()
+            .unwrap_or_else(|| alias.npub.to_string()),
+        npub: alias.npub.to_string(),
+        hex: alias.hex_public_key,
+        nip05: alias.preferred_nip05,
+        relays: alias.nip05_relays,
+        verified_at: alias.nip05_verified_at,
+    }
+}
+
+fn known_identity_responses(
+    store: &BrainStore,
+    npubs: impl IntoIterator<Item = String>,
+) -> Result<Vec<IdentityResponse>, ApiError> {
+    let mut ids = BTreeSet::new();
+    for npub in npubs {
+        if !npub.is_empty() {
+            ids.insert(UserId::new(npub)?);
+        }
+    }
+    let ids = ids.into_iter().collect::<Vec<_>>();
+    let aliases = store.load_identity_aliases(&ids)?;
+    Ok(aliases
+        .into_iter()
+        .map(identity_response_from_alias)
+        .collect())
+}
+
+fn enrich_metadata_identities(
+    store: &BrainStore,
+    response: &mut VaultMetadataResponse,
+) -> Result<(), ApiError> {
+    let mut npubs = Vec::new();
+    if let Some(owner) = &response.owner_user_id {
+        npubs.push(owner.clone());
+    }
+    npubs.extend(response.members.iter().cloned());
+    npubs.extend(response.admins.iter().cloned());
+    for folder in &response.folders {
+        npubs.extend(folder.access_user_ids.iter().cloned());
+    }
+    response.identities = known_identity_responses(store, npubs)?;
+    Ok(())
+}
+
+fn enrich_vault_invitation_identities(
+    store: &BrainStore,
+    response: &mut VaultInvitationResponse,
+) -> Result<(), ApiError> {
+    response.identities = known_identity_responses(store, [response.user_id.clone()])?;
+    Ok(())
+}
+
+fn enrich_share_link_identities(
+    store: &BrainStore,
+    response: &mut ShareLinkResponse,
+) -> Result<(), ApiError> {
+    response.identities = known_identity_responses(
+        store,
+        [
+            response.recipient_npub.clone(),
+            response.created_by_npub.clone(),
+        ],
+    )?;
+    Ok(())
+}
+
+fn enrich_shared_folder_invitation_identities(
+    store: &BrainStore,
+    response: &mut SharedFolderInvitationResponse,
+) -> Result<(), ApiError> {
+    response.identities = known_identity_responses(
+        store,
+        [
+            response.destination_admin_npub.clone(),
+            response.created_by_npub.clone(),
+        ],
+    )?;
+    Ok(())
+}
+
+fn enrich_shared_folder_connection_identities(
+    store: &BrainStore,
+    response: &mut SharedFolderConnectionResponse,
+) -> Result<(), ApiError> {
+    let mut npubs = vec![response.destination_admin_npub.clone()];
+    npubs.extend(response.member_npubs.iter().cloned());
+    response.identities = known_identity_responses(store, npubs)?;
+    Ok(())
+}
+
 fn event_from_value(value: serde_json::Value) -> Result<Event, ApiError> {
     Event::from_json(value.to_string()).map_err(|_| {
         ApiError::new(
@@ -488,7 +749,7 @@ fn mutate_as_admin_with_grants<F>(
 where
     F: FnOnce(&mut BrainStore, &VaultId) -> Result<(), StoreError>,
 {
-    let stored = {
+    let response = {
         let mut store = state.store.lock().map_err(lock_error)?;
         let stored = store.load_vault(&vault_id)?;
         ensure_vault_admin(&stored, &actor_npub)?;
@@ -497,9 +758,12 @@ where
             append_folder_key_grant_record(&mut store, &vault_id, grant)?;
         }
         append_admin_access_change_record(&mut store, &vault_id, &actor_npub, &event, &payload)?;
-        store.load_vault(&vault_id)?
+        let stored = store.load_vault(&vault_id)?;
+        let mut response = metadata_response(stored);
+        enrich_metadata_identities(&store, &mut response)?;
+        response
     };
-    Ok(metadata_response(stored))
+    Ok(response)
 }
 
 fn append_folder_key_grant_record(
@@ -553,12 +817,17 @@ fn append_admin_access_change_record(
     Ok(())
 }
 
-fn user_id_set(values: Vec<String>) -> Result<BTreeSet<UserId>, ApiError> {
+fn resolve_user_id_set(
+    state: &ServerState,
+    values: Vec<String>,
+) -> Result<BTreeSet<UserId>, ApiError> {
     values
         .into_iter()
-        .map(UserId::new)
+        .map(|value| {
+            let identity = resolve_and_record_identity(state, &value)?;
+            UserId::new(identity.npub).map_err(ApiError::from)
+        })
         .collect::<Result<BTreeSet<_>, _>>()
-        .map_err(ApiError::from)
 }
 
 fn grant_requests_to_metadata(
@@ -619,13 +888,15 @@ fn validate_bootstrap_grant_requests(
     let provided_set = requests
         .iter()
         .map(|request| {
-            (
-                request.folder_id.clone(),
-                request.grant.key_version,
-                request.grant.recipient_npub.clone(),
-            )
+            canonical_npub_from_public_key_input(&request.grant.recipient_npub).map(|recipient| {
+                (
+                    request.folder_id.clone(),
+                    request.grant.key_version,
+                    recipient,
+                )
+            })
         })
-        .collect::<BTreeSet<_>>();
+        .collect::<Result<BTreeSet<_>, _>>()?;
     if provided_set != required_set || requests.len() != required.len() {
         return Err(ApiError::new(
             StatusCode::BAD_REQUEST,
@@ -642,7 +913,9 @@ fn grant_request_to_metadata(
     access_change_event_json: Option<String>,
     default_created_at: &str,
 ) -> Result<FolderKeyGrantMetadata, ApiError> {
-    let recipient_npub = UserId::new(request.recipient_npub.clone())?;
+    let recipient_npub = UserId::new(canonical_npub_from_public_key_input(
+        &request.recipient_npub,
+    )?)?;
     validate_folder_key_grant_wrapper(&request.wrapped_event_json, &recipient_npub)?;
     Ok(FolderKeyGrantMetadata {
         id: request.id.clone(),
@@ -657,6 +930,21 @@ fn grant_request_to_metadata(
             .created_at
             .clone()
             .unwrap_or_else(|| default_created_at.to_owned()),
+    })
+}
+
+fn canonical_npub_from_public_key_input(value: &str) -> Result<String, ApiError> {
+    let recipient_public_key = NostrPublicKey::parse(value).map_err(|error| {
+        ApiError::new(
+            StatusCode::BAD_REQUEST,
+            format!("invalid folder key grant recipient: {error}"),
+        )
+    })?;
+    recipient_public_key.to_npub().map_err(|error| {
+        ApiError::new(
+            StatusCode::BAD_REQUEST,
+            format!("invalid folder key grant recipient: {error}"),
+        )
     })
 }
 
@@ -1210,7 +1498,7 @@ mod tests {
         assert!(client_body.contains("app-ribbon"));
         assert!(client_body.contains("file-sidebar"));
         assert!(client_body.contains("Connect signer"));
-        assert!(client_body.contains("Open accessible vault"));
+        assert!(!client_body.contains("Open accessible vault"));
         assert!(client_body.contains("vaultControlDetails"));
         assert!(client_body.contains("vaultSelect"));
         assert!(client_body.contains("vault-connect-button"));
@@ -1574,6 +1862,85 @@ mod tests {
         let accepted: VaultInvitationResponse = read_json(accept).await;
         assert_eq!(accepted.status, "accepted");
         assert!(accepted.duplicate_accept);
+    }
+
+    #[tokio::test]
+    async fn identity_resolution_persists_nip05_and_member_routes_accept_hex() {
+        let admin_keys = Keys::generate();
+        let target_keys = Keys::generate();
+        let target_key = NostrPublicKey::from_protocol(target_keys.public_key());
+        let target_hex = target_key.to_hex();
+        let target_npub = target_key.to_npub().unwrap();
+        let identifier = Nip05Identifier::parse("alice@example.com").unwrap();
+        let document = format!(
+            r#"{{
+                "names": {{"alice": "{target_hex}"}},
+                "relays": {{"{target_hex}": ["wss://relay.example.com"]}}
+            }}"#
+        );
+        let router = router_with_state(
+            test_state().with_nip05_fixture(identifier.well_known_request().url, document),
+        );
+        let create_vault = post_vault(
+            router.clone(),
+            &admin_keys,
+            &create_vault_body("acme", "organization"),
+            TEST_NOW,
+            None,
+            None,
+            None,
+        )
+        .await;
+        assert_eq!(create_vault.status(), StatusCode::OK);
+
+        let resolve_body = serde_json::json!({ "input": "alice@example.com" }).to_string();
+        let resolved = authed_request(
+            router.clone(),
+            &admin_keys,
+            "POST",
+            "/_admin/identities/resolve",
+            Some(resolve_body),
+            TEST_NOW,
+        )
+        .await;
+        assert_eq!(resolved.status(), StatusCode::OK);
+        let resolved: IdentityResponse = read_json(resolved).await;
+        assert_eq!(resolved.npub, target_npub);
+        assert_eq!(resolved.hex, target_hex);
+        assert_eq!(resolved.nip05.as_deref(), Some("alice@example.com"));
+        assert_eq!(resolved.display, "alice@example.com");
+
+        let add_member_body = serde_json::json!({
+            "targetNpub": target_hex,
+            "accessChangeEvent": admin_event(
+                &admin_keys,
+                "acme",
+                "change_add_member_hex",
+                AdminAccessAction::AddMember,
+                None,
+                Some(target_npub.as_str()),
+                None,
+            ),
+        })
+        .to_string();
+        let add_member = authed_request(
+            router,
+            &admin_keys,
+            "POST",
+            "/_admin/vaults/acme/members",
+            Some(add_member_body),
+            TEST_NOW,
+        )
+        .await;
+        assert_eq!(add_member.status(), StatusCode::OK);
+        let metadata: VaultMetadataResponse = read_json(add_member).await;
+        assert!(metadata.members.contains(&target_npub));
+        assert!(!metadata.members.contains(&target_hex));
+        assert!(metadata.identities.iter().any(|identity| {
+            identity.npub == target_npub
+                && identity.hex == target_hex
+                && identity.display == "alice@example.com"
+        }));
     }
 
     #[tokio::test]

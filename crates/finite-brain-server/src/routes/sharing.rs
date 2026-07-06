@@ -13,7 +13,8 @@ pub(crate) async fn create_share_link_handler(
         .map_err(|_| ApiError::new(StatusCode::BAD_REQUEST, "invalid JSON request body"))?;
     let vault_id = VaultId::new(vault_id)?;
     let folder_id = FolderId::new(folder_id)?;
-    let recipient = UserId::new(request.recipient_npub.clone())?;
+    let recipient_identity = resolve_and_record_identity(&state, &request.recipient_npub)?;
+    let recipient = UserId::new(recipient_identity.npub.clone())?;
     let current_key_version = {
         let store = state.store.lock().map_err(lock_error)?;
         let stored = store.load_vault(&vault_id)?;
@@ -26,12 +27,14 @@ pub(crate) async fn create_share_link_handler(
         &actor,
         AdminAccessAction::GrantFolderAccess,
         Some(&folder_id),
-        Some(request.recipient_npub.as_str()),
+        Some(recipient.as_str()),
         Some(current_key_version),
     )?;
     let created_at = server_timestamp(&state);
+    let mut grant_request = request.grant;
+    grant_request.recipient_npub = recipient.as_str().to_owned();
     let grant = grant_request_to_metadata(
-        &request.grant,
+        &grant_request,
         &folder_id,
         &actor,
         Some(event.as_json()),
@@ -67,7 +70,12 @@ pub(crate) async fn create_share_link_handler(
             &created_at,
         )?
     };
-    Ok(Json(share_link_response(share_link)))
+    let mut response = share_link_response(share_link);
+    {
+        let store = state.store.lock().map_err(lock_error)?;
+        enrich_share_link_identities(&store, &mut response)?;
+    }
+    Ok(Json(response))
 }
 
 pub(crate) async fn list_folder_share_links_handler(
@@ -84,11 +92,17 @@ pub(crate) async fn list_folder_share_links_handler(
         let store = state.store.lock().map_err(lock_error)?;
         let stored = store.load_vault(&vault_id)?;
         ensure_vault_admin(&stored, &actor)?;
-        store.list_folder_share_links(&vault_id, &folder_id)?
+        let mut responses = store
+            .list_folder_share_links(&vault_id, &folder_id)?
+            .into_iter()
+            .map(share_link_response)
+            .collect::<Vec<_>>();
+        for response in &mut responses {
+            enrich_share_link_identities(&store, response)?;
+        }
+        responses
     };
-    Ok(Json(ShareLinkListResponse {
-        share_links: share_links.into_iter().map(share_link_response).collect(),
-    }))
+    Ok(Json(ShareLinkListResponse { share_links }))
 }
 
 pub(crate) async fn get_share_link_handler(
@@ -105,7 +119,12 @@ pub(crate) async fn get_share_link_handler(
         let store = state.store.lock().map_err(lock_error)?;
         store.load_available_share_link(&share_link_id, &actor, &now)?
     };
-    Ok(Json(share_link_response(share_link)))
+    let mut response = share_link_response(share_link);
+    {
+        let store = state.store.lock().map_err(lock_error)?;
+        enrich_share_link_identities(&store, &mut response)?;
+    }
+    Ok(Json(response))
 }
 
 pub(crate) async fn accept_share_link_handler(
@@ -128,7 +147,12 @@ pub(crate) async fn accept_share_link_handler(
         )?;
         share_link
     };
-    Ok(Json(share_link_response(share_link)))
+    let mut response = share_link_response(share_link);
+    {
+        let store = state.store.lock().map_err(lock_error)?;
+        enrich_share_link_identities(&store, &mut response)?;
+    }
+    Ok(Json(response))
 }
 
 pub(crate) async fn revoke_share_link_handler(
@@ -145,7 +169,12 @@ pub(crate) async fn revoke_share_link_handler(
         let mut store = state.store.lock().map_err(lock_error)?;
         store.revoke_share_link(&share_link_id, &actor, &now)?
     };
-    Ok(Json(share_link_response(share_link)))
+    let mut response = share_link_response(share_link);
+    {
+        let store = state.store.lock().map_err(lock_error)?;
+        enrich_share_link_identities(&store, &mut response)?;
+    }
+    Ok(Json(response))
 }
 
 pub(crate) async fn mark_shared_folder_source_handler(
@@ -196,7 +225,9 @@ pub(crate) async fn create_shared_folder_invitation_handler(
     let source_vault_id = VaultId::new(source_vault_id)?;
     let source_folder_id = FolderId::new(source_folder_id)?;
     let destination_vault_id = VaultId::new(request.destination_vault_id)?;
-    let destination_admin = UserId::new(request.destination_admin_npub.clone())?;
+    let destination_admin_identity =
+        resolve_and_record_identity(&state, &request.destination_admin_npub)?;
+    let destination_admin = UserId::new(destination_admin_identity.npub.clone())?;
     let current_key_version = {
         let store = state.store.lock().map_err(lock_error)?;
         let stored = store.load_vault(&source_vault_id)?;
@@ -213,8 +244,10 @@ pub(crate) async fn create_shared_folder_invitation_handler(
         Some(current_key_version),
     )?;
     let created_at = server_timestamp(&state);
+    let mut grant_request = request.grant;
+    grant_request.recipient_npub = destination_admin.as_str().to_owned();
     let grant = grant_request_to_metadata(
-        &request.grant,
+        &grant_request,
         &source_folder_id,
         &actor,
         Some(event.as_json()),
@@ -247,7 +280,12 @@ pub(crate) async fn create_shared_folder_invitation_handler(
             &created_at,
         )?
     };
-    Ok(Json(shared_folder_invitation_response(invitation)))
+    let mut response = shared_folder_invitation_response(invitation);
+    {
+        let store = state.store.lock().map_err(lock_error)?;
+        enrich_shared_folder_invitation_identities(&store, &mut response)?;
+    }
+    Ok(Json(response))
 }
 
 pub(crate) async fn get_shared_folder_invitation_handler(
@@ -269,7 +307,12 @@ pub(crate) async fn get_shared_folder_invitation_handler(
         }
         invitation
     };
-    Ok(Json(shared_folder_invitation_response(invitation)))
+    let mut response = shared_folder_invitation_response(invitation);
+    {
+        let store = state.store.lock().map_err(lock_error)?;
+        enrich_shared_folder_invitation_identities(&store, &mut response)?;
+    }
+    Ok(Json(response))
 }
 
 pub(crate) async fn accept_shared_folder_invitation_handler(
@@ -309,7 +352,12 @@ pub(crate) async fn accept_shared_folder_invitation_handler(
         )?;
         invitation
     };
-    Ok(Json(shared_folder_invitation_response(invitation)))
+    let mut response = shared_folder_invitation_response(invitation);
+    {
+        let store = state.store.lock().map_err(lock_error)?;
+        enrich_shared_folder_invitation_identities(&store, &mut response)?;
+    }
+    Ok(Json(response))
 }
 
 pub(crate) async fn revoke_shared_folder_invitation_handler(
@@ -326,7 +374,12 @@ pub(crate) async fn revoke_shared_folder_invitation_handler(
         let mut store = state.store.lock().map_err(lock_error)?;
         store.revoke_shared_folder_invitation(&invitation_id, &actor, &now)?
     };
-    Ok(Json(shared_folder_invitation_response(invitation)))
+    let mut response = shared_folder_invitation_response(invitation);
+    {
+        let store = state.store.lock().map_err(lock_error)?;
+        enrich_shared_folder_invitation_identities(&store, &mut response)?;
+    }
+    Ok(Json(response))
 }
 
 pub(crate) async fn update_shared_folder_connection_members_handler(
@@ -341,18 +394,20 @@ pub(crate) async fn update_shared_folder_connection_members_handler(
     let actor = UserId::new(actor)?;
     let request: UpdateSharedFolderConnectionMembersRequest = serde_json::from_slice(&body)
         .map_err(|_| ApiError::new(StatusCode::BAD_REQUEST, "invalid JSON request body"))?;
-    let target = UserId::new(request.target_npub.clone())?;
+    let target_identity = resolve_and_record_identity(&state, &request.target_npub)?;
+    let target = UserId::new(target_identity.npub.clone())?;
     let now = server_timestamp(&state);
     let connection = {
         let mut store = state.store.lock().map_err(lock_error)?;
         let connection = store.load_shared_folder_connection(&connection_id)?;
         match request.action.as_str() {
             "add" => {
-                let grant = request.grant.as_ref().ok_or_else(|| {
+                let mut grant = request.grant.clone().ok_or_else(|| {
                     ApiError::new(StatusCode::BAD_REQUEST, "grant is required for add")
                 })?;
+                grant.recipient_npub = target.as_str().to_owned();
                 let grant = grant_request_to_metadata(
-                    grant,
+                    &grant,
                     &connection.source_folder_id,
                     actor.as_str(),
                     None,
@@ -410,7 +465,12 @@ pub(crate) async fn update_shared_folder_connection_members_handler(
             }
         }
     };
-    Ok(Json(shared_folder_connection_response(connection)))
+    let mut response = shared_folder_connection_response(connection);
+    {
+        let store = state.store.lock().map_err(lock_error)?;
+        enrich_shared_folder_connection_identities(&store, &mut response)?;
+    }
+    Ok(Json(response))
 }
 
 pub(crate) async fn revoke_shared_folder_connection_handler(
@@ -456,7 +516,12 @@ pub(crate) async fn revoke_shared_folder_connection_handler(
         }
         connection
     };
-    Ok(Json(shared_folder_connection_response(connection)))
+    let mut response = shared_folder_connection_response(connection);
+    {
+        let store = state.store.lock().map_err(lock_error)?;
+        enrich_shared_folder_connection_identities(&store, &mut response)?;
+    }
+    Ok(Json(response))
 }
 
 pub(crate) async fn list_shared_folder_invitations_handler(
@@ -472,20 +537,24 @@ pub(crate) async fn list_shared_folder_invitations_handler(
         let store = state.store.lock().map_err(lock_error)?;
         let stored = store.load_vault(&vault_id)?;
         ensure_vault_admin(&stored, &actor)?;
-        (
-            store.list_shared_folder_invitations(&vault_id, SharedFolderDirection::Source)?,
-            store.list_shared_folder_invitations(&vault_id, SharedFolderDirection::Destination)?,
-        )
+        let mut outgoing = store
+            .list_shared_folder_invitations(&vault_id, SharedFolderDirection::Source)?
+            .into_iter()
+            .map(shared_folder_invitation_response)
+            .collect::<Vec<_>>();
+        let mut incoming = store
+            .list_shared_folder_invitations(&vault_id, SharedFolderDirection::Destination)?
+            .into_iter()
+            .map(shared_folder_invitation_response)
+            .collect::<Vec<_>>();
+        for response in outgoing.iter_mut().chain(incoming.iter_mut()) {
+            enrich_shared_folder_invitation_identities(&store, response)?;
+        }
+        (outgoing, incoming)
     };
     Ok(Json(SharedFolderInvitationListResponse {
-        outgoing: outgoing
-            .into_iter()
-            .map(shared_folder_invitation_response)
-            .collect(),
-        incoming: incoming
-            .into_iter()
-            .map(shared_folder_invitation_response)
-            .collect(),
+        outgoing,
+        incoming,
     }))
 }
 
@@ -502,20 +571,24 @@ pub(crate) async fn list_shared_folder_connections_handler(
         let store = state.store.lock().map_err(lock_error)?;
         let stored = store.load_vault(&vault_id)?;
         ensure_vault_admin(&stored, &actor)?;
-        (
-            store.list_shared_folder_connections(&vault_id, SharedFolderDirection::Source)?,
-            store.list_shared_folder_connections(&vault_id, SharedFolderDirection::Destination)?,
-        )
+        let mut outgoing = store
+            .list_shared_folder_connections(&vault_id, SharedFolderDirection::Source)?
+            .into_iter()
+            .map(shared_folder_connection_response)
+            .collect::<Vec<_>>();
+        let mut incoming = store
+            .list_shared_folder_connections(&vault_id, SharedFolderDirection::Destination)?
+            .into_iter()
+            .map(shared_folder_connection_response)
+            .collect::<Vec<_>>();
+        for response in outgoing.iter_mut().chain(incoming.iter_mut()) {
+            enrich_shared_folder_connection_identities(&store, response)?;
+        }
+        (outgoing, incoming)
     };
     Ok(Json(SharedFolderConnectionListResponse {
-        outgoing: outgoing
-            .into_iter()
-            .map(shared_folder_connection_response)
-            .collect(),
-        incoming: incoming
-            .into_iter()
-            .map(shared_folder_connection_response)
-            .collect(),
+        outgoing,
+        incoming,
     }))
 }
 

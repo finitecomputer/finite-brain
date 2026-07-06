@@ -858,7 +858,7 @@ pre {
   display: none;
 }
 
-.vault-control-strip summary {
+.vault-control-strip > summary {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -873,18 +873,18 @@ pre {
   text-transform: uppercase;
 }
 
-.vault-control-strip summary::-webkit-details-marker {
+.vault-control-strip > summary::-webkit-details-marker {
   display: none;
 }
 
-.vault-control-strip summary::before {
+.vault-control-strip > summary::before {
   color: #858585;
   content: "›";
   font-size: 13px;
   margin-right: 7px;
 }
 
-.vault-control-strip[open] summary::before {
+.vault-control-strip[open] > summary::before {
   content: "⌄";
 }
 
@@ -925,9 +925,71 @@ pre {
   grid-column: 1 / 3;
 }
 
+.vault-picker select {
+  flex: 1 1 auto;
+  padding-right: 28px;
+  background-image:
+    linear-gradient(45deg, transparent 50%, #a6a6a6 50%),
+    linear-gradient(135deg, #a6a6a6 50%, transparent 50%);
+  background-position:
+    calc(100% - 16px) 50%,
+    calc(100% - 11px) 50%;
+  background-repeat: no-repeat;
+  background-size: 5px 5px;
+  text-overflow: ellipsis;
+}
+
+.vault-picker .compact-icon-button {
+  flex: 0 0 32px;
+}
+
 .vault-create-row {
+  width: 100%;
+}
+
+.vault-create-details {
   grid-column: 1 / 3;
   grid-row: 3;
+  min-width: 0;
+}
+
+.vault-create-details summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 30px;
+  color: #a6a6a6;
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 650;
+  list-style: none;
+  padding: 2px 3px;
+}
+
+.vault-create-details summary::-webkit-details-marker {
+  display: none;
+}
+
+.vault-create-details summary::after {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-right: 1.5px solid currentColor;
+  border-bottom: 1.5px solid currentColor;
+  opacity: 0.58;
+  transform: rotate(-45deg);
+  transition-duration: 150ms;
+  transition-property: opacity, transform;
+  transition-timing-function: cubic-bezier(0.2, 0, 0, 1);
+}
+
+.vault-create-details[open] summary::after {
+  opacity: 0.86;
+  transform: rotate(45deg);
+}
+
+.vault-create-details[open] .vault-create-row {
+  margin-top: 4px;
 }
 
 .vault-control-body input,
@@ -1318,17 +1380,13 @@ pre {
 
 /* Folder Dropdown */
 .folder-dropdown {
-  position: absolute;
-  z-index: 100;
-  right: 0;
-  left: 0;
-  width: auto;
-  max-height: 200px;
-  margin-top: 6px;
+  width: 100%;
+  max-height: min(220px, 42vh);
+  margin-top: 8px;
   background: #242424;
   border: 0;
   border-radius: 9px;
-  box-shadow: var(--shadow-obsi-popover);
+  box-shadow: var(--shadow-access-ring);
   overflow: auto;
 }
 
@@ -3134,6 +3192,10 @@ pre {
   margin-bottom: 10px;
 }
 
+.vault-primary-section {
+  padding-bottom: 14px;
+}
+
 .vault-quick-actions {
   margin-top: 10px;
 }
@@ -3141,6 +3203,68 @@ pre {
 .vault-quick-actions button {
   flex: 1 1 112px;
   min-width: 0;
+}
+
+.access-vault-create {
+  margin: 0 12px 14px;
+  border: 0;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.015);
+  box-shadow: var(--shadow-access-ring);
+  overflow: hidden;
+}
+
+.access-vault-create[hidden] {
+  display: none !important;
+}
+
+.access-vault-create summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 40px;
+  padding: 9px 12px;
+  color: #bdbdbd;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 650;
+  list-style: none;
+  transition-duration: 150ms;
+  transition-property: background-color, color;
+  transition-timing-function: cubic-bezier(0.2, 0, 0, 1);
+}
+
+.access-vault-create summary::-webkit-details-marker {
+  display: none;
+}
+
+.access-vault-create summary::after {
+  content: "";
+  width: 7px;
+  height: 7px;
+  border-right: 1.5px solid currentColor;
+  border-bottom: 1.5px solid currentColor;
+  opacity: 0.58;
+  transform: rotate(-45deg);
+  transition-duration: 150ms;
+  transition-property: opacity, transform;
+  transition-timing-function: cubic-bezier(0.2, 0, 0, 1);
+}
+
+.access-vault-create[open] summary::after {
+  opacity: 0.86;
+  transform: rotate(45deg);
+}
+
+.access-vault-create summary:hover {
+  background: rgba(255, 255, 255, 0.035);
+  color: #eeeeee;
+}
+
+.access-vault-create-body {
+  padding: 10px;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+  background: rgba(0, 0, 0, 0.1);
 }
 
 .vault-person-action {

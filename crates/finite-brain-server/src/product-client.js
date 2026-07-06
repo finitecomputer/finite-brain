@@ -22,6 +22,7 @@ const FiniteBrainProductClient = (() => {
     activeAccessIntent: "overview",
     accessBusy: false,
     accessResult: null,
+    identityByNpub: new Map(),
     lastShareLinkId: null,
     lastVaultInvitationCode: null,
     lastVaultInvitationId: null,
@@ -380,6 +381,80 @@ const FiniteBrainProductClient = (() => {
     if (!value) return "-";
     if (value.length <= 18) return value;
     return `${value.slice(0, 10)}...${value.slice(-8)}`;
+  }
+
+  function publicKeyIdentityFromInput(input) {
+    const value = String(input || "").trim();
+    if (!value) return null;
+    if (/^[0-9a-fA-F]{64}$/.test(value)) {
+      const hex = value.toLowerCase();
+      const npub = npubFromHex(hex);
+      return { npub, hex, display: shortKey(npub), nip05: null, relays: [], verifiedAt: null };
+    }
+    try {
+      const hex = npubToHex(value);
+      const npub = npubFromHex(hex);
+      return { npub, hex, display: shortKey(npub), nip05: null, relays: [], verifiedAt: null };
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function normalizeIdentityResponse(identity) {
+    if (!identity) return null;
+    const npub = identity.npub || identity.userId || identity.user_id || "";
+    if (!npub) return null;
+    return {
+      npub,
+      hex: identity.hex || identity.publicKeyHex || identity.public_key_hex || null,
+      display: identity.display || identity.nip05 || shortKey(npub),
+      nip05: identity.nip05 || null,
+      relays: identity.relays || [],
+      verifiedAt: identity.verifiedAt || identity.verified_at || null,
+    };
+  }
+
+  function rememberIdentity(identity) {
+    const normalized = normalizeIdentityResponse(identity);
+    if (!normalized) return null;
+    state.identityByNpub.set(normalized.npub, normalized);
+    return normalized;
+  }
+
+  function rememberIdentitiesFrom(value) {
+    if (!value) return;
+    if (Array.isArray(value)) {
+      value.forEach(rememberIdentitiesFrom);
+      return;
+    }
+    if (Array.isArray(value.identities)) {
+      value.identities.forEach(rememberIdentity);
+    }
+    for (const key of ["invitations", "shareLinks", "outgoing", "incoming"]) {
+      if (Array.isArray(value[key])) value[key].forEach(rememberIdentitiesFrom);
+    }
+  }
+
+  function identityForNpub(npub) {
+    const value = String(npub || "");
+    if (!value) return null;
+    return state.identityByNpub.get(value) || null;
+  }
+
+  function identityDisplay(npub) {
+    return identityForNpub(npub)?.display || shortKey(npub);
+  }
+
+  async function resolveIdentityInputValue(input, message) {
+    const value = String(input || "").trim();
+    if (!value) throw new Error(message);
+    const local = publicKeyIdentityFromInput(value);
+    if (local) return rememberIdentity(local);
+    const resolved = await protectedRequest("/_admin/identities/resolve", {
+      method: "POST",
+      body: JSON.stringify({ input: value }),
+    });
+    return rememberIdentity(resolved);
   }
 
   function personalVaultIdForPubkey(pubkeyHex) {
@@ -801,7 +876,7 @@ const FiniteBrainProductClient = (() => {
     }
     if (!keyOpen) return "Open this Folder key before creating grants or links.";
     if (mode === "people") return "Grant adds one npub. Remove rotates the Folder Key and re-encrypts readable Pages.";
-    if (mode === "links") return "Create a single-use link for a target npub, or accept an existing link.";
+    if (mode === "links") return "Create a single-use link for a target identity, or accept an existing link.";
     return "Choose People or Links when this Folder needs an access change.";
   }
 
@@ -4363,6 +4438,11 @@ const FiniteBrainProductClient = (() => {
   function renderAccessSidebarCount(folderRows, metadata) {
     const view = normalizeAccessView(state.activeAccessView);
     if (view === "vault") {
+      if (metadata?.kind === "personal") {
+        const folderCount = (metadata.folders || []).length;
+        setPill("accessSidebarCount", `${folderCount}`, folderCount ? "ready" : "muted");
+        return;
+      }
       const peopleCount = vaultPeopleRows(metadata).length;
       setPill("accessSidebarCount", `${peopleCount}`, peopleCount ? "ready" : "muted");
       return;
@@ -4405,10 +4485,18 @@ const FiniteBrainProductClient = (() => {
     return Boolean(actorNpub && (metadata?.admins || []).includes(actorNpub));
   }
 
+  function hasOrganizationVaultControls(metadata) {
+    return metadata?.kind === "organization";
+  }
+
+  function showsCreateOrganizationControl(metadata) {
+    return !hasOrganizationVaultControls(metadata);
+  }
+
   function canManageVaultPeople(metadata) {
     return (
       Boolean(metadata) &&
-      metadata.kind === "organization" &&
+      hasOrganizationVaultControls(metadata) &&
       state.signerStatus === "connected" &&
       actorIsVaultAdmin(metadata) &&
       !state.accessBusy
@@ -4572,7 +4660,7 @@ const FiniteBrainProductClient = (() => {
   }
 
   function vaultManagementSummary(metadata) {
-    if (!metadata) return "Load a Vault to manage membership and invitations.";
+    if (!metadata) return "Load a Vault to open readable Folders and manage access.";
     if (metadata.kind === "personal") {
       return "Personal Vaults use Folder access and share links; organization member lists are not used here.";
     }
@@ -4583,12 +4671,19 @@ const FiniteBrainProductClient = (() => {
   }
 
   function renderVaultManagementPanel(metadata) {
+    const signerConnected = state.signerStatus === "connected";
+    const organizationVault = hasOrganizationVaultControls(metadata);
     setText("vaultManagementTitle", metadata?.name || activeVaultLabel() || "No vault loaded");
     setText("vaultManagementSummary", vaultManagementSummary(metadata));
     renderAccessBadgeRow("vaultHealthBadges", vaultHealthBadges(metadata));
+    safeSetHidden("accessConnectSignerButton", signerConnected);
+    safeSetHidden("accessCreateOrganizationPanel", !showsCreateOrganizationControl(metadata));
+    safeSetHidden("vaultPeopleSection", !organizationVault);
+    safeSetHidden("vaultInvitationListSection", !organizationVault);
+    safeSetHidden("sharedFolderSection", !organizationVault);
+    safeSetHidden("vaultInvitationPanel", !organizationVault);
     setOptionalDisabled("accessConnectSignerButton", !deriveSignerState(window.nostr).canConnect);
-    setOptionalDisabled("accessLoadVaultButton", state.signerStatus !== "connected" || !state.config);
-    setOptionalDisabled("accessOpenAccessibleVaultButton", state.readerBusy || !state.config);
+    setOptionalDisabled("accessLoadVaultButton", !canLoadVault());
     setOptionalDisabled(
       "accessCreateOrganizationVaultButton",
       state.signerStatus !== "connected" || state.readerBusy || !state.config
@@ -4702,8 +4797,9 @@ const FiniteBrainProductClient = (() => {
     const isAdmin = actorIsVaultAdmin(metadata);
     const fullyManaged =
       metadata?.kind === "organization" && state.signerStatus === "connected" && isAdmin;
-    list.hidden = fullyManaged;
-    if (fullyManaged) {
+    const showGuide = metadata?.kind === "organization" && !fullyManaged;
+    list.hidden = !showGuide;
+    if (!showGuide) {
       list.replaceChildren();
       return;
     }
@@ -4733,7 +4829,7 @@ const FiniteBrainProductClient = (() => {
       ? "No invitations yet. Create one under Vault invitations below."
       : "Vault admins see pending invitations here.";
     setList("vaultInvitationList", rows, emptyText, (item, row) => {
-      linkRowInfo(item, shortKey(row.targetNpub), row.status, `expires ${row.expiresAt.slice(0, 10)}`);
+      linkRowInfo(item, identityDisplay(row.targetNpub), row.status, `expires ${row.expiresAt.slice(0, 10)}`);
       if (!row.revocable) return;
       item.appendChild(
         linkRowActionButton("Use code", async () => {
@@ -4795,7 +4891,7 @@ const FiniteBrainProductClient = (() => {
     setList("folderShareLinkList", rows, emptyText, (item, linkRow) => {
       linkRowInfo(
         item,
-        shortKey(linkRow.recipientNpub),
+        identityDisplay(linkRow.recipientNpub),
         linkRow.status,
         `expires ${linkRow.expiresAt.slice(0, 10)}`
       );
@@ -4804,7 +4900,7 @@ const FiniteBrainProductClient = (() => {
         linkRowActionButton("Use link", async () => {
           $("accessShareLinkInput").value = linkRow.id;
           setAccessResult("ready", "Share link loaded", `${linkRow.id} is in the link field.`, {
-            recipient: shortKey(linkRow.recipientNpub),
+            recipient: identityDisplay(linkRow.recipientNpub),
           });
         })
       );
@@ -4988,8 +5084,13 @@ const FiniteBrainProductClient = (() => {
 
   function accessPersonName(person) {
     if (!person) return "-";
-    if (typeof person === "string") return shortKey(person);
-    return person.name || person.displayName || person.display_name || shortKey(accessPersonId(person));
+    if (typeof person === "string") return identityDisplay(person);
+    return (
+      person.name ||
+      person.displayName ||
+      person.display_name ||
+      identityDisplay(accessPersonId(person))
+    );
   }
 
   function addAccessListPerson(accessList, person, role, type, removable = false) {
@@ -5232,12 +5333,12 @@ const FiniteBrainProductClient = (() => {
   }
 
   function render() {
+    safeSetHidden("connectSignerButton", state.signerStatus === "connected");
     setOptionalDisabled("connectSignerButton", !deriveSignerState(window.nostr).canConnect);
-    setOptionalDisabled("loadVaultButton", state.signerStatus !== "connected" || !state.config);
+    setOptionalDisabled("loadVaultButton", !canLoadVault());
     setOptionalDisabled("createOrganizationVaultButton", state.signerStatus !== "connected" || state.readerBusy || !state.config);
     setOptionalDisabled("openFolderKeyButton", !state.metadata);
     setOptionalDisabled("encryptDraftButton", !state.keyring);
-    setOptionalDisabled("openAccessibleVaultButton", state.readerBusy || !state.config);
     setOptionalDisabled("refreshReaderButton", state.readerBusy || state.signerStatus !== "connected" || !state.metadata);
     setOptionalDisabled("planOkfImportButton", !state.metadata);
     setOptionalDisabled(
@@ -5319,6 +5420,7 @@ const FiniteBrainProductClient = (() => {
       const message = body?.error || `Request failed with ${response.status}`;
       throw new Error(message);
     }
+    rememberIdentitiesFrom(body);
     return body;
   }
 
@@ -5734,7 +5836,16 @@ const FiniteBrainProductClient = (() => {
     return openFolderKeyGrants(state.keyring, exported, expectedRecipient);
   }
 
-  async function openAccessibleVaultReader() {
+  function canLoadVault() {
+    const signer = deriveSignerState(window.nostr);
+    return Boolean(
+      state.config &&
+        !state.readerBusy &&
+        (state.signerStatus === "connected" || signer.canConnect)
+    );
+  }
+
+  async function loadVaultReader() {
     setActiveVaultId(selectedVaultIdFromControls(), { reset: false });
     state.readerBusy = true;
     render();
@@ -5749,7 +5860,7 @@ const FiniteBrainProductClient = (() => {
       await pullSyncBootstrap();
       selectDefaultReaderTargets();
       renderGraphView();
-      log("Opened accessible Vault reader.", {
+      log("Loaded Vault reader.", {
         openedFolderKeys: grants.opened.length,
         skippedFolderKeyGrants: grants.skipped.length,
         readablePages: readablePages().length,
@@ -5834,15 +5945,14 @@ const FiniteBrainProductClient = (() => {
     return Boolean(state.keyring?.keys.has(folderKeyId(state.activeVaultId, row.id, keyVersion)));
   }
 
-  function normalizedTargetNpub() {
-    return normalizedNpubInput("accessTargetNpubInput", "Paste a target npub first");
+  async function normalizedTargetNpub() {
+    return normalizedNpubInput("accessTargetNpubInput", "Paste a target identity first");
   }
 
-  function normalizedNpubInput(inputId, message) {
+  async function normalizedNpubInput(inputId, message) {
     const value = $(inputId).value.trim();
-    if (!value) throw new Error(message);
-    npubToHex(value);
-    return value;
+    const identity = await resolveIdentityInputValue(value, message);
+    return identity.npub;
   }
 
   function defaultShareExpiryDateTimeLocal() {
@@ -6025,7 +6135,7 @@ const FiniteBrainProductClient = (() => {
 
   function activeSignerInviteDetail() {
     if (state.signerStatus !== "connected" || !state.pubkeyHex) return "Connect signer";
-    return `Active signer ${shortKey(npubFromHex(state.pubkeyHex))}. Invites are bound to the target npub.`;
+    return `Active signer ${shortKey(npubFromHex(state.pubkeyHex))}. Invites are bound to the target identity.`;
   }
 
   function vaultInvitationCreatePath(vaultId) {
@@ -6058,7 +6168,7 @@ const FiniteBrainProductClient = (() => {
     }
     const accessUsers = uniqueNpubs(row.accessUserIds);
     if (!accessUsers.includes(targetNpub)) {
-      throw new Error(`${shortKey(targetNpub)} does not have explicit access to ${row.path}`);
+      throw new Error(`${identityDisplay(targetNpub)} does not have explicit access to ${row.path}`);
     }
     const admins = uniqueNpubs(metadata?.admins || []);
     if (admins.includes(targetNpub)) {
@@ -6275,7 +6385,7 @@ const FiniteBrainProductClient = (() => {
   }
 
   async function addVaultMemberFromPanel() {
-    const targetNpub = normalizedNpubInput("vaultMemberNpubInput", "Paste a member npub first");
+    const targetNpub = await normalizedNpubInput("vaultMemberNpubInput", "Paste a member identity first");
     state.accessBusy = true;
     state.accessResult = null;
     render();
@@ -6286,8 +6396,8 @@ const FiniteBrainProductClient = (() => {
         body,
       });
       $("vaultMemberNpubInput").value = "";
-      setAccessResult("ready", "Member added", `${shortKey(targetNpub)} can now belong to this Vault.`);
-      log("Added Vault member.", { targetNpub: shortKey(targetNpub), vaultId: state.activeVaultId });
+      setAccessResult("ready", "Member added", `${identityDisplay(targetNpub)} can now belong to this Vault.`);
+      log("Added Vault member.", { targetNpub: identityDisplay(targetNpub), vaultId: state.activeVaultId });
     } catch (error) {
       setAccessResult("error", "Add member failed", error.message);
       throw error;
@@ -6298,7 +6408,7 @@ const FiniteBrainProductClient = (() => {
   }
 
   async function addVaultAdminFromPanel() {
-    const targetNpub = normalizedNpubInput("vaultAdminNpubInput", "Paste an admin npub first");
+    const targetNpub = await normalizedNpubInput("vaultAdminNpubInput", "Paste an admin identity first");
     state.accessBusy = true;
     state.accessResult = null;
     render();
@@ -6309,8 +6419,8 @@ const FiniteBrainProductClient = (() => {
         body,
       });
       $("vaultAdminNpubInput").value = "";
-      setAccessResult("ready", "Admin added", `${shortKey(targetNpub)} can manage this Vault.`);
-      log("Added Vault admin.", { targetNpub: shortKey(targetNpub), vaultId: state.activeVaultId });
+      setAccessResult("ready", "Admin added", `${identityDisplay(targetNpub)} can manage this Vault.`);
+      log("Added Vault admin.", { targetNpub: identityDisplay(targetNpub), vaultId: state.activeVaultId });
     } catch (error) {
       setAccessResult("error", "Add admin failed", error.message);
       throw error;
@@ -6336,8 +6446,8 @@ const FiniteBrainProductClient = (() => {
           body: JSON.stringify({ accessChangeEvent }),
         }
       );
-      setAccessResult("warn", "Member removed", `${shortKey(targetNpub)} was removed from this Vault.`);
-      log("Removed Vault member.", { targetNpub: shortKey(targetNpub), vaultId: state.activeVaultId });
+      setAccessResult("warn", "Member removed", `${identityDisplay(targetNpub)} was removed from this Vault.`);
+      log("Removed Vault member.", { targetNpub: identityDisplay(targetNpub), vaultId: state.activeVaultId });
     } catch (error) {
       setAccessResult("error", "Remove member failed", error.message);
       throw error;
@@ -6363,8 +6473,8 @@ const FiniteBrainProductClient = (() => {
           body: JSON.stringify({ accessChangeEvent }),
         }
       );
-      setAccessResult("warn", "Admin removed", `${shortKey(targetNpub)} is still a member.`);
-      log("Removed Vault admin.", { targetNpub: shortKey(targetNpub), vaultId: state.activeVaultId });
+      setAccessResult("warn", "Admin removed", `${identityDisplay(targetNpub)} is still a member.`);
+      log("Removed Vault admin.", { targetNpub: identityDisplay(targetNpub), vaultId: state.activeVaultId });
     } catch (error) {
       setAccessResult("error", "Remove admin failed", error.message);
       throw error;
@@ -6463,7 +6573,7 @@ const FiniteBrainProductClient = (() => {
 
   async function grantFolderAccessFromPanel() {
     const row = requireRestrictedAccessRow();
-    const targetNpub = normalizedTargetNpub();
+    const targetNpub = await normalizedTargetNpub();
     state.accessBusy = true;
     state.accessResult = null;
     render();
@@ -6485,10 +6595,10 @@ const FiniteBrainProductClient = (() => {
         { method: "POST", body }
       );
       state.metadata = metadata;
-      setAccessResult("ready", "Access granted", `${shortKey(targetNpub)} can open ${row.path}.`, {
+      setAccessResult("ready", "Access granted", `${identityDisplay(targetNpub)} can open ${row.path}.`, {
         grantId: grant.id,
       });
-      log("Granted restricted Folder access.", { folderId: row.id, targetNpub: shortKey(targetNpub) });
+      log("Granted restricted Folder access.", { folderId: row.id, targetNpub: identityDisplay(targetNpub) });
     } catch (error) {
       setAccessResult("error", "Grant failed", error.message);
       throw error;
@@ -6500,7 +6610,7 @@ const FiniteBrainProductClient = (() => {
 
   async function removeFolderAccessFromPanel() {
     const row = requireRestrictedAccessRow();
-    const targetNpub = normalizedTargetNpub();
+    const targetNpub = await normalizedTargetNpub();
     state.accessBusy = true;
     state.accessResult = null;
     render();
@@ -6529,7 +6639,7 @@ const FiniteBrainProductClient = (() => {
       await pullSyncBootstrap();
       selectDefaultReaderTargets();
       renderGraphView();
-      setAccessResult("warn", "Access removed", `${shortKey(targetNpub)} was removed from ${row.path}.`, {
+      setAccessResult("warn", "Access removed", `${identityDisplay(targetNpub)} was removed from ${row.path}.`, {
         keyVersion: `v${removal.newKeyVersion}`,
         reencryptedPages: String(removal.reencryptedRecords.length),
       });
@@ -6537,7 +6647,7 @@ const FiniteBrainProductClient = (() => {
         folderId: row.id,
         keyVersion: removal.newKeyVersion,
         reencryptedPages: removal.reencryptedRecords.length,
-        targetNpub: shortKey(targetNpub),
+        targetNpub: identityDisplay(targetNpub),
       });
     } catch (error) {
       setAccessResult("error", "Remove failed", error.message);
@@ -6550,7 +6660,7 @@ const FiniteBrainProductClient = (() => {
 
   async function createShareLinkFromPanel() {
     const row = requireRestrictedAccessRow();
-    const recipientNpub = normalizedNpubInput("accessShareTargetInput", "Paste a share target npub first");
+    const recipientNpub = await normalizedNpubInput("accessShareTargetInput", "Paste a share target identity first");
     state.accessBusy = true;
     state.accessResult = null;
     render();
@@ -6576,7 +6686,7 @@ const FiniteBrainProductClient = (() => {
       );
       state.lastShareLinkId = shareLink.id;
       $("accessShareLinkInput").value = shareLink.id;
-      setAccessResult("ready", "Share link created", `${shareLink.id} is pending for ${shortKey(recipientNpub)}.`, {
+      setAccessResult("ready", "Share link created", `${shareLink.id} is pending for ${identityDisplay(recipientNpub)}.`, {
         acceptPath: shareLink.acceptPath,
         expiresAt: shareLink.expiresAt,
       });
@@ -6651,7 +6761,7 @@ const FiniteBrainProductClient = (() => {
   }
 
   async function createVaultInvitationFromPanel() {
-    const targetNpub = normalizedNpubInput("vaultInviteTargetNpubInput", "Paste an invite npub first");
+    const targetNpub = await normalizedNpubInput("vaultInviteTargetNpubInput", "Paste an invite identity first");
     state.accessBusy = true;
     state.accessResult = null;
     render();
@@ -6670,12 +6780,12 @@ const FiniteBrainProductClient = (() => {
       state.lastVaultInvitationId = invitation.id;
       state.lastVaultInvitationCode = invitation.inviteCode;
       $("vaultInviteCodeInput").value = invitation.inviteCode;
-      setAccessResult("ready", "Invitation created", `${shortKey(invitation.userId)} can join ${invitation.vaultId}.`, {
+      setAccessResult("ready", "Invitation created", `${identityDisplay(invitation.userId)} can join ${invitation.vaultId}.`, {
         inviteCode: invitation.inviteCode,
         invitationId: invitation.id,
         acceptPath: invitation.acceptPath,
         expiresAt: invitation.expiresAt,
-        "target npub": shortKey(invitation.userId),
+        "target identity": identityDisplay(invitation.userId),
       });
       log("Created Vault invitation.", { invitationId: invitation.id, vaultId: invitation.vaultId });
       await refreshVaultAdminLists();
@@ -6698,11 +6808,11 @@ const FiniteBrainProductClient = (() => {
       state.lastVaultInvitationId = invitation.id;
       state.lastVaultInvitationCode = invitation.inviteCode;
       $("vaultInviteCodeInput").value = invitation.inviteCode;
-      setAccessResult("ready", "Invitation loaded", `${shortKey(invitation.userId)} is ${invitation.status}.`, {
+      setAccessResult("ready", "Invitation loaded", `${identityDisplay(invitation.userId)} is ${invitation.status}.`, {
         vaultId: invitation.vaultId,
         invitationId: invitation.id,
         acceptPath: invitation.acceptPath,
-        "target npub": shortKey(invitation.userId),
+        "target identity": identityDisplay(invitation.userId),
         signer: state.pubkeyHex ? shortKey(npubFromHex(state.pubkeyHex)) : "none",
       });
       log("Loaded Vault invitation.", { invitationId: invitation.id, vaultId: invitation.vaultId });
@@ -7052,9 +7162,10 @@ const FiniteBrainProductClient = (() => {
       render();
     });
     $("loadVaultButton").addEventListener("click", () => {
-      loadVaultMetadata().catch((error) => {
+      loadVaultReader().catch((error) => {
         state.lastError = error.message;
-        log("Failed to load Vault metadata.", { error: error.message });
+        log("Failed to load Vault reader.", { error: error.message });
+        state.readerBusy = false;
         render();
       });
     });
@@ -7071,14 +7182,6 @@ const FiniteBrainProductClient = (() => {
       createOrganizationVaultFromInput().catch((error) => {
         state.lastError = error.message;
         log("Failed to create organization Vault.", { error: error.message });
-        render();
-      });
-    });
-    $("openAccessibleVaultButton").addEventListener("click", () => {
-      openAccessibleVaultReader().catch((error) => {
-        state.lastError = error.message;
-        log("Failed to open accessible Vault reader.", { error: error.message });
-        state.readerBusy = false;
         render();
       });
     });
@@ -7179,16 +7282,9 @@ const FiniteBrainProductClient = (() => {
       });
     });
     onOptionalClick("accessLoadVaultButton", () => {
-      loadVaultMetadata().catch((error) => {
+      loadVaultReader().catch((error) => {
         state.lastError = error.message;
-        log("Failed to load Vault metadata.", { error: error.message });
-        render();
-      });
-    });
-    onOptionalClick("accessOpenAccessibleVaultButton", () => {
-      openAccessibleVaultReader().catch((error) => {
-        state.lastError = error.message;
-        log("Failed to open accessible Vault reader.", { error: error.message });
+        log("Failed to load Vault reader.", { error: error.message });
         state.readerBusy = false;
         render();
       });
@@ -7500,16 +7596,21 @@ const FiniteBrainProductClient = (() => {
     planOkfImport,
     prepareOkfImportWrites,
     projectionPagesFromProjection,
+    publicKeyIdentityFromInput,
     readerFolderDetail,
     readerFolderRows,
     readerPageDetail,
     readerPageRows,
     searchPageRows,
     sharedFolderRelationshipRows,
+    hasOrganizationVaultControls,
+    showsCreateOrganizationControl,
     sidebarAccessBadgesForFolder,
     sidebarModeLabel,
     shortKey,
     start,
+    rememberIdentity,
+    identityDisplay,
     visibleVaultOptions,
     vaultHealthBadges,
     workspaceChromeState,

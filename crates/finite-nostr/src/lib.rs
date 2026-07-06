@@ -8,6 +8,7 @@ pub mod auth;
 mod error;
 pub mod event;
 pub mod identity;
+pub mod nip05;
 pub mod nip44;
 pub mod nip59;
 
@@ -21,6 +22,10 @@ pub use auth::{
 pub use error::NostrPrimitiveError;
 pub use event::{EventIdHex, compute_event_id, verify_event_integrity};
 pub use identity::NostrPublicKey;
+pub use nip05::{
+    MAX_NIP05_DOCUMENT_BYTES, MAX_NIP05_RELAY_URLS, Nip05Identifier, Nip05WellKnownDocument,
+    Nip05WellKnownRequest, VerifiedNip05,
+};
 pub use nip44::{decrypt_nip44, encrypt_nip44};
 pub use nip59::{
     GIFT_WRAP_KIND, GiftWrapValidation, OpenedGiftWrap, SEAL_KIND, build_rumor, open_gift_wrap,
@@ -71,6 +76,45 @@ mod tests {
             NostrPublicKey::parse("not-a-key").unwrap_err(),
             NostrPrimitiveError::MalformedInput {
                 field: "public_key"
+            }
+        );
+    }
+
+    #[test]
+    fn parses_and_verifies_nip05_documents() {
+        let key = NostrPublicKey::from_protocol(test_keys().public_key());
+        let identifier = Nip05Identifier::parse("alice@example.com").unwrap();
+        let document = format!(
+            r#"{{
+                "names": {{"alice": "{}"}},
+                "relays": {{"{}": ["wss://relay.example.com"]}}
+            }}"#,
+            key.to_hex(),
+            key.to_hex()
+        );
+
+        let verified = Nip05WellKnownDocument::from_json(document.as_bytes())
+            .unwrap()
+            .verify(&identifier, key)
+            .unwrap();
+
+        assert_eq!(verified.identifier(), &identifier);
+        assert_eq!(verified.public_key(), key);
+        assert_eq!(verified.relays(), &["wss://relay.example.com".to_owned()]);
+    }
+
+    #[test]
+    fn parses_nip05_domain_shorthand_as_root_name() {
+        let identifier = Nip05Identifier::parse("Finite.Test").unwrap();
+
+        assert_eq!(identifier.as_str(), "_@finite.test");
+        assert_eq!(identifier.display_name(), "finite.test");
+        assert_eq!(
+            identifier.well_known_request(),
+            Nip05WellKnownRequest {
+                url: "https://finite.test/.well-known/nostr.json?name=_".to_owned(),
+                max_response_bytes: MAX_NIP05_DOCUMENT_BYTES,
+                follow_redirects: false,
             }
         );
     }

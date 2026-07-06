@@ -53,7 +53,12 @@ pub(crate) async fn create_vault_handler(
         store.load_vault(&vault_id)?
     };
 
-    Ok(Json(metadata_response(stored)))
+    let mut response = metadata_response(stored);
+    {
+        let store = state.store.lock().map_err(lock_error)?;
+        enrich_metadata_identities(&store, &mut response)?;
+    }
+    Ok(Json(response))
 }
 
 pub(crate) async fn vault_metadata_handler(
@@ -76,7 +81,12 @@ pub(crate) async fn vault_metadata_handler(
         store.mounted_folder_projection(&vault_id, &UserId::new(actor_npub.clone())?)?
     };
 
-    Ok(Json(metadata_response_with_mounts(stored, mounted_folders)))
+    let mut response = metadata_response_with_mounts(stored, mounted_folders);
+    {
+        let store = state.store.lock().map_err(lock_error)?;
+        enrich_metadata_identities(&store, &mut response)?;
+    }
+    Ok(Json(response))
 }
 
 pub(crate) async fn encrypted_vault_export_handler(
@@ -130,14 +140,15 @@ pub(crate) async fn add_member_handler(
     let request: AdminTargetRequest = serde_json::from_slice(&body)
         .map_err(|_| ApiError::new(StatusCode::BAD_REQUEST, "invalid JSON request body"))?;
     let vault_id = VaultId::new(vault_id)?;
-    let target = UserId::new(request.target_npub.clone())?;
+    let target_identity = resolve_and_record_identity(&state, &request.target_npub)?;
+    let target = UserId::new(target_identity.npub.clone())?;
     let (event, payload) = validate_admin_access_change_value(
         request.access_change_event,
         &vault_id,
         &actor,
         AdminAccessAction::AddMember,
         None,
-        Some(request.target_npub.as_str()),
+        Some(target.as_str()),
         None,
     )?;
     mutate_as_admin(state, vault_id, actor, event, payload, |store, vault_id| {
@@ -158,14 +169,15 @@ pub(crate) async fn remove_member_handler(
     let request: AdminEventRequest = serde_json::from_slice(&body)
         .map_err(|_| ApiError::new(StatusCode::BAD_REQUEST, "invalid JSON request body"))?;
     let vault_id = VaultId::new(vault_id)?;
-    let target = UserId::new(target_npub.clone())?;
+    let target_identity = resolve_and_record_identity(&state, &target_npub)?;
+    let target = UserId::new(target_identity.npub.clone())?;
     let (event, payload) = validate_admin_access_change_value(
         request.access_change_event,
         &vault_id,
         &actor,
         AdminAccessAction::RemoveMember,
         None,
-        Some(target_npub.as_str()),
+        Some(target.as_str()),
         None,
     )?;
     mutate_as_admin(state, vault_id, actor, event, payload, |store, vault_id| {
@@ -186,14 +198,15 @@ pub(crate) async fn add_admin_handler(
     let request: AdminTargetRequest = serde_json::from_slice(&body)
         .map_err(|_| ApiError::new(StatusCode::BAD_REQUEST, "invalid JSON request body"))?;
     let vault_id = VaultId::new(vault_id)?;
-    let target = UserId::new(request.target_npub.clone())?;
+    let target_identity = resolve_and_record_identity(&state, &request.target_npub)?;
+    let target = UserId::new(target_identity.npub.clone())?;
     let (event, payload) = validate_admin_access_change_value(
         request.access_change_event,
         &vault_id,
         &actor,
         AdminAccessAction::AddAdmin,
         None,
-        Some(request.target_npub.as_str()),
+        Some(target.as_str()),
         None,
     )?;
     mutate_as_admin(state, vault_id, actor, event, payload, |store, vault_id| {
@@ -214,14 +227,15 @@ pub(crate) async fn remove_admin_handler(
     let request: AdminEventRequest = serde_json::from_slice(&body)
         .map_err(|_| ApiError::new(StatusCode::BAD_REQUEST, "invalid JSON request body"))?;
     let vault_id = VaultId::new(vault_id)?;
-    let target = UserId::new(target_npub.clone())?;
+    let target_identity = resolve_and_record_identity(&state, &target_npub)?;
+    let target = UserId::new(target_identity.npub.clone())?;
     let (event, payload) = validate_admin_access_change_value(
         request.access_change_event,
         &vault_id,
         &actor,
         AdminAccessAction::RemoveAdmin,
         None,
-        Some(target_npub.as_str()),
+        Some(target.as_str()),
         None,
     )?;
     mutate_as_admin(state, vault_id, actor, event, payload, |store, vault_id| {
@@ -243,14 +257,17 @@ pub(crate) async fn list_vault_invitations_handler(
         let store = state.store.lock().map_err(lock_error)?;
         let stored = store.load_vault(&vault_id)?;
         ensure_vault_admin(&stored, &actor)?;
-        store.list_vault_invitations(&vault_id)?
-    };
-    Ok(Json(VaultInvitationListResponse {
-        invitations: invitations
+        let mut responses = store
+            .list_vault_invitations(&vault_id)?
             .into_iter()
             .map(vault_invitation_response)
-            .collect(),
-    }))
+            .collect::<Vec<_>>();
+        for response in &mut responses {
+            enrich_vault_invitation_identities(&store, response)?;
+        }
+        responses
+    };
+    Ok(Json(VaultInvitationListResponse { invitations }))
 }
 
 pub(crate) async fn create_vault_invitation_handler(
@@ -265,7 +282,8 @@ pub(crate) async fn create_vault_invitation_handler(
     let request: CreateVaultInvitationRequest = serde_json::from_slice(&body)
         .map_err(|_| ApiError::new(StatusCode::BAD_REQUEST, "invalid JSON request body"))?;
     let vault_id = VaultId::new(vault_id)?;
-    let target = UserId::new(request.target_npub.clone())?;
+    let target_identity = resolve_and_record_identity(&state, &request.target_npub)?;
+    let target = UserId::new(target_identity.npub.clone())?;
     let initial_folder_access = request
         .initial_folder_access
         .into_iter()
@@ -315,7 +333,12 @@ pub(crate) async fn create_vault_invitation_handler(
         )?
     };
 
-    Ok(Json(vault_invitation_response(invitation)))
+    let mut response = vault_invitation_response(invitation);
+    {
+        let store = state.store.lock().map_err(lock_error)?;
+        enrich_vault_invitation_identities(&store, &mut response)?;
+    }
+    Ok(Json(response))
 }
 
 pub(crate) async fn revoke_vault_invitation_handler(
@@ -333,7 +356,12 @@ pub(crate) async fn revoke_vault_invitation_handler(
         let mut store = state.store.lock().map_err(lock_error)?;
         store.revoke_vault_invitation(&vault_id, &invitation_id, &actor_user_id, &updated_at)?
     };
-    Ok(Json(vault_invitation_response(invitation)))
+    let mut response = vault_invitation_response(invitation);
+    {
+        let store = state.store.lock().map_err(lock_error)?;
+        enrich_vault_invitation_identities(&store, &mut response)?;
+    }
+    Ok(Json(response))
 }
 
 pub(crate) async fn accept_vault_invitation_handler(
@@ -358,7 +386,12 @@ pub(crate) async fn accept_vault_invitation_handler(
         }
         store.accept_vault_invitation_by_code(&invitation.invite_code, &actor, &now)?
     };
-    Ok(Json(vault_invitation_response(invitation)))
+    let mut response = vault_invitation_response(invitation);
+    {
+        let store = state.store.lock().map_err(lock_error)?;
+        enrich_vault_invitation_identities(&store, &mut response)?;
+    }
+    Ok(Json(response))
 }
 
 pub(crate) async fn get_vault_invitation_link_handler(
@@ -375,7 +408,12 @@ pub(crate) async fn get_vault_invitation_link_handler(
         let store = state.store.lock().map_err(lock_error)?;
         store.load_available_vault_invitation_by_code(&invite_code, &actor, &now)?
     };
-    Ok(Json(vault_invitation_response(invitation)))
+    let mut response = vault_invitation_response(invitation);
+    {
+        let store = state.store.lock().map_err(lock_error)?;
+        enrich_vault_invitation_identities(&store, &mut response)?;
+    }
+    Ok(Json(response))
 }
 
 pub(crate) async fn accept_vault_invitation_link_handler(
@@ -392,5 +430,10 @@ pub(crate) async fn accept_vault_invitation_link_handler(
         let mut store = state.store.lock().map_err(lock_error)?;
         store.accept_vault_invitation_by_code(&invite_code, &actor, &now)?
     };
-    Ok(Json(vault_invitation_response(invitation)))
+    let mut response = vault_invitation_response(invitation);
+    {
+        let store = state.store.lock().map_err(lock_error)?;
+        enrich_vault_invitation_identities(&store, &mut response)?;
+    }
+    Ok(Json(response))
 }

@@ -83,27 +83,23 @@
               </svg>
               <span>Connect signer</span>
             </button>
-            <button id="openAccessibleVaultButton" class="compact-icon-button" type="button" title="Open accessible vault" aria-label="Open accessible vault">
-              <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
-                <path d="M7 11V8a5 5 0 0 1 9.6-2" />
-                <rect x="5" y="11" width="14" height="10" rx="2" />
-                <path d="M12 15v3" />
-              </svg>
-            </button>
-            <div class="vault-create-row">
-              <label class="sr-only" for="organizationVaultNameInput">New organization vault</label>
-              <input
-                id="organizationVaultNameInput"
-                placeholder="New organization"
-                autocomplete="off"
-                spellcheck="false"
-              />
-              <button id="createOrganizationVaultButton" class="compact-icon-button" type="button" title="Create organization vault" aria-label="Create organization vault">
-                <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
-                  <path d="M12 5v14M5 12h14" />
-                </svg>
-              </button>
-            </div>
+            <details id="vaultCreateDetails" class="vault-create-details">
+              <summary>Create organization</summary>
+              <div id="vaultCreateRow" class="vault-create-row">
+                <label class="sr-only" for="organizationVaultNameInput">New organization vault</label>
+                <input
+                  id="organizationVaultNameInput"
+                  placeholder="New organization"
+                  autocomplete="off"
+                  spellcheck="false"
+                />
+                <button id="createOrganizationVaultButton" class="compact-icon-button" type="button" title="Create organization vault" aria-label="Create organization vault">
+                  <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+                    <path d="M12 5v14M5 12h14" />
+                  </svg>
+                </button>
+              </div>
+            </details>
           </div>
         </details>
 
@@ -224,13 +220,13 @@
                     <label class="access-inline-field">
                       <input
                         id="accessAddPersonInput"
-                        placeholder="npub1... or name"
+                        placeholder="name@example.com, npub1..., or hex"
                         autocomplete="off"
                         spellcheck="false"
                       />
                       <button id="accessAddPersonButton" type="button" class="access-add-button">Add</button>
                     </label>
-                    <p id="accessAddPersonHint" class="access-field-hint">Enter npub to grant folder access</p>
+                    <p id="accessAddPersonHint" class="access-field-hint">Enter NIP-05, npub, or hex to grant folder access</p>
                   </div>
                 </div>
               </div>
@@ -255,10 +251,10 @@
                     <div id="accessShareForm" class="access-share-form">
                       <p id="accessShareHint" class="access-field-hint access-share-hint">Open this Folder key to create share links.</p>
                       <label class="access-field">
-                        <span>Target npub</span>
+                        <span>Target identity</span>
                         <input
                           id="accessShareTargetInput"
-                          placeholder="npub1..."
+                          placeholder="name@example.com, npub1..., or hex"
                           autocomplete="off"
                           spellcheck="false"
                           aria-describedby="accessShareHint"
@@ -317,19 +313,22 @@
             aria-labelledby="accessVaultViewButton"
             hidden
           >
-            <section class="vault-management-section">
+            <section class="vault-management-section vault-primary-section">
               <div class="access-header">
                 <h3 id="vaultManagementTitle">No vault loaded</h3>
-                <p id="vaultManagementSummary" class="access-summary">Load a Vault to manage membership and invitations.</p>
+                <p id="vaultManagementSummary" class="access-summary">Load a Vault to open readable Folders and manage access.</p>
               </div>
               <div id="vaultHealthBadges" class="access-badge-row"></div>
               <ol id="vaultGuideSteps" class="vault-guide-steps" hidden></ol>
               <div class="access-button-row vault-quick-actions">
                 <button id="accessConnectSignerButton" type="button" class="secondary-action">Connect signer</button>
                 <button id="accessLoadVaultButton" type="button" class="access-add-button">Load</button>
-                <button id="accessOpenAccessibleVaultButton" type="button" class="ghost-action">Open accessible vault</button>
               </div>
-              <div class="access-inline-form">
+            </section>
+
+            <details id="accessCreateOrganizationPanel" class="access-vault-create">
+              <summary>Create organization vault</summary>
+              <div class="access-vault-create-body">
                 <label class="access-inline-field">
                   <input
                     id="accessOrganizationVaultNameInput"
@@ -341,9 +340,9 @@
                 </label>
                 <p class="access-field-hint">Create an organization Vault with the active signer as admin.</p>
               </div>
-            </section>
+            </details>
 
-            <section class="vault-management-section">
+            <section id="vaultPeopleSection" class="vault-management-section">
               <div class="access-section-header">
                 <span class="section-title">Vault people</span>
                 <span id="vaultPeopleCount" class="pill muted">0</span>
@@ -355,7 +354,7 @@
                 <label class="access-inline-field">
                   <input
                     id="vaultMemberNpubInput"
-                    placeholder="member npub1..."
+                    placeholder="member NIP-05, npub, or hex"
                     autocomplete="off"
                     spellcheck="false"
                   />
@@ -364,7 +363,7 @@
                 <label class="access-inline-field">
                   <input
                     id="vaultAdminNpubInput"
-                    placeholder="admin npub1..."
+                    placeholder="admin NIP-05, npub, or hex"
                     autocomplete="off"
                     spellcheck="false"
                   />
@@ -374,7 +373,7 @@
               </div>
             </section>
 
-            <section class="vault-management-section">
+            <section id="vaultInvitationListSection" class="vault-management-section">
               <div class="access-section-header">
                 <span class="section-title">Invitations</span>
                 <span id="vaultInvitationCount" class="pill muted">0</span>
@@ -384,7 +383,7 @@
               </ol>
             </section>
 
-            <section class="vault-management-section">
+            <section id="sharedFolderSection" class="vault-management-section">
               <div class="access-section-header">
                 <span class="section-title">Shared folders</span>
                 <span id="sharedFolderCount" class="pill muted">0</span>
@@ -407,10 +406,10 @@
                 <div class="access-admin-section">
                   <h4>Create vault invitation</h4>
                   <label class="access-field">
-                    <span>Invite npub</span>
+                    <span>Invite identity</span>
                     <input
                       id="vaultInviteTargetNpubInput"
-                      placeholder="npub1..."
+                      placeholder="name@example.com, npub1..., or hex"
                       autocomplete="off"
                       spellcheck="false"
                     />

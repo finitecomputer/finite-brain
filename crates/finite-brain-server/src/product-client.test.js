@@ -174,6 +174,11 @@ assert.match(htmlSource, /id="accessVaultViewButton"/);
 assert.match(htmlSource, /id="accessFolderPanel"/);
 assert.match(htmlSource, /id="accessVaultPanel"/);
 assert.match(htmlSource, /id="vaultPeopleList"/);
+assert.match(htmlSource, /id="vaultPeopleSection"/);
+assert.match(htmlSource, /id="vaultInvitationListSection"/);
+assert.match(htmlSource, /id="sharedFolderSection"/);
+assert.match(htmlSource, /id="accessCreateOrganizationPanel"/);
+assert.match(htmlSource, /id="vaultCreateDetails"/);
 assert.match(htmlSource, /id="accessShareTargetInput"/);
 assert.match(htmlSource, /id="addVaultMemberButton"/);
 assert.match(htmlSource, /id="addVaultAdminButton"/);
@@ -182,9 +187,17 @@ assert.doesNotMatch(htmlSource, /id="accessManageSection"/);
 assert.match(cssSource, /\[hidden\]\s*\{[^}]*display: none !important;/s);
 assert.match(cssSource, /\.access-view-switch/);
 assert.match(cssSource, /\.vault-management-section/);
+assert.match(cssSource, /\.access-vault-create/);
+assert.match(cssSource, /\.vault-control-strip\s*>\s*summary::before/);
+assert.doesNotMatch(cssSource, /\.vault-control-strip\s+summary::before/);
+assert.doesNotMatch(cssSource, /\.folder-dropdown\s*\{[^}]*position:\s*absolute/s);
 assert.equal(client.normalizeAccessView("vault"), "vault");
 assert.equal(client.normalizeAccessView("folder"), "folder");
 assert.equal(client.normalizeAccessView("other"), "folder");
+assert.equal(client.hasOrganizationVaultControls({ kind: "personal" }), false);
+assert.equal(client.hasOrganizationVaultControls({ kind: "organization" }), true);
+assert.equal(client.showsCreateOrganizationControl({ kind: "personal" }), true);
+assert.equal(client.showsCreateOrganizationControl({ kind: "organization" }), false);
 assert.equal(
   JSON.stringify(client.vaultPeopleRows({
     kind: "organization",
@@ -314,6 +327,25 @@ assert.equal(client.readerPageRows("general", draftPages)[0].label, "Draft Page"
   const otherNpub = client.npubFromHex("11".repeat(32));
   assert.match(authorNpub, /^npub1/);
   assert.equal(client.npubToHex(authorNpub), "00".repeat(32));
+  assert.equal(client.publicKeyIdentityFromInput("11".repeat(32)).npub, otherNpub);
+  assert.equal(client.publicKeyIdentityFromInput(otherNpub).hex, "11".repeat(32));
+  client.rememberIdentity({
+    npub: authorNpub,
+    hex: "00".repeat(32),
+    display: "alice@example.com",
+    nip05: "alice@example.com",
+    relays: ["wss://relay.example.com"],
+    verifiedAt: "2026-07-06T00:00:00Z",
+  });
+  assert.equal(client.identityDisplay(authorNpub), "alice@example.com");
+  assert.equal(
+    client.vaultPeopleRows({
+      kind: "organization",
+      members: [authorNpub, otherNpub],
+      admins: [authorNpub],
+    })[0].name,
+    "alice@example.com"
+  );
 
   const devGrant = {
     id: "dev-grant",

@@ -430,6 +430,7 @@ dependencies = [
  "time",
  "tokio",
  "tower",
+ "ureq",
 ]
 
 [[package]]
@@ -465,6 +466,8 @@ version = "0.1.0"
 dependencies = [
  "base64",
  "nostr",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

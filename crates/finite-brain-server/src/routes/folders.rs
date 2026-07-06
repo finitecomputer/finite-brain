@@ -22,7 +22,7 @@ pub(crate) async fn create_folder_handler(
         current_key_version: 1,
         shared_folder_source: request.shared_folder_source.unwrap_or(false),
     };
-    let access_user_ids = user_id_set(request.access_user_ids)?;
+    let access_user_ids = resolve_user_id_set(&state, request.access_user_ids)?;
     let (event, payload) = validate_admin_access_change_value(
         request.access_change_event,
         &vault_id,
@@ -117,7 +117,8 @@ pub(crate) async fn grant_folder_access_handler(
         .map_err(|_| ApiError::new(StatusCode::BAD_REQUEST, "invalid JSON request body"))?;
     let vault_id = VaultId::new(vault_id)?;
     let folder_id = FolderId::new(folder_id)?;
-    let target = UserId::new(request.target_npub.clone())?;
+    let target_identity = resolve_and_record_identity(&state, &request.target_npub)?;
+    let target = UserId::new(target_identity.npub.clone())?;
     let current_key_version = {
         let store = state.store.lock().map_err(lock_error)?;
         let stored = store.load_vault(&vault_id)?;
@@ -130,12 +131,14 @@ pub(crate) async fn grant_folder_access_handler(
         &actor,
         AdminAccessAction::GrantFolderAccess,
         Some(&folder_id),
-        Some(request.target_npub.as_str()),
+        Some(target.as_str()),
         Some(current_key_version),
     )?;
     let grant_created_at = server_timestamp(&state);
+    let mut grant_request = request.grant;
+    grant_request.recipient_npub = target.as_str().to_owned();
     let grant = grant_request_to_metadata(
-        &request.grant,
+        &grant_request,
         &folder_id,
         &actor,
         Some(event.as_json()),
@@ -167,7 +170,8 @@ pub(crate) async fn remove_folder_access_handler(
         .map_err(|_| ApiError::new(StatusCode::BAD_REQUEST, "invalid JSON request body"))?;
     let vault_id = VaultId::new(vault_id)?;
     let folder_id = FolderId::new(folder_id)?;
-    let target = UserId::new(target_npub.clone())?;
+    let target_identity = resolve_and_record_identity(&state, &target_npub)?;
+    let target = UserId::new(target_identity.npub.clone())?;
     {
         let store = state.store.lock().map_err(lock_error)?;
         let stored = store.load_vault(&vault_id)?;
@@ -179,7 +183,7 @@ pub(crate) async fn remove_folder_access_handler(
         &actor,
         AdminAccessAction::RemoveFolderAccess,
         Some(&folder_id),
-        Some(target_npub.as_str()),
+        Some(target.as_str()),
         Some(request.new_key_version),
     )?;
     let event_json = event.as_json();

@@ -38,9 +38,29 @@ pub struct VaultMetadataResponse {
     pub owner_user_id: Option<String>,
     pub members: Vec<String>,
     pub admins: Vec<String>,
+    pub identities: Vec<IdentityResponse>,
     pub folders: Vec<FolderMetadataResponse>,
     pub mounted_folders: Vec<MountedFolderResponse>,
     pub grant_count: usize,
+}
+
+/// Display metadata for one canonical Nostr identity.
+#[derive(Debug, Clone, Eq, PartialEq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct IdentityResponse {
+    pub npub: String,
+    pub hex: String,
+    pub display: String,
+    pub nip05: Option<String>,
+    pub relays: Vec<String>,
+    pub verified_at: Option<String>,
+}
+
+/// Resolve a public identity input to canonical npub metadata.
+#[derive(Debug, Clone, Eq, PartialEq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ResolveIdentityRequest {
+    pub input: String,
 }
 
 /// Authenticated Vault switcher response.
@@ -355,6 +375,7 @@ pub struct VaultInvitationResponse {
     pub id: String,
     pub vault_id: String,
     pub user_id: String,
+    pub identities: Vec<IdentityResponse>,
     pub status: String,
     pub invite_code: String,
     pub accept_path: String,
@@ -393,6 +414,7 @@ pub struct ShareLinkResponse {
     pub folder_id: String,
     pub recipient_npub: String,
     pub created_by_npub: String,
+    pub identities: Vec<IdentityResponse>,
     pub status: String,
     pub accept_path: String,
     pub expires_at: String,
@@ -439,6 +461,7 @@ pub struct SharedFolderInvitationResponse {
     pub destination_vault_id: String,
     pub destination_admin_npub: String,
     pub created_by_npub: String,
+    pub identities: Vec<IdentityResponse>,
     pub status: String,
     pub current_key_version: u32,
     pub accept_path: String,
@@ -458,6 +481,7 @@ pub struct SharedFolderConnectionResponse {
     pub source_folder_id: String,
     pub destination_vault_id: String,
     pub destination_admin_npub: String,
+    pub identities: Vec<IdentityResponse>,
     pub status: String,
     pub created_at: String,
     pub updated_at: String,

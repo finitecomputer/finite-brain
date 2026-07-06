@@ -9,6 +9,15 @@ pub enum NostrPrimitiveError {
         /// Field or value that failed to parse.
         field: &'static str,
     },
+    /// Input exceeded a bounded protocol limit.
+    LimitExceeded {
+        /// Field or value that exceeded the limit.
+        field: &'static str,
+        /// Maximum allowed size or count.
+        limit: usize,
+        /// Actual size or count.
+        actual: usize,
+    },
     /// Event ID is not the deterministic NIP-01 ID for the event body.
     InvalidEventId,
     /// Event signature does not verify against the event public key.
@@ -89,12 +98,39 @@ pub enum NostrPrimitiveError {
         /// Missing tag name.
         tag: &'static str,
     },
+    /// NIP-05 document did not contain the requested local name.
+    Nip05NameMissing {
+        /// Requested NIP-05 identifier.
+        identifier: String,
+    },
+    /// NIP-05 document mapped the identifier to a different public key.
+    Nip05PublicKeyMismatch {
+        /// Requested NIP-05 identifier.
+        identifier: String,
+        /// Expected public key hex.
+        expected: String,
+        /// Public key found in the NIP-05 document.
+        actual: String,
+    },
+    /// NIP-05 public keys must be lowercase hex.
+    Nip05KeyNotLowercaseHex {
+        /// Non-canonical public key value.
+        value: String,
+    },
 }
 
 impl fmt::Display for NostrPrimitiveError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::MalformedInput { field } => write!(f, "malformed Nostr input: {field}"),
+            Self::LimitExceeded {
+                field,
+                limit,
+                actual,
+            } => write!(
+                f,
+                "Nostr input limit exceeded for {field}: limit {limit}, actual {actual}"
+            ),
             Self::InvalidEventId => f.write_str("invalid Nostr event id"),
             Self::SignatureFailure => f.write_str("invalid Nostr event signature"),
             Self::SigningFailure => f.write_str("failed to sign Nostr event"),
@@ -145,6 +181,20 @@ impl fmt::Display for NostrPrimitiveError {
                 write!(f, "malformed decrypted Nostr plaintext: {field}")
             }
             Self::MissingTag { tag } => write!(f, "missing Nostr auth tag: {tag}"),
+            Self::Nip05NameMissing { identifier } => {
+                write!(f, "NIP-05 name missing for {identifier}")
+            }
+            Self::Nip05PublicKeyMismatch {
+                identifier,
+                expected,
+                actual,
+            } => write!(
+                f,
+                "NIP-05 public key mismatch for {identifier}: expected {expected}, got {actual}"
+            ),
+            Self::Nip05KeyNotLowercaseHex { value } => {
+                write!(f, "NIP-05 public key is not lowercase hex: {value}")
+            }
         }
     }
 }

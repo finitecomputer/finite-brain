@@ -44,6 +44,14 @@ impl BrainStore {
             )?;
         }
 
+        if !migration_applied(&tx, 5)? {
+            tx.execute_batch(SCHEMA_V5)?;
+            tx.execute(
+                "INSERT INTO schema_migrations (version, applied_at) VALUES (?1, ?2)",
+                params![5, MIGRATION_TIMESTAMP],
+            )?;
+        }
+
         tx.commit()?;
         Ok(())
     }
@@ -306,6 +314,21 @@ CREATE TABLE organization_folder_mounts (
     FOREIGN KEY (connection_id) REFERENCES shared_folder_connections(id)
         ON DELETE CASCADE
 );
+"#;
+
+const SCHEMA_V5: &str = r#"
+CREATE TABLE identity_aliases (
+    npub TEXT PRIMARY KEY NOT NULL,
+    hex_public_key TEXT NOT NULL UNIQUE,
+    preferred_nip05 TEXT,
+    nip05_verified_at TEXT,
+    nip05_relays_json TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE UNIQUE INDEX identity_aliases_preferred_nip05
+    ON identity_aliases(preferred_nip05)
+    WHERE preferred_nip05 IS NOT NULL;
 "#;
 
 fn migration_applied(tx: &Transaction<'_>, version: i64) -> Result<bool, StoreError> {

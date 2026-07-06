@@ -117,7 +117,7 @@ where
 fn help<W: Write>(output: &mut W) -> Result<(), CliError> {
     writeln!(
         output,
-        "fbrain [--config-dir <path>] doctor\nauth status|import [--file <path>]\nsigner status|public-key|sign|encrypt|decrypt\ndaemon status|start|stop|logs|tick|watch\nsync status|now [--summary]\nopen <vault-id> [path]\nstatus [--json]\nunlock [folder|--all]\nconflicts\nresolve <id>\nactivity\naccess explain|list|grant|revoke\nvault create|metadata|export\nfolder create|list\nmount list\npermissions add-member|remove-member|add-admin|remove-admin|grant-folder\ninvites create|show --code invite-...|accept --code invite-...|accept --vault <vault-id> --id invitation-...|revoke\nshare link|accept|revoke|source|folder-invite|folder-accept"
+        "fbrain [--config-dir <path>] doctor\nauth status|import [--file <path>]\nsigner status|public-key|sign|encrypt|decrypt\ndaemon status|start|stop|logs|tick|watch\nsync status|now [--summary]\nopen <vault-id> [path]\nstatus [--json]\nunlock [folder|--all]\nconflicts\nresolve <id>\nactivity\naccess explain|list|grant|revoke\nvault create|metadata|export\nfolder create|list\nmount list\npermissions add-member|remove-member|add-admin|remove-admin|grant-folder --target <NIP-05|npub|hex>\ninvites create --target <NIP-05|npub|hex>|show --code invite-...|accept --code invite-...|accept --vault <vault-id> --id invitation-...|revoke\nshare link --target <NIP-05|npub|hex>|accept|revoke|source|folder-invite --destination-admin <NIP-05|npub|hex>|folder-accept"
     )?;
     Ok(())
 }
@@ -1465,7 +1465,10 @@ fn folder<W: Write>(
                     "restricted".to_owned()
                 }
             });
-            let access_users = option_values(args, "--member");
+            let access_users = option_values(args, "--member")
+                .into_iter()
+                .map(|input| resolve_identity_npub(env, args, &input))
+                .collect::<Result<Vec<_>, _>>()?;
             let recipients = folder_required_recipients(&metadata, &access, &access_users)?;
             let folder_key = FolderKey::generate();
             let auth = load_signer(env)?;
@@ -1590,7 +1593,8 @@ fn permissions<W: Write>(
     match args.first().map(String::as_str) {
         Some("add-member") | Some("member-add") => {
             let vault_id = command_vault_id(args, env)?;
-            let target = required_option_or_positional(args, "--target", 1, "target-npub")?;
+            let raw_target = required_option_or_positional(args, "--target", 1, "target-identity")?;
+            let target = resolve_identity_npub(env, args, &raw_target)?;
             let event = admin_access_change_event(
                 env,
                 &vault_id,
@@ -1609,7 +1613,8 @@ fn permissions<W: Write>(
         }
         Some("remove-member") | Some("member-remove") => {
             let vault_id = command_vault_id(args, env)?;
-            let target = required_option_or_positional(args, "--target", 1, "target-npub")?;
+            let raw_target = required_option_or_positional(args, "--target", 1, "target-identity")?;
+            let target = resolve_identity_npub(env, args, &raw_target)?;
             let event = admin_access_change_event(
                 env,
                 &vault_id,
@@ -1630,7 +1635,8 @@ fn permissions<W: Write>(
         }
         Some("add-admin") | Some("admin-add") => {
             let vault_id = command_vault_id(args, env)?;
-            let target = required_option_or_positional(args, "--target", 1, "target-npub")?;
+            let raw_target = required_option_or_positional(args, "--target", 1, "target-identity")?;
+            let target = resolve_identity_npub(env, args, &raw_target)?;
             let event = admin_access_change_event(
                 env,
                 &vault_id,
@@ -1649,7 +1655,8 @@ fn permissions<W: Write>(
         }
         Some("remove-admin") | Some("admin-remove") => {
             let vault_id = command_vault_id(args, env)?;
-            let target = required_option_or_positional(args, "--target", 1, "target-npub")?;
+            let raw_target = required_option_or_positional(args, "--target", 1, "target-identity")?;
+            let target = resolve_identity_npub(env, args, &raw_target)?;
             let event = admin_access_change_event(
                 env,
                 &vault_id,
@@ -1672,7 +1679,8 @@ fn permissions<W: Write>(
             let vault_id = command_vault_id(args, env)?;
             let folder_id =
                 option_value(args, "--folder").ok_or(CliError::MissingArgument("--folder"))?;
-            let target = required_option_or_positional(args, "--target", 1, "target-npub")?;
+            let raw_target = required_option_or_positional(args, "--target", 1, "target-identity")?;
+            let target = resolve_identity_npub(env, args, &raw_target)?;
             let metadata = fetch_vault_metadata(env, args, &vault_id)?;
             let key_version = metadata
                 .folders
@@ -1722,7 +1730,8 @@ fn invites<W: Write>(
     match args.first().map(String::as_str) {
         Some("create") => {
             let vault_id = command_vault_id(args, env)?;
-            let target = required_option_or_positional(args, "--target", 1, "target-npub")?;
+            let raw_target = required_option_or_positional(args, "--target", 1, "target-identity")?;
+            let target = resolve_identity_npub(env, args, &raw_target)?;
             let expires_at = option_value(args, "--expires")
                 .unwrap_or_else(|| "2099-01-01T00:00:00Z".to_owned());
             let folders = option_values(args, "--folder");
@@ -1795,7 +1804,8 @@ fn share<W: Write>(
             let vault_id = command_vault_id(args, env)?;
             let folder_id =
                 option_value(args, "--folder").ok_or(CliError::MissingArgument("--folder"))?;
-            let target = required_option_or_positional(args, "--target", 1, "target-npub")?;
+            let raw_target = required_option_or_positional(args, "--target", 1, "target-identity")?;
+            let target = resolve_identity_npub(env, args, &raw_target)?;
             let expires_at = option_value(args, "--expires")
                 .unwrap_or_else(|| "2099-01-01T00:00:00Z".to_owned());
             let metadata = fetch_vault_metadata(env, args, &vault_id)?;
@@ -1882,8 +1892,9 @@ fn share<W: Write>(
                 option_value(args, "--folder").ok_or(CliError::MissingArgument("--folder"))?;
             let destination_vault_id = option_value(args, "--destination-vault")
                 .ok_or(CliError::MissingArgument("--destination-vault"))?;
-            let destination_admin = option_value(args, "--destination-admin")
+            let raw_destination_admin = option_value(args, "--destination-admin")
                 .ok_or(CliError::MissingArgument("--destination-admin"))?;
+            let destination_admin = resolve_identity_npub(env, args, &raw_destination_admin)?;
             let metadata = fetch_vault_metadata(env, args, &vault_id)?;
             let key_version = metadata
                 .folders
@@ -3349,6 +3360,8 @@ mod tests {
             "0000000000000000000000000000000000000000000000000000000000000001",
         );
         let (server_url, server) = start_ok_capture_server(1);
+        let target =
+            npub_for_secret("0000000000000000000000000000000000000000000000000000000000000002");
 
         let mut output = Vec::new();
         run_with_env(
@@ -3358,7 +3371,7 @@ mod tests {
                 "--vault",
                 "acme",
                 "--target",
-                "npub-target",
+                &target,
                 "--folder",
                 "general",
                 "--server",
@@ -3376,7 +3389,7 @@ mod tests {
         let (request, body) = requests.first().expect("invite request captured");
         assert!(request.starts_with("POST /_admin/vaults/acme/invitations"));
         let body: Value = serde_json::from_str(body).unwrap();
-        assert_eq!(body["targetNpub"], "npub-target");
+        assert_eq!(body["targetNpub"], target);
         assert_eq!(body["initialFolderAccess"][0], "general");
     }
 

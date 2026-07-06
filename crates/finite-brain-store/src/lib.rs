@@ -152,6 +152,23 @@ pub struct StoredVault {
     pub setup_incomplete_folder_ids: BTreeSet<FolderId>,
 }
 
+/// Verified display metadata for one canonical Nostr identity.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct IdentityAlias {
+    /// Canonical NIP-19 public key.
+    pub npub: UserId,
+    /// Lowercase 64-character public key hex.
+    pub hex_public_key: String,
+    /// Preferred verified NIP-05 identifier.
+    pub preferred_nip05: Option<String>,
+    /// Timestamp when the NIP-05 binding was verified.
+    pub nip05_verified_at: Option<String>,
+    /// Relay hints from the verified NIP-05 document.
+    pub nip05_relays: Vec<String>,
+    /// Last time this alias row was refreshed.
+    pub updated_at: String,
+}
+
 /// Vault summary visible to an authenticated actor.
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct VisibleVault {
@@ -702,6 +719,89 @@ impl BrainStore {
             grants: self.load_grants(vault_id)?,
             setup_incomplete_folder_ids: self.load_setup_incomplete_folder_ids(vault_id)?,
         })
+    }
+
+    /// Upsert verified display metadata for a canonical Nostr identity.
+    pub fn record_identity_alias(&mut self, alias: &IdentityAlias) -> Result<(), StoreError> {
+        let relays_json = serde_json::to_string(&alias.nip05_relays).map_err(|error| {
+            StoreError::InvalidRecord {
+                reason: format!("identity alias relays did not serialize: {error}"),
+            }
+        })?;
+        let tx = self.conn.transaction()?;
+        if let Some(nip05) = &alias.preferred_nip05 {
+            tx.execute(
+                "DELETE FROM identity_aliases WHERE preferred_nip05 = ?1 AND npub <> ?2",
+                params![nip05, alias.npub.as_str()],
+            )?;
+            tx.execute(
+                r#"
+                INSERT INTO identity_aliases (
+                    npub, hex_public_key, preferred_nip05, nip05_verified_at,
+                    nip05_relays_json, updated_at
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+                ON CONFLICT(npub) DO UPDATE SET
+                    hex_public_key = excluded.hex_public_key,
+                    preferred_nip05 = excluded.preferred_nip05,
+                    nip05_verified_at = excluded.nip05_verified_at,
+                    nip05_relays_json = excluded.nip05_relays_json,
+                    updated_at = excluded.updated_at
+                "#,
+                params![
+                    alias.npub.as_str(),
+                    alias.hex_public_key,
+                    nip05,
+                    alias.nip05_verified_at,
+                    relays_json,
+                    alias.updated_at,
+                ],
+            )?;
+        } else {
+            tx.execute(
+                r#"
+                INSERT INTO identity_aliases (
+                    npub, hex_public_key, preferred_nip05, nip05_verified_at,
+                    nip05_relays_json, updated_at
+                ) VALUES (?1, ?2, NULL, NULL, ?3, ?4)
+                ON CONFLICT(npub) DO UPDATE SET
+                    hex_public_key = excluded.hex_public_key,
+                    updated_at = excluded.updated_at
+                "#,
+                params![
+                    alias.npub.as_str(),
+                    alias.hex_public_key,
+                    relays_json,
+                    alias.updated_at,
+                ],
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Load known display metadata for canonical Nostr identities.
+    pub fn load_identity_aliases(
+        &self,
+        npubs: &[UserId],
+    ) -> Result<Vec<IdentityAlias>, StoreError> {
+        let mut aliases = Vec::new();
+        let mut statement = self.conn.prepare(
+            r#"
+            SELECT npub, hex_public_key, preferred_nip05, nip05_verified_at,
+                   nip05_relays_json, updated_at
+            FROM identity_aliases
+            WHERE npub = ?1
+            "#,
+        )?;
+        for npub in npubs {
+            let alias = statement
+                .query_row(params![npub.as_str()], identity_alias_from_row)
+                .optional()?;
+            if let Some(alias) = alias {
+                aliases.push(alias);
+            }
+        }
+        Ok(aliases)
     }
 
     /// Test/support helper for checking rollback behavior without exposing SQL.
@@ -1335,6 +1435,22 @@ impl StoredGrantRow {
             created_at: self.created_at,
         })
     }
+}
+
+fn identity_alias_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<IdentityAlias> {
+    let relays_json = row.get::<_, String>(4)?;
+    let nip05_relays = serde_json::from_str::<Vec<String>>(&relays_json).map_err(|error| {
+        rusqlite::Error::FromSqlConversionFailure(4, rusqlite::types::Type::Text, Box::new(error))
+    })?;
+    Ok(IdentityAlias {
+        npub: UserId::new(row.get::<_, String>(0)?)
+            .map_err(to_from_sql_error(0, rusqlite::types::Type::Text))?,
+        hex_public_key: row.get(1)?,
+        preferred_nip05: row.get(2)?,
+        nip05_verified_at: row.get(3)?,
+        nip05_relays,
+        updated_at: row.get(5)?,
+    })
 }
 
 fn vault_invitation_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredVaultInvitation> {

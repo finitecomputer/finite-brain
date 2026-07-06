@@ -26,6 +26,38 @@ pub(crate) fn fetch_vault_metadata(
     serde_json::from_value(response).map_err(CliError::from)
 }
 
+pub(crate) fn resolve_identity_npub(
+    env: &CliEnvironment,
+    args: &[String],
+    input: &str,
+) -> Result<String, CliError> {
+    let input = input.trim();
+    if input.is_empty() {
+        return Err(CliError::InvalidInput(
+            "identity input is required".to_owned(),
+        ));
+    }
+    if let Ok(public_key) = NostrPublicKey::parse(input) {
+        return public_key
+            .to_npub()
+            .map_err(|error| CliError::InvalidSigner(error.to_string()));
+    }
+    let response = signed_json_request(
+        env,
+        args,
+        "POST",
+        "/_admin/identities/resolve",
+        Some(serde_json::json!({ "input": input })),
+    )?;
+    response
+        .get("npub")
+        .and_then(serde_json::Value::as_str)
+        .map(ToOwned::to_owned)
+        .ok_or_else(|| {
+            CliError::InvalidInput("identity resolve response did not include npub".to_owned())
+        })
+}
+
 pub(crate) fn folder_required_recipients(
     metadata: &VaultMetadataView,
     access: &str,

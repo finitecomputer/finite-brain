@@ -50,6 +50,7 @@ pub(crate) fn metadata_response_with_mounts(
             .iter()
             .map(ToString::to_string)
             .collect(),
+        identities: Vec::new(),
         folders: stored
             .vault
             .folders
@@ -103,6 +104,7 @@ pub(crate) fn vault_invitation_response(
         id: invitation.id,
         vault_id: invitation.vault_id.to_string(),
         user_id: invitation.user_id.to_string(),
+        identities: Vec::new(),
         status: link_status_str(invitation.status).to_owned(),
         invite_code: invitation.invite_code,
         accept_path: invitation.accept_path,
@@ -126,6 +128,7 @@ pub(crate) fn share_link_response(share_link: StoredShareLink) -> ShareLinkRespo
         folder_id: share_link.folder_id.to_string(),
         recipient_npub: share_link.recipient_npub.to_string(),
         created_by_npub: share_link.created_by_npub.to_string(),
+        identities: Vec::new(),
         status: link_status_str(share_link.status).to_owned(),
         accept_path: share_link.accept_path,
         expires_at: share_link.expires_at,
@@ -149,6 +152,7 @@ pub(crate) fn shared_folder_invitation_response(
         destination_vault_id: invitation.destination_vault_id.to_string(),
         destination_admin_npub: invitation.destination_admin_npub.to_string(),
         created_by_npub: invitation.created_by_npub.to_string(),
+        identities: Vec::new(),
         status: link_status_str(invitation.status).to_owned(),
         current_key_version: invitation.current_key_version,
         accept_path: invitation.accept_path,
@@ -169,6 +173,7 @@ pub(crate) fn shared_folder_connection_response(
         source_folder_id: connection.source_folder_id.to_string(),
         destination_vault_id: connection.destination_vault_id.to_string(),
         destination_admin_npub: connection.destination_admin_npub.to_string(),
+        identities: Vec::new(),
         status: match connection.status {
             SharedFolderConnectionStatus::Active => "active",
             SharedFolderConnectionStatus::Revoked => "revoked",
