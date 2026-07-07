@@ -550,6 +550,15 @@ assert.equal(client.readerPageRows("general", draftPages)[0].label, "Draft Page"
   assert.equal(client.emailInviteBootstrapPath("invite/code"), "/_admin/vault-invitation-links/invite%2Fcode/bootstrap");
   assert.equal(client.emailInviteInstructionsPath("invite/code"), "/_admin/vault-invitation-links/invite%2Fcode/instructions");
   assert.equal(client.emailInviteClaimPath("invite/code"), "/_admin/vault-invitation-links/invite%2Fcode/claim");
+  assert.equal(
+    client.emailInviteClientUrl({
+      publicBaseUrl: "https://finite.test/app/",
+      inviteCode: "invite/code",
+      invitedEmail: "Friend@Example.com",
+      inviteSecret: "secret-value",
+    }),
+    "https://finite.test/app/client#inviteCode=invite%2Fcode&inviteEmail=friend%40example.com&inviteSecret=secret-value"
+  );
   assert.equal(client.vaultInvitationIdentifierHint("invite-0fe6eda60e1bf6e662acb8e2b5c425d9"), null);
   assert.match(
     client.vaultInvitationIdentifierHint("invitation-4f82a37c1b82bcdd54973c466cdde914"),
@@ -568,6 +577,7 @@ assert.equal(client.readerPageRows("general", draftPages)[0].label, "Draft Page"
   assert.match(htmlSource, /id="vaultInviteEmailInput"/);
   assert.match(htmlSource, /id="vaultInviteEmailProofCreatedAtInput"/);
   assert.match(htmlSource, /id="vaultInviteSecretInput"/);
+  assert.match(htmlSource, /id="vaultInviteConnectSignerButton"/);
   assert.match(htmlSource, /id="getEmailInviteInstructionsButton"/);
 
   const nip44VectorSender = client.inviteUnwrapKeypairFromSecret("2".padStart(64, "0"));

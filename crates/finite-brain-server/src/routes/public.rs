@@ -93,14 +93,34 @@ fn smoke_nip07_signer_script(secret_hex: &str) -> String {
     format!(
         r#"(() => {{
   const client = window.FiniteBrainProductClient;
-  const secretHex = {secret_json};
+  const defaultSecretHex = {secret_json};
   if (!client) throw new Error("FiniteBrain Product Client did not load before smoke signer");
-  window.nostr = client.createLocalNip07ProviderFromSecret(secretHex);
-  const keypair = client.inviteUnwrapKeypairFromSecret(secretHex);
-  window.__FINITE_BRAIN_SMOKE_NIP07__ = {{
-    publicKeyHex: keypair.publicKeyHex,
-    npub: keypair.npub
+  const storageKey = "FINITE_BRAIN_SMOKE_NIP07_SECRET";
+  const configuredSecretHex = (() => {{
+    try {{
+      const fragmentSecret = new URLSearchParams(String(window.location.hash || "").replace(/^#/, "")).get("smokeNip07Secret");
+      return fragmentSecret || window.sessionStorage?.getItem(storageKey) || defaultSecretHex;
+    }} catch (_) {{
+      return defaultSecretHex;
+    }}
+  }})();
+  const installSmokeSigner = (secretHex) => {{
+    window.nostr = client.createLocalNip07ProviderFromSecret(secretHex);
+    const keypair = client.inviteUnwrapKeypairFromSecret(secretHex);
+    window.__FINITE_BRAIN_SMOKE_NIP07__ = {{
+      publicKeyHex: keypair.publicKeyHex,
+      npub: keypair.npub,
+      source: secretHex === defaultSecretHex ? "server" : "override"
+    }};
+    return window.__FINITE_BRAIN_SMOKE_NIP07__;
   }};
+  window.__FINITE_BRAIN_SET_SMOKE_NIP07_SECRET__ = (secretHex) => {{
+    try {{
+      window.sessionStorage?.setItem(storageKey, secretHex);
+    }} catch (_) {{}}
+    return installSmokeSigner(secretHex);
+  }};
+  installSmokeSigner(configuredSecretHex);
   client.start();
 }})();
 "#

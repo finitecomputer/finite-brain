@@ -83,6 +83,21 @@ fn normalized_smoke_nip07_secret(secret_hex: impl Into<String>) -> Result<String
     Ok(value)
 }
 
+fn normalized_smoke_email_proofs(value: impl AsRef<str>) -> Result<BTreeSet<String>, String> {
+    let mut emails = BTreeSet::new();
+    for raw in value.as_ref().split(',') {
+        let raw = raw.trim();
+        if raw.is_empty() {
+            continue;
+        }
+        emails.insert(canonical_email(raw).map_err(|error| error.message)?);
+    }
+    if emails.is_empty() {
+        return Err("FINITE_BRAIN_SMOKE_EMAIL_PROOFS must include at least one email".to_owned());
+    }
+    Ok(emails)
+}
+
 /// Development status returned by the first smoke path.
 #[derive(Debug, Clone, Eq, PartialEq, Deserialize, Serialize)]
 pub struct HealthStatus {
@@ -233,6 +248,20 @@ impl ServerState {
     ) -> Result<Self, String> {
         self.smoke_nip07_signer_secret =
             Some(Arc::<str>::from(normalized_smoke_nip07_secret(secret_hex)?));
+        Ok(self)
+    }
+
+    /// Enable an explicit local email-proof allowlist for browser smoke tests.
+    pub fn with_smoke_email_proofs(mut self, emails: impl AsRef<str>) -> Result<Self, String> {
+        let allowed = Arc::new(normalized_smoke_email_proofs(emails)?);
+        self.email_proof_verifier = Some(Arc::new(move |email, _actor| {
+            let email = canonical_email(email).map_err(|error| error.message)?;
+            if allowed.contains(&email) {
+                Ok(())
+            } else {
+                Err(format!("smoke email proof is not allowed for {email}"))
+            }
+        }));
         Ok(self)
     }
 
@@ -1304,7 +1333,7 @@ fn validate_email_proof_window(
             "email proof must not be older than the invitation",
         ));
     }
-    if proof > now || now - proof > time::Duration::days(1) {
+    if proof > now + time::Duration::minutes(1) || now - proof > time::Duration::days(1) {
         return Err(ApiError::new(
             StatusCode::BAD_REQUEST,
             "email proof must be no more than 24 hours old",
@@ -2409,10 +2438,82 @@ mod tests {
         let smoke_signer_body = read_text_with_limit(smoke_signer_response, 32 * 1024).await;
         assert!(smoke_signer_body.contains("createLocalNip07ProviderFromSecret"));
         assert!(smoke_signer_body.contains("__FINITE_BRAIN_SMOKE_NIP07__"));
+        assert!(smoke_signer_body.contains("__FINITE_BRAIN_SET_SMOKE_NIP07_SECRET__"));
+        assert!(smoke_signer_body.contains("smokeNip07Secret"));
+        assert!(smoke_signer_body.contains("sessionStorage"));
         assert!(
             smoke_signer_body
                 .contains("0000000000000000000000000000000000000000000000000000000000000001")
         );
+    }
+
+    #[test]
+    fn smoke_email_proof_verifier_is_explicit_and_allowlisted() {
+        let actor = UserId::new(npub(&Keys::generate())).expect("valid actor npub");
+
+        let unconfigured =
+            verify_identity_authority_email_proof(&test_state(), "friend@example.com", &actor)
+                .expect_err("default verifier should be absent");
+        assert_eq!(unconfigured.status, StatusCode::SERVICE_UNAVAILABLE);
+        assert!(unconfigured.message.contains("not configured"));
+
+        let state = test_state()
+            .with_smoke_email_proofs(" Friend@Example.com , teammate@example.com ")
+            .expect("valid smoke email allowlist");
+        verify_identity_authority_email_proof(&state, "friend@example.com", &actor)
+            .expect("allowlisted smoke email");
+        verify_identity_authority_email_proof(&state, "TEAMMATE@example.com", &actor)
+            .expect("allowlisted smoke email normalizes case");
+
+        let denied = verify_identity_authority_email_proof(&state, "other@example.com", &actor)
+            .expect_err("non-allowlisted smoke email should fail");
+        assert_eq!(denied.status, StatusCode::BAD_REQUEST);
+        assert!(denied.message.contains("smoke email proof is not allowed"));
+
+        assert!(test_state().with_smoke_email_proofs(" ").is_err());
+        assert!(
+            test_state()
+                .with_smoke_email_proofs("not-an-email")
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn email_proof_window_allows_small_future_clock_skew() {
+        let admin = UserId::new(npub(&Keys::generate())).expect("valid admin npub");
+        let invitation = StoredVaultInvitation {
+            id: "invitation-test".to_owned(),
+            vault_id: VaultId::new("acme").expect("valid vault id"),
+            target_kind: VaultInvitationTargetKind::EmailBootstrap,
+            user_id: None,
+            invited_email: Some("friend@example.com".to_owned()),
+            invite_unwrap_npub: None,
+            bootstrap_payload_hash: None,
+            bootstrap_wrapped_event_json: None,
+            bootstrap_authorization_event_json: None,
+            bootstrap_scope: Vec::new(),
+            claimed_by_npub: None,
+            status: LinkStatus::Pending,
+            invite_code: "invite-test".to_owned(),
+            accept_path: "/_admin/vault-invitation-links/invite-test/claim".to_owned(),
+            initial_folder_access: Vec::new(),
+            created_by_npub: admin,
+            expires_at: "2026-07-08T12:00:00Z".to_owned(),
+            created_at: "2026-07-07T12:00:00Z".to_owned(),
+            updated_at: "2026-07-07T12:00:00Z".to_owned(),
+            accepted_at: None,
+            duplicate_accept: false,
+        };
+
+        validate_email_proof_window(&invitation, "2026-07-07T12:00:30Z", "2026-07-07T12:00:00Z")
+            .expect("small future skew should be accepted");
+        let too_far_future = validate_email_proof_window(
+            &invitation,
+            "2026-07-07T12:02:00Z",
+            "2026-07-07T12:00:00Z",
+        )
+        .expect_err("future skew beyond tolerance should fail");
+        assert_eq!(too_far_future.status, StatusCode::BAD_REQUEST);
     }
 
     #[tokio::test]

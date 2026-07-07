@@ -5066,6 +5066,8 @@ const FiniteBrainProductClient = (() => {
         $("vaultInviteEmailInput")?.value.trim() &&
         $("vaultInviteSecretInput")?.value.trim()
     );
+    safeSetHidden("vaultInviteConnectSignerButton", connected);
+    setOptionalDisabled("vaultInviteConnectSignerButton", busy || !deriveSignerState(window.nostr).canConnect);
     $("createVaultInvitationButton").disabled = !connected || busy || !state.activeVaultId || !organizationVault;
     $("getVaultInvitationButton").disabled = !connected || busy || !inviteCodeUsable;
     setOptionalDisabled("getEmailInviteInstructionsButton", !connected || busy || !emailClaimReady);
@@ -5398,6 +5400,11 @@ const FiniteBrainProductClient = (() => {
   function renderVaultManagementPanel(metadata) {
     const signerConnected = state.signerStatus === "connected";
     const organizationVault = hasOrganizationVaultControls(metadata);
+    const inviteInProgress = Boolean(
+      state.lastVaultInvitationCode ||
+        $("vaultInviteCodeInput")?.value.trim() ||
+        $("vaultInviteSecretInput")?.value.trim()
+    );
     setText("vaultManagementTitle", "Vaults");
     setText("vaultManagementSummary", vaultManagementSummary(metadata));
     renderVaultSwitchList();
@@ -5406,7 +5413,7 @@ const FiniteBrainProductClient = (() => {
     safeSetHidden("vaultPeopleSection", !organizationVault);
     safeSetHidden("vaultInvitationListSection", !organizationVault);
     safeSetHidden("sharedFolderSection", !organizationVault);
-    safeSetHidden("vaultInvitationPanel", !organizationVault);
+    safeSetHidden("vaultInvitationPanel", !(organizationVault || inviteInProgress));
     setOptionalDisabled("accessConnectSignerButton", !deriveSignerState(window.nostr).canConnect);
     setOptionalDisabled("accessLoadVaultButton", !canLoadVault());
     setOptionalDisabled(
@@ -6399,10 +6406,12 @@ const FiniteBrainProductClient = (() => {
     render();
   }
 
-  async function loadVaultMetadata() {
-    setActiveVaultId(selectedVaultIdFromControls(), { reset: false });
-    await ensureInvitedVaultAcceptedForActiveSelection();
-    await ensurePersonalVaultForActiveSelection();
+  async function loadVaultMetadata(options = {}) {
+    if (!options.preserveActive) {
+      setActiveVaultId(selectedVaultIdFromControls(), { reset: false });
+      await ensureInvitedVaultAcceptedForActiveSelection();
+      await ensurePersonalVaultForActiveSelection();
+    }
     const path = `/_admin/vaults/${encodeURIComponent(state.activeVaultId)}/metadata`;
     const metadata = await protectedRequest(path);
     state.metadata = metadata;
@@ -6828,8 +6837,13 @@ const FiniteBrainProductClient = (() => {
 
   function emailProofCreatedAtIso() {
     const value = $("vaultInviteEmailProofCreatedAtInput")?.value.trim();
-    const date = value ? new Date(value) : new Date();
+    if (!value) return new Date().toISOString();
+    const date = new Date(value);
     if (Number.isNaN(date.getTime())) throw new Error("Email proof timestamp is invalid");
+    const now = new Date();
+    if (now.getTime() >= date.getTime() && now.getTime() - date.getTime() < 60 * 1000) {
+      return now.toISOString();
+    }
     return date.toISOString();
   }
 
@@ -7320,6 +7334,18 @@ const FiniteBrainProductClient = (() => {
 
   function emailInviteClaimPath(code) {
     return `${vaultInvitationLinkPath(code)}/claim`;
+  }
+
+  function emailInviteClientUrl(input) {
+    const inviteCode = String(input.inviteCode || "").trim();
+    const inviteSecret = String(input.inviteSecret || "").trim();
+    if (!inviteCode) throw new Error("Email invite URL needs an invite code");
+    if (!inviteSecret) throw new Error("Email invite URL needs an Invite Secret");
+    const base = String(input.publicBaseUrl || state.config?.publicBaseUrl || window.location.origin).replace(/\/$/, "");
+    const fragment = [`inviteCode=${encodeURIComponent(inviteCode)}`];
+    if (input.invitedEmail) fragment.push(`inviteEmail=${encodeURIComponent(canonicalInviteEmail(input.invitedEmail))}`);
+    fragment.push(`inviteSecret=${encodeURIComponent(inviteSecret)}`);
+    return `${base}/client#${fragment.join("&")}`;
   }
 
   function emailInviteClaimProofPayload(input) {
@@ -7921,10 +7947,16 @@ const FiniteBrainProductClient = (() => {
       state.lastVaultInvitationCode = invitation.inviteCode;
       $("vaultInviteCodeInput").value = invitation.inviteCode;
       if (localInviteSecret && invitation.targetKind === "email_bootstrap") {
+        const invitedEmail = invitation.invitedEmail || canonicalInviteEmail(targetInput);
         state.lastEmailInviteSecret = localInviteSecret;
-        state.lastEmailInviteUrl = `${state.config.publicBaseUrl.replace(/\/$/, "")}${invitation.acceptPath}#inviteSecret=${encodeURIComponent(localInviteSecret)}`;
+        state.lastEmailInviteUrl = emailInviteClientUrl({
+          publicBaseUrl: state.config.publicBaseUrl,
+          inviteCode: invitation.inviteCode,
+          invitedEmail,
+          inviteSecret: localInviteSecret,
+        });
         $("vaultInviteSecretInput").value = localInviteSecret;
-        $("vaultInviteEmailInput").value = invitation.invitedEmail || canonicalInviteEmail(targetInput);
+        $("vaultInviteEmailInput").value = invitedEmail;
         $("vaultInviteUrlInput").value = state.lastEmailInviteUrl;
       } else {
         state.lastEmailInviteSecret = null;
@@ -8047,7 +8079,7 @@ const FiniteBrainProductClient = (() => {
       state.lastVaultInvitationCode = invitation.inviteCode;
       setActiveVaultId(invitation.vaultId);
       $("vaultInviteCodeInput").value = invitation.inviteCode;
-      await loadVaultMetadata();
+      await loadVaultMetadata({ preserveActive: true });
       await loadVisibleVaults();
       setAccessResult(
         "ready",
@@ -8109,7 +8141,7 @@ const FiniteBrainProductClient = (() => {
       state.lastEmailInvitePostProof = null;
       setActiveVaultId(claimed.vaultId);
       $("vaultInviteCodeInput").value = claimed.inviteCode;
-      await loadVaultMetadata();
+      await loadVaultMetadata({ preserveActive: true });
       const grants = await openAvailableFolderKeyGrants();
       await pullSyncBootstrap();
       selectDefaultReaderTargets();
@@ -8662,6 +8694,13 @@ const FiniteBrainProductClient = (() => {
         log("Failed to accept Vault invitation.", { error: error.message });
       });
     });
+    onOptionalClick("vaultInviteConnectSignerButton", () => {
+      connectSigner().catch((error) => {
+        state.lastError = error.message;
+        log("Failed to connect signer for Vault invitation.", { error: error.message });
+        render();
+      });
+    });
     onOptionalClick("revokeVaultInvitationButton", () => {
       revokeVaultInvitationFromPanel().catch((error) => {
         state.lastError = error.message;
@@ -8807,26 +8846,48 @@ const FiniteBrainProductClient = (() => {
     });
   }
 
-  function populateInviteSecretFromHash() {
+  function populateInviteFromHash() {
     const hash = String(window.location?.hash || "");
-    if (!hash.includes("inviteSecret=")) return;
+    if (!hash.includes("invite")) return;
     const params = new URLSearchParams(hash.replace(/^#/, ""));
+    let populated = false;
+    const inviteCode = params.get("inviteCode") || params.get("code");
+    if (inviteCode) {
+      state.lastVaultInvitationCode = inviteCode;
+      if ($("vaultInviteCodeInput")) $("vaultInviteCodeInput").value = inviteCode;
+      populated = true;
+    }
+    const inviteEmail = params.get("inviteEmail") || params.get("email");
+    if (inviteEmail) {
+      try {
+        const email = canonicalInviteEmail(inviteEmail);
+        if ($("vaultInviteEmailInput")) $("vaultInviteEmailInput").value = email;
+        populated = true;
+      } catch (error) {
+        state.lastError = error.message;
+      }
+    }
     const inviteSecret = params.get("inviteSecret");
-    if (!inviteSecret) return;
-    state.lastEmailInviteSecret = inviteSecret;
-    if ($("vaultInviteSecretInput")) $("vaultInviteSecretInput").value = inviteSecret;
+    if (inviteSecret) {
+      state.lastEmailInviteSecret = inviteSecret;
+      if ($("vaultInviteSecretInput")) $("vaultInviteSecretInput").value = inviteSecret;
+      populated = true;
+    }
+    if (!populated) return;
+    state.activeSidebarMode = "access";
+    state.activeAccessView = "folder";
     try {
       const cleanUrl = `${window.location.pathname || ""}${window.location.search || ""}`;
       window.history?.replaceState?.(null, "", cleanUrl || window.location.href.split("#")[0]);
     } catch (_) {
-      // Fragment cleanup is best-effort; the secret is already in client state.
+      // Fragment cleanup is best-effort; invite data is already in client state.
     }
   }
 
   async function start() {
     bind();
     setEditorDraftText($("pageDraftInput").value);
-    populateInviteSecretFromHash();
+    populateInviteFromHash();
     await loadConfig();
     await detectSigner();
   }
@@ -8869,6 +8930,7 @@ const FiniteBrainProductClient = (() => {
     emailInviteAuthorizationTags,
     emailInviteBootstrapPath,
     emailInviteClaimPath,
+    emailInviteClientUrl,
     emailInviteInstructionsPath,
     emailInviteScope,
     emailInviteScopeJson,
