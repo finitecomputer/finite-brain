@@ -209,8 +209,10 @@ function checkStaticShell() {
     "accessCurrentFolder",
     "accessSummaryLine",
     "accessWhoHasSection",
-    "accessManageToggle",
     "accessWhoHasList",
+    "access-action-stack",
+    "access-state-stack",
+    "accessAddPersonPanel",
     "accessAddPersonForm",
     "accessAddPersonInput",
     "accessAddPersonButton",
@@ -239,8 +241,11 @@ function checkStaticShell() {
     "vaultInvitationCount",
     "sharedFolderList",
     "sharedFolderCount",
+    "folderShareLinkListSection",
     "folderShareLinkList",
     "folderShareLinkCount",
+    "vaultPeopleActionPanel",
+    "vaultPeopleActionHint",
     "addVaultMemberButton",
     "addVaultAdminButton",
     "vaultInvitationPanel",
@@ -269,6 +274,10 @@ function checkStaticShell() {
   ]) {
     assertIncludes(html, marker, "Product Client HTML");
   }
+  assert.ok(
+    !/id="vaultInvitationPanel"[^>]*open/.test(html),
+    "Product Client HTML should keep the Vault invitation panel closed by default"
+  );
 
   for (const marker of [
     ".obsidian-shell",
@@ -300,6 +309,8 @@ function checkStaticShell() {
     ".folder-dropdown",
     ".access-inspector-new",
     ".access-basic-view",
+    ".access-action-stack",
+    ".access-state-stack",
     ".access-who-has-list",
     ".access-inline-form",
     ".access-advanced-section",
@@ -310,7 +321,6 @@ function checkStaticShell() {
     ".access-field",
     ".access-checkbox",
     ".access-share-hint",
-    ".access-share-list",
     ".access-link-status",
     ".vault-guide-steps",
     ".vault-guide-marker",

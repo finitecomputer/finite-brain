@@ -1471,6 +1471,28 @@ pre {
   margin-bottom: 14px;
 }
 
+.access-action-stack,
+.access-state-stack {
+  display: grid;
+  min-width: 0;
+}
+
+.access-action-stack {
+  gap: 8px;
+  margin: 0 var(--access-panel-inset) 14px;
+}
+
+.access-state-stack {
+  gap: 12px;
+  margin: 0 var(--access-panel-inset) 14px;
+}
+
+.access-action-stack > .access-advanced-section,
+.access-action-stack > .access-vault-admin,
+.access-state-stack > .vault-management-section {
+  margin: 0;
+}
+
 .access-header {
   margin-bottom: 14px;
   padding-bottom: 12px;
@@ -3494,20 +3516,20 @@ pre {
   padding: 8px 0 !important;
 }
 
-#vaultPeopleSection .vault-people-form {
+#vaultPeopleActionPanel .vault-people-form {
   gap: 12px;
   padding: 0;
   background: transparent;
   box-shadow: none;
 }
 
-#vaultPeopleSection .access-inline-field {
+#vaultPeopleActionPanel .access-inline-field {
   grid-template-columns: minmax(0, 1fr);
   align-items: stretch;
   gap: 7px;
 }
 
-#vaultPeopleSection .access-add-button {
+#vaultPeopleActionPanel .access-add-button {
   width: 100%;
   padding-right: 10px;
   padding-left: 10px;
@@ -3619,13 +3641,6 @@ pre {
 .vault-guide-step.done .vault-guide-marker {
   box-shadow: 0 0 0 1px rgba(129, 199, 132, 0.4);
   color: #c4e8c6;
-}
-
-/* Share link list inside the Folder share section */
-.access-share-list {
-  display: grid;
-  gap: 8px;
-  margin-top: 12px;
 }
 
 /* Vault Administration */

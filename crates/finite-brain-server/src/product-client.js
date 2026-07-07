@@ -890,8 +890,8 @@ const FiniteBrainProductClient = (() => {
   function applyAccessIntentChrome(row) {
     const intent = accessIntentValue(state.activeAccessIntent);
     const advancedSection = $("accessAdvancedSection");
+    const addPanel = $("accessAddPersonPanel");
     const addForm = $("accessAddPersonForm");
-    const manageToggle = $("accessManageToggle");
     if (!row || normalizeAccessView(state.activeAccessView) !== "folder") return;
 
     if (intent === "links" && advancedSection) {
@@ -902,10 +902,10 @@ const FiniteBrainProductClient = (() => {
       folderAllowsDirectGrant(row) &&
       hasOpenedAccessFolderKey(row) &&
       state.signerStatus === "connected";
-    if (intent === "people" && canManage && addForm && manageToggle) {
+    if (intent === "people" && canManage && addPanel && addForm) {
+      addPanel.hidden = false;
+      addPanel.open = true;
       addForm.hidden = false;
-      manageToggle.setAttribute("aria-expanded", "true");
-      setText("accessManageToggleLabel", "Cancel");
     }
   }
 
@@ -5410,10 +5410,21 @@ const FiniteBrainProductClient = (() => {
     renderVaultSwitchList();
     safeSetHidden("accessConnectSignerButton", signerConnected);
     safeSetHidden("accessCreateOrganizationPanel", !showsCreateOrganizationControl(metadata));
+    safeSetElement("vaultPeopleActionPanel", (panel) => {
+      panel.hidden = !organizationVault;
+      if (!organizationVault) panel.open = false;
+    });
     safeSetHidden("vaultPeopleSection", !organizationVault);
     safeSetHidden("vaultInvitationListSection", !organizationVault);
     safeSetHidden("sharedFolderSection", !organizationVault);
-    safeSetHidden("vaultInvitationPanel", !(organizationVault || inviteInProgress));
+    safeSetElement("vaultInvitationPanel", (panel) => {
+      panel.hidden = !(organizationVault || inviteInProgress);
+      if (panel.hidden) {
+        panel.open = false;
+      } else if (inviteInProgress) {
+        panel.open = true;
+      }
+    });
     setOptionalDisabled("accessConnectSignerButton", !deriveSignerState(window.nostr).canConnect);
     setOptionalDisabled("accessLoadVaultButton", !canLoadVault());
     setOptionalDisabled(
@@ -5486,6 +5497,7 @@ const FiniteBrainProductClient = (() => {
           ? "Admins must already be Vault members."
           : "Only Vault admins can change organization members and admins.";
     setText("vaultPeopleHint", hint);
+    setText("vaultPeopleActionHint", canManage ? "Members and admins" : "Admin-only controls");
   }
 
   function linkRowActionButton(label, onClick, options = {}) {
@@ -5697,6 +5709,7 @@ const FiniteBrainProductClient = (() => {
       setText("accessSummaryLine", "Load a Vault and select a Folder to inspect access.");
       renderWhoHasAccessList(null, metadata, openedFolders);
       renderAccessFlowPanel(null);
+      updateAdvancedOptions(null, metadata, openedFolders);
       return;
     }
 
@@ -5727,13 +5740,18 @@ const FiniteBrainProductClient = (() => {
 
   function renderWhoHasAccessList(row, metadata, openedFolders) {
     const list = $("accessWhoHasList");
+    const addPanel = $("accessAddPersonPanel");
     const manageToggle = $("accessManageToggle");
     const addForm = $("accessAddPersonForm");
 
     if (!row) {
       list.innerHTML = '<li class="access-empty-state">No access information available</li>';
-      manageToggle.hidden = true;
-      addForm.hidden = true;
+      if (addPanel) {
+        addPanel.hidden = true;
+        addPanel.open = false;
+      }
+      if (manageToggle) manageToggle.hidden = true;
+      if (addForm) addForm.hidden = true;
       return;
     }
 
@@ -5741,10 +5759,16 @@ const FiniteBrainProductClient = (() => {
       folderAllowsDirectGrant(row) &&
       hasOpenedAccessFolderKey(row) &&
       state.signerStatus === "connected";
-    manageToggle.hidden = !canManage;
-    if (!canManage) addForm.hidden = true;
-    setText("accessManageToggleLabel", addForm.hidden ? "Manage" : "Cancel");
-    manageToggle.setAttribute("aria-expanded", String(!addForm.hidden));
+    if (addPanel) {
+      addPanel.hidden = !canManage;
+      if (!canManage) addPanel.open = false;
+    }
+    if (addForm) addForm.hidden = !canManage;
+    if (manageToggle) {
+      manageToggle.hidden = !canManage;
+      setText("accessManageToggleLabel", addForm?.hidden ? "Manage" : "Cancel");
+      manageToggle.setAttribute("aria-expanded", String(!addForm?.hidden));
+    }
 
     const accessList = buildAccessList(row, metadata);
 
@@ -5793,7 +5817,7 @@ const FiniteBrainProductClient = (() => {
       });
     }
 
-    manageToggle.onclick = () => {
+    if (manageToggle && addForm) manageToggle.onclick = () => {
       const isShowing = !addForm.hidden;
       addForm.hidden = isShowing;
       setText("accessManageToggleLabel", isShowing ? "Manage" : "Cancel");
@@ -5917,6 +5941,7 @@ const FiniteBrainProductClient = (() => {
 
   function updateAdvancedOptions(row, metadata, openedFolders) {
     const section = $("accessAdvancedSection");
+    const linkListSection = $("folderShareLinkListSection");
     const shareForm = $("accessShareForm");
     const shareHint = $("accessShareHint");
     const createShareButton = $("createShareLinkButton");
@@ -5925,10 +5950,13 @@ const FiniteBrainProductClient = (() => {
 
     if (!row) {
       section.hidden = true;
+      section.open = false;
+      if (linkListSection) linkListSection.hidden = true;
       return;
     }
 
     section.hidden = false;
+    if (linkListSection) linkListSection.hidden = false;
 
     // Update share link controls
     const keyOpen = hasOpenedAccessFolderKey(row);
