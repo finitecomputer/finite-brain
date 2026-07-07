@@ -2034,6 +2034,16 @@ pre {
   margin: 0;
 }
 
+.access-checkbox-hint {
+  margin: -6px 0 0 23px;
+  color: #8f8f8f;
+}
+
+.access-share-form.is-locked .access-checkbox {
+  color: #8f8f8f;
+  opacity: 0.72;
+}
+
 .access-section {
   display: block;
   margin: 0 10px;

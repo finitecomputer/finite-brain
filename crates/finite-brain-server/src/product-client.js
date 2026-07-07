@@ -6019,6 +6019,10 @@ const FiniteBrainProductClient = (() => {
     const createShareButton = $("createShareLinkButton");
     const acceptShareButton = $("acceptShareLinkButton");
     const revokeShareButton = $("revokeShareLinkButton");
+    const shareTargetInput = $("accessShareTargetInput");
+    const shareExpiresInput = $("accessShareExpiresAtInput");
+    const shareMountInput = $("accessShareMountInput");
+    const shareMountHint = $("accessShareMountHint");
 
     if (!row) {
       section.hidden = true;
@@ -6032,26 +6036,39 @@ const FiniteBrainProductClient = (() => {
 
     // Update share link controls
     const keyOpen = hasOpenedAccessFolderKey(row);
-    const canShare = keyOpen && !state.accessBusy && state.signerStatus === "connected";
+    const isRestricted = row.access === "restricted";
+    const canCreateShare =
+      isRestricted &&
+      keyOpen &&
+      !state.accessBusy &&
+      state.signerStatus === "connected";
 
-    createShareButton.disabled = !canShare;
+    createShareButton.disabled = !canCreateShare;
     acceptShareButton.disabled = state.accessBusy || state.signerStatus !== "connected";
     revokeShareButton.disabled = state.accessBusy || state.signerStatus !== "connected";
+    shareTargetInput.disabled = !canCreateShare;
+    shareExpiresInput.disabled = !canCreateShare;
+    shareMountInput.disabled = !canCreateShare;
 
     if (shareForm) {
-      shareForm.classList.toggle("is-ready", canShare);
-      shareForm.classList.toggle("is-locked", !canShare);
+      shareForm.classList.toggle("is-ready", canCreateShare);
+      shareForm.classList.toggle("is-locked", !canCreateShare);
     }
     if (shareHint) {
       if (state.signerStatus !== "connected") {
         shareHint.textContent = "Connect a signer to create or accept share links.";
       } else if (!keyOpen) {
         shareHint.textContent = accessFlowHint(row, "links", keyOpen);
-      } else if (row.access !== "restricted") {
-        shareHint.textContent = accessFlowHint(row, "links", keyOpen);
+      } else if (!isRestricted) {
+        shareHint.textContent = "Share links are for restricted Folders. Choose a restricted Folder to create one.";
       } else {
         shareHint.textContent = "Target email receives a single-use Folder Key Grant through the link.";
       }
+    }
+    if (shareMountHint) {
+      shareMountHint.textContent = canCreateShare
+        ? "When accepted, this adds the shared Folder to their Vault sidebar. It does not copy data or grant extra access."
+        : "Available when creating a restricted Folder share link.";
     }
 
     // Setup expiry defaults if not set

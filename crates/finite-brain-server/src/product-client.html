@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>FiniteBrain</title>
-    <link rel="stylesheet" href="/client/app.css?v=20260707-folder-grant-picker" />
+    <link rel="stylesheet" href="/client/app.css?v=20260707-share-mount-copy" />
   </head>
   <body>
     <div class="obsidian-shell" data-workspace-view="page">
@@ -301,9 +301,12 @@
                         />
                       </label>
                       <label class="access-checkbox">
-                        <input id="accessShareMountInput" type="checkbox" />
-                        <span>Create personal mount</span>
+                        <input id="accessShareMountInput" type="checkbox" aria-describedby="accessShareMountHint" />
+                        <span>Show in recipient's Vault</span>
                       </label>
+                      <p id="accessShareMountHint" class="access-field-hint access-checkbox-hint">
+                        When accepted, this adds the shared Folder to their Vault sidebar. It does not copy data or grant extra access.
+                      </p>
                       <button id="createShareLinkButton" type="button" class="access-primary-button">Create share link</button>
                     </div>
 
@@ -698,6 +701,6 @@ Start writing here.</textarea>
       </div>
     </div>
 
-    <script src="/client/app.js?v=20260707-folder-grant-picker"></script>
+    <script src="/client/app.js?v=20260707-share-mount-copy"></script>
   </body>
 </html>
