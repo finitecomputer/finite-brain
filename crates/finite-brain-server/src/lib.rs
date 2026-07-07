@@ -4618,6 +4618,50 @@ mod tests {
             "emailProofCreatedAt": proof_created_at,
         })
         .to_string();
+        let wrong_email_bootstrap = authed_request(
+            router.clone(),
+            &claimant_keys,
+            "POST",
+            &format!(
+                "/_admin/vault-invitation-links/{}/bootstrap",
+                invitation.invite_code
+            ),
+            Some(
+                serde_json::json!({
+                    "email": "other@example.com",
+                    "emailProofCreatedAt": format_unix_timestamp(TEST_NOW).unwrap(),
+                })
+                .to_string(),
+            ),
+            TEST_NOW + 4,
+        )
+        .await;
+        assert_error(
+            wrong_email_bootstrap,
+            StatusCode::NOT_FOUND,
+            "vault invitation unavailable",
+        )
+        .await;
+
+        let wrong_actor_bootstrap = authed_request(
+            router.clone(),
+            &Keys::generate(),
+            "POST",
+            &format!(
+                "/_admin/vault-invitation-links/{}/bootstrap",
+                invitation.invite_code
+            ),
+            Some(post_proof_body.clone()),
+            TEST_NOW + 4,
+        )
+        .await;
+        assert_error(
+            wrong_actor_bootstrap,
+            StatusCode::BAD_REQUEST,
+            "email proof was not accepted",
+        )
+        .await;
+
         let post_proof_bootstrap = authed_request(
             router.clone(),
             &claimant_keys,
@@ -4626,7 +4670,7 @@ mod tests {
                 "/_admin/vault-invitation-links/{}/bootstrap",
                 invitation.invite_code
             ),
-            Some(post_proof_body),
+            Some(post_proof_body.clone()),
             TEST_NOW + 4,
         )
         .await;
@@ -4729,6 +4773,23 @@ mod tests {
         )
         .await;
         assert_eq!(claim.status(), StatusCode::OK);
+
+        let tombstoned_bootstrap = authed_request(
+            router.clone(),
+            &claimant_keys,
+            "POST",
+            &format!(
+                "/_admin/vault-invitation-links/{}/bootstrap",
+                invitation.invite_code
+            ),
+            Some(post_proof_body),
+            TEST_NOW + 6,
+        )
+        .await;
+        assert_eq!(tombstoned_bootstrap.status(), StatusCode::OK);
+        let tombstoned_bootstrap: VaultInvitationResponse = read_json(tombstoned_bootstrap).await;
+        assert_eq!(tombstoned_bootstrap.status, "accepted");
+        assert_eq!(tombstoned_bootstrap.bootstrap_wrapped_event_json, None);
 
         let export = authed_request(
             router.clone(),
