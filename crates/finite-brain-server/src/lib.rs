@@ -24,16 +24,17 @@ use finite_brain_core::{
     validate_admin_access_change_event, validate_revision_event, validate_tombstone_event,
 };
 use finite_brain_store::{
-    BrainStore, ControlSyncRecord, EncryptedVaultExport, FolderKeyGrantMetadata,
-    FolderObjectRevisionSyncRecord, FolderObjectTombstoneSyncRecord, IdentityAlias, LinkStatus,
-    MountedFolderProjection, MountedFolderState, SharedFolderConnectionStatus,
-    SharedFolderDirection, StoreError, StoredShareLink, StoredSharedFolderConnection,
-    StoredSharedFolderInvitation, StoredSyncRecord, StoredVault, StoredVaultInvitation,
-    SyncRecordInput, SyncRecordType, VisibleVault, VisibleVaultRole,
+    BrainStore, ControlSyncRecord, EmailInviteBootstrapScopeFolder, EncryptedVaultExport,
+    FolderKeyGrantMetadata, FolderObjectRevisionSyncRecord, FolderObjectTombstoneSyncRecord,
+    IdentityAlias, LinkStatus, MountedFolderProjection, MountedFolderState,
+    SharedFolderConnectionStatus, SharedFolderDirection, StoreError, StoredShareLink,
+    StoredSharedFolderConnection, StoredSharedFolderInvitation, StoredSyncRecord, StoredVault,
+    StoredVaultInvitation, SyncRecordInput, SyncRecordType, VaultInvitationTargetKind,
+    VisibleVault, VisibleVaultRole,
 };
 use finite_nostr::{
     MAX_NIP05_DOCUMENT_BYTES, Nip05Identifier, Nip05WellKnownDocument, Nip05WellKnownRequest,
-    NostrPrimitiveError, NostrPublicKey, validate_gift_wrap,
+    NostrPrimitiveError, NostrPublicKey, validate_gift_wrap, verify_event_integrity,
 };
 use nostr::Event;
 use serde::{Deserialize, Serialize};
@@ -100,7 +101,10 @@ pub struct ServerState {
     rate_limit: RateLimitConfig,
     cors_allowed_origins: Arc<BTreeSet<String>>,
     nip05_fetcher: Nip05Fetcher,
+    email_proof_verifier: Option<EmailProofVerifier>,
 }
+
+type EmailProofVerifier = Arc<dyn Fn(&str, &UserId) -> Result<(), String> + Send + Sync>;
 
 #[derive(Debug, Clone, Copy)]
 struct RateLimitConfig {
@@ -126,6 +130,7 @@ impl ServerState {
             },
             cors_allowed_origins: Arc::new(cors_allowed_origins),
             nip05_fetcher: default_nip05_fetcher(),
+            email_proof_verifier: None,
         }
     }
 
@@ -148,6 +153,24 @@ impl ServerState {
     /// Override CORS allowed origins.
     pub fn with_cors_allowed_origins(mut self, origins: impl IntoIterator<Item = String>) -> Self {
         self.cors_allowed_origins = Arc::new(origins.into_iter().collect());
+        self
+    }
+
+    /// Verify email proof through a finite-identity Authority deployment.
+    pub fn with_identity_authority_url(mut self, base_url: impl Into<String>) -> Self {
+        let base_url = base_url.into().trim().trim_end_matches('/').to_owned();
+        if !base_url.is_empty() {
+            self.email_proof_verifier = Some(identity_authority_email_proof_verifier(base_url));
+        }
+        self
+    }
+
+    #[cfg(test)]
+    fn with_email_proof_verifier(
+        mut self,
+        verifier: impl Fn(&str, &UserId) -> Result<(), String> + Send + Sync + 'static,
+    ) -> Self {
+        self.email_proof_verifier = Some(Arc::new(verifier));
         self
     }
 
@@ -274,6 +297,19 @@ pub fn router_with_sqlite_path(
     )))
 }
 
+/// Build a router backed by SQLite and an optional finite-identity Authority.
+pub fn router_with_sqlite_path_and_identity_authority(
+    path: impl AsRef<Path>,
+    public_base_url: impl Into<String>,
+    identity_authority_url: Option<String>,
+) -> Result<Router, StoreError> {
+    let mut state = ServerState::new(BrainStore::open(path)?, public_base_url);
+    if let Some(url) = identity_authority_url {
+        state = state.with_identity_authority_url(url);
+    }
+    Ok(router_with_state(state))
+}
+
 /// Build a router with explicit state.
 pub fn router_with_state(state: ServerState) -> Router {
     let cors_state = state.clone();
@@ -337,6 +373,10 @@ pub fn router_with_state(state: ServerState) -> Router {
         .route(
             "/_admin/vault-invitation-links/{invite_code}/accept",
             post(accept_vault_invitation_link_handler),
+        )
+        .route(
+            "/_admin/vault-invitation-links/{invite_code}/claim",
+            post(claim_email_vault_invitation_link_handler),
         )
         .route(
             "/_admin/vaults/{vault_id}/folders",
@@ -606,6 +646,374 @@ fn known_identity_responses(
         .collect())
 }
 
+fn invitation_target_input(request: &CreateVaultInvitationRequest) -> Result<String, ApiError> {
+    request
+        .target
+        .as_deref()
+        .or(request.target_email.as_deref())
+        .or(request.target_npub.as_deref())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+        .ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "invitation target is required"))
+}
+
+fn email_like(value: &str) -> bool {
+    let value = value.trim();
+    let Some((local, domain)) = value.split_once('@') else {
+        return false;
+    };
+    !local.is_empty() && !domain.is_empty() && domain.contains('.')
+}
+
+fn finite_vip_email(value: &str) -> bool {
+    canonical_email(value)
+        .map(|email| email.ends_with("@finite.vip"))
+        .unwrap_or(false)
+}
+
+fn canonical_email(value: &str) -> Result<String, ApiError> {
+    let value = value.trim().to_ascii_lowercase();
+    let Some((local, domain)) = value.split_once('@') else {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "email target must be an email address",
+        ));
+    };
+    if local.is_empty()
+        || domain.is_empty()
+        || value.chars().any(|c| c == '\0' || c.is_control())
+        || value.len() > 320
+    {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "email target must be a printable email address",
+        ));
+    }
+    Ok(value)
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct IdentityAuthoritySatisfiesGrantResponse {
+    satisfied: bool,
+}
+
+fn identity_authority_email_proof_verifier(base_url: String) -> EmailProofVerifier {
+    Arc::new(move |email, actor| {
+        let actor_hex = NostrPublicKey::parse(actor.as_str())
+            .map_err(|error| format!("invalid claimant npub for Identity Authority: {error}"))?
+            .to_hex();
+        let body = serde_json::to_vec(&serde_json::json!({
+            "grant": email,
+            "actor_pubkey": actor_hex,
+        }))
+        .map_err(|error| format!("could not encode Identity Authority proof request: {error}"))?;
+        let url = format!("{base_url}/api/v1/principal-resolution/satisfies-grant");
+        let response = ureq::post(&url)
+            .set("Content-Type", "application/json")
+            .send_bytes(&body)
+            .map_err(|error| format!("Identity Authority email proof check failed: {error}"))?;
+        let body = response.into_string().map_err(|error| {
+            format!("could not read Identity Authority proof response: {error}")
+        })?;
+        let response: IdentityAuthoritySatisfiesGrantResponse = serde_json::from_str(&body)
+            .map_err(|error| {
+                format!("invalid Identity Authority proof response for email claim: {error}")
+            })?;
+        if response.satisfied {
+            Ok(())
+        } else {
+            Err(
+                "Identity Authority does not confirm this npub controls the invited email"
+                    .to_owned(),
+            )
+        }
+    })
+}
+
+fn verify_identity_authority_email_proof(
+    state: &ServerState,
+    invited_email: &str,
+    claimant: &UserId,
+) -> Result<(), ApiError> {
+    let verifier = state.email_proof_verifier.as_ref().ok_or_else(|| {
+        ApiError::new(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "Identity Authority email proof verifier is not configured",
+        )
+    })?;
+    verifier(invited_email, claimant).map_err(|error| {
+        ApiError::new(
+            StatusCode::BAD_REQUEST,
+            format!("email proof was not accepted: {error}"),
+        )
+    })
+}
+
+fn selected_folder_ids(values: &[String]) -> Result<Vec<FolderId>, ApiError> {
+    values
+        .iter()
+        .cloned()
+        .map(FolderId::new)
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(ApiError::from)
+}
+
+fn email_bootstrap_scope_for_vault(
+    stored: &StoredVault,
+    selected_restricted_folder_access: &[FolderId],
+) -> Result<Vec<EmailInviteBootstrapScopeFolder>, ApiError> {
+    let selected = selected_restricted_folder_access
+        .iter()
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    let mut seen_selected = BTreeSet::new();
+    let mut included = BTreeSet::new();
+    let mut scope = Vec::new();
+    for folder in &stored.vault.folders {
+        let selected_folder = selected.contains(&folder.id);
+        if selected_folder {
+            seen_selected.insert(folder.id.clone());
+        }
+        let include = match folder.access {
+            FolderAccessMode::AllMembers => true,
+            FolderAccessMode::Restricted => selected_folder,
+            FolderAccessMode::Owner | FolderAccessMode::AdminOnly => {
+                if selected_folder {
+                    return Err(ApiError::new(
+                        StatusCode::BAD_REQUEST,
+                        "email bootstrap initial folder access supports all-members and restricted folders only",
+                    ));
+                }
+                false
+            }
+        };
+        if include && included.insert(folder.id.clone()) {
+            scope.push(EmailInviteBootstrapScopeFolder {
+                folder_id: folder.id.clone(),
+                access: folder.access,
+                key_version: folder.current_key_version,
+            });
+        }
+    }
+    if seen_selected != selected {
+        return Err(ApiError::new(StatusCode::NOT_FOUND, "folder not found"));
+    }
+    Ok(scope)
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct EmailInviteBootstrapAuthorizationPayload {
+    version: String,
+    vault_id: String,
+    invited_email: String,
+    invite_unwrap_npub: String,
+    bootstrap_payload_hash: String,
+    expires_at: String,
+    folders: Vec<EmailInviteBootstrapAuthorizationFolder>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct EmailInviteBootstrapAuthorizationFolder {
+    folder_id: String,
+    access: FolderAccessMode,
+    key_version: u32,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct EmailInviteBootstrapClaimProofPayload {
+    version: String,
+    vault_id: String,
+    invite_code: String,
+    invited_email: String,
+    claimant_npub: String,
+    bootstrap_payload_hash: String,
+    email_proof_created_at: String,
+}
+
+#[allow(clippy::too_many_arguments)]
+fn validate_email_bootstrap_authorization(
+    event_json: &str,
+    admin_npub: &str,
+    vault_id: &VaultId,
+    invited_email: &str,
+    invite_unwrap_npub: &UserId,
+    bootstrap_payload_hash: &str,
+    expires_at: &str,
+    scope: &[EmailInviteBootstrapScopeFolder],
+) -> Result<(), ApiError> {
+    let event = Event::from_json(event_json).map_err(|_| {
+        ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "email bootstrap authorization event JSON did not parse",
+        )
+    })?;
+    if event.kind.as_u16() != APP_SPECIFIC_KIND {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            format!("email bootstrap authorization event must be kind {APP_SPECIFIC_KIND}"),
+        ));
+    }
+    verify_event_integrity(&event).map_err(|error| {
+        ApiError::new(
+            StatusCode::BAD_REQUEST,
+            format!("email bootstrap authorization event failed verification: {error}"),
+        )
+    })?;
+    let signer = NostrPublicKey::from_protocol(event.pubkey)
+        .to_npub()
+        .map_err(nostr_identity_error)?;
+    if signer != admin_npub {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "email bootstrap authorization signer must match the creating admin",
+        ));
+    }
+
+    let payload: EmailInviteBootstrapAuthorizationPayload = serde_json::from_str(&event.content)
+        .map_err(|_| {
+            ApiError::new(
+                StatusCode::BAD_REQUEST,
+                "email bootstrap authorization content did not parse",
+            )
+        })?;
+    if payload.version != "finite-email-invite-bootstrap-authorization-v1"
+        || payload.vault_id != vault_id.as_str()
+        || canonical_email(&payload.invited_email)? != invited_email
+        || payload.invite_unwrap_npub != invite_unwrap_npub.as_str()
+        || payload.bootstrap_payload_hash != bootstrap_payload_hash
+        || payload.expires_at != expires_at
+    {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "email bootstrap authorization does not match invitation metadata",
+        ));
+    }
+
+    let authorized_scope = payload
+        .folders
+        .into_iter()
+        .map(|folder| {
+            Ok(EmailInviteBootstrapScopeFolder {
+                folder_id: FolderId::new(folder.folder_id)?,
+                access: folder.access,
+                key_version: folder.key_version,
+            })
+        })
+        .collect::<Result<Vec<_>, ApiError>>()?;
+    if authorized_scope != scope {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "email bootstrap authorization does not match Folder scope",
+        ));
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn validate_email_bootstrap_claim_proof(
+    event_json: &str,
+    invite_unwrap_npub: &UserId,
+    vault_id: &VaultId,
+    invite_code: &str,
+    invited_email: &str,
+    claimant_npub: &UserId,
+    bootstrap_payload_hash: &str,
+    email_proof_created_at: &str,
+) -> Result<(), ApiError> {
+    let event = Event::from_json(event_json).map_err(|_| {
+        ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "email bootstrap claim proof event JSON did not parse",
+        )
+    })?;
+    if event.kind.as_u16() != APP_SPECIFIC_KIND {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            format!("email bootstrap claim proof event must be kind {APP_SPECIFIC_KIND}"),
+        ));
+    }
+    verify_event_integrity(&event).map_err(|error| {
+        ApiError::new(
+            StatusCode::BAD_REQUEST,
+            format!("email bootstrap claim proof event failed verification: {error}"),
+        )
+    })?;
+    let signer = NostrPublicKey::from_protocol(event.pubkey)
+        .to_npub()
+        .map_err(nostr_identity_error)?;
+    if signer != invite_unwrap_npub.as_str() {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "email bootstrap claim proof signer must match the Invite Unwrap npub",
+        ));
+    }
+
+    let payload: EmailInviteBootstrapClaimProofPayload = serde_json::from_str(&event.content)
+        .map_err(|_| {
+            ApiError::new(
+                StatusCode::BAD_REQUEST,
+                "email bootstrap claim proof content did not parse",
+            )
+        })?;
+    if payload.version != "finite-email-invite-bootstrap-claim-proof-v1"
+        || payload.vault_id != vault_id.as_str()
+        || payload.invite_code != invite_code
+        || canonical_email(&payload.invited_email)? != invited_email
+        || UserId::new(payload.claimant_npub)? != *claimant_npub
+        || payload.bootstrap_payload_hash != bootstrap_payload_hash
+        || payload.email_proof_created_at != email_proof_created_at
+    {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "email bootstrap claim proof does not match invitation metadata",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_email_proof_window(
+    invitation: &StoredVaultInvitation,
+    proof_created_at: &str,
+    now: &str,
+) -> Result<(), ApiError> {
+    let proof = OffsetDateTime::parse(proof_created_at, &Rfc3339).map_err(|_| {
+        ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "emailProofCreatedAt must be an RFC3339 timestamp",
+        )
+    })?;
+    let created_at = OffsetDateTime::parse(&invitation.created_at, &Rfc3339).map_err(|_| {
+        ApiError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "stored invitation timestamp did not parse",
+        )
+    })?;
+    let now = OffsetDateTime::parse(now, &Rfc3339).map_err(|_| {
+        ApiError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "server timestamp did not parse",
+        )
+    })?;
+    if proof < created_at {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "email proof must not be older than the invitation",
+        ));
+    }
+    if proof > now || now - proof > time::Duration::days(1) {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "email proof must be no more than 24 hours old",
+        ));
+    }
+    Ok(())
+}
+
 fn enrich_metadata_identities(
     store: &BrainStore,
     response: &mut VaultMetadataResponse,
@@ -627,7 +1035,17 @@ fn enrich_vault_invitation_identities(
     store: &BrainStore,
     response: &mut VaultInvitationResponse,
 ) -> Result<(), ApiError> {
-    response.identities = known_identity_responses(store, [response.user_id.clone()])?;
+    let mut npubs = Vec::new();
+    if let Some(user_id) = &response.user_id {
+        npubs.push(user_id.clone());
+    }
+    if let Some(claimed_by_npub) = &response.claimed_by_npub {
+        npubs.push(claimed_by_npub.clone());
+    }
+    if let Some(invite_unwrap_npub) = &response.invite_unwrap_npub {
+        npubs.push(invite_unwrap_npub.clone());
+    }
+    response.identities = known_identity_responses(store, npubs)?;
     Ok(())
 }
 
@@ -3191,10 +3609,13 @@ mod tests {
             TEST_NOW,
         )
         .await;
-        assert_eq!(create.status(), StatusCode::OK);
+        if create.status() != StatusCode::OK {
+            let body: ApiErrorBody = read_json(create).await;
+            panic!("email bootstrap create failed: {}", body.error);
+        }
         let invitation: VaultInvitationResponse = read_json(create).await;
         assert_eq!(invitation.status, "pending");
-        assert_eq!(invitation.user_id, target_npub);
+        assert_eq!(invitation.user_id.as_deref(), Some(target_npub.as_str()));
         assert_eq!(
             invitation.initial_folder_access,
             vec!["getting-started".to_owned()]
@@ -3335,6 +3756,303 @@ mod tests {
         let listed: VaultInvitationListResponse = read_json(list_after_revoke).await;
         assert_eq!(listed.invitations.len(), 1);
         assert_eq!(listed.invitations[0].status, "revoked");
+    }
+
+    #[tokio::test]
+    async fn email_vault_invitation_creates_bootstrap_and_claims_access_without_secret() {
+        let admin_keys = Keys::generate();
+        let claimant_keys = Keys::generate();
+        let unwrap_keys = Keys::generate();
+        let claimant_npub = npub(&claimant_keys);
+        let unwrap_npub = npub(&unwrap_keys);
+        let expected_claimant = claimant_npub.clone();
+        let router =
+            router_with_state(test_state().with_email_proof_verifier(move |email, actor| {
+                if email == "friend@example.com" && actor.to_string() == expected_claimant {
+                    Ok(())
+                } else {
+                    Err("email proof not found".to_owned())
+                }
+            }));
+        let create_vault = post_vault(
+            router.clone(),
+            &admin_keys,
+            &create_vault_body("acme", "organization"),
+            TEST_NOW,
+            None,
+            None,
+            None,
+        )
+        .await;
+        assert_eq!(create_vault.status(), StatusCode::OK);
+        let payload_hash = "sha256-bootstrap-payload";
+        let bootstrap_wrapped_event_json = gift_wrap_event_json(&unwrap_npub);
+        let authorization_event_json = email_bootstrap_authorization_event(
+            &admin_keys,
+            "acme",
+            "friend@example.com",
+            &unwrap_npub,
+            payload_hash,
+            "2026-06-30T00:00:00.000Z",
+            &[
+                ("getting-started", FolderAccessMode::AllMembers, 1),
+                ("restricted", FolderAccessMode::Restricted, 1),
+            ],
+        );
+
+        let create_body = serde_json::json!({
+            "target": "friend@example.com",
+            "initialFolderAccess": ["restricted"],
+            "expiresAt": "2026-06-30T00:00:00.000Z",
+            "inviteUnwrapNpub": unwrap_npub,
+            "bootstrapPayloadHash": payload_hash,
+            "bootstrapWrappedEventJson": bootstrap_wrapped_event_json,
+            "bootstrapAuthorizationEventJson": authorization_event_json,
+        })
+        .to_string();
+        let create = authed_request(
+            router.clone(),
+            &admin_keys,
+            "POST",
+            "/_admin/vaults/acme/invitations",
+            Some(create_body),
+            TEST_NOW,
+        )
+        .await;
+        assert_eq!(create.status(), StatusCode::OK);
+        let invitation: VaultInvitationResponse = read_json(create).await;
+        assert_eq!(invitation.target_kind, "email_bootstrap");
+        assert_eq!(invitation.user_id, None);
+        assert_eq!(
+            invitation.invited_email.as_deref(),
+            Some("friend@example.com")
+        );
+        assert_eq!(
+            invitation.invite_unwrap_npub.as_deref(),
+            Some(unwrap_npub.as_str())
+        );
+        assert!(invitation.accept_path.ends_with("/claim"));
+        assert_eq!(
+            invitation
+                .bootstrap_scope
+                .iter()
+                .map(|scope| (scope.folder_id.clone(), scope.access, scope.key_version))
+                .collect::<Vec<_>>(),
+            vec![
+                (
+                    "getting-started".to_owned(),
+                    FolderAccessMode::AllMembers,
+                    1
+                ),
+                ("restricted".to_owned(), FolderAccessMode::Restricted, 1),
+            ]
+        );
+        assert!(
+            !serde_json::to_string(&invitation)
+                .unwrap()
+                .to_ascii_lowercase()
+                .contains("secret")
+        );
+
+        let proof_created_at = format_unix_timestamp(TEST_NOW).unwrap();
+        let wrong_claim_proof_event_json = email_bootstrap_claim_proof_event(
+            &Keys::generate(),
+            "acme",
+            &invitation.invite_code,
+            "friend@example.com",
+            &claimant_npub,
+            payload_hash,
+            &proof_created_at,
+        );
+        let wrong_claim_body = serde_json::json!({
+            "email": "friend@example.com",
+            "emailProofCreatedAt": proof_created_at.clone(),
+            "inviteUnwrapProofEventJson": wrong_claim_proof_event_json,
+            "grants": [
+                {
+                    "folderId": "getting-started",
+                    "grant": folder_key_grant_value("claim-grant-getting-started", 1, &claimant_npub)
+                },
+                {
+                    "folderId": "restricted",
+                    "grant": folder_key_grant_value("claim-grant-restricted", 1, &claimant_npub)
+                }
+            ]
+        })
+        .to_string();
+        let wrong_claim = authed_request(
+            router.clone(),
+            &claimant_keys,
+            "POST",
+            &format!(
+                "/_admin/vault-invitation-links/{}/claim",
+                invitation.invite_code
+            ),
+            Some(wrong_claim_body),
+            TEST_NOW + 1,
+        )
+        .await;
+        assert_error(wrong_claim, StatusCode::BAD_REQUEST, "Invite Unwrap npub").await;
+
+        let claim_proof_event_json = email_bootstrap_claim_proof_event(
+            &unwrap_keys,
+            "acme",
+            &invitation.invite_code,
+            "friend@example.com",
+            &claimant_npub,
+            payload_hash,
+            &proof_created_at,
+        );
+        let claim_body = serde_json::json!({
+            "email": "friend@example.com",
+            "emailProofCreatedAt": proof_created_at.clone(),
+            "inviteUnwrapProofEventJson": claim_proof_event_json,
+            "grants": [
+                {
+                    "folderId": "getting-started",
+                    "grant": folder_key_grant_value("claim-grant-getting-started", 1, &claimant_npub)
+                },
+                {
+                    "folderId": "restricted",
+                    "grant": folder_key_grant_value("claim-grant-restricted", 1, &claimant_npub)
+                }
+            ]
+        })
+        .to_string();
+        let claim = authed_request(
+            router.clone(),
+            &claimant_keys,
+            "POST",
+            &format!(
+                "/_admin/vault-invitation-links/{}/claim",
+                invitation.invite_code
+            ),
+            Some(claim_body.clone()),
+            TEST_NOW + 2,
+        )
+        .await;
+        if claim.status() != StatusCode::OK {
+            let body: ApiErrorBody = read_json(claim).await;
+            panic!("email bootstrap claim failed: {}", body.error);
+        }
+        let claimed: VaultInvitationResponse = read_json(claim).await;
+        assert_eq!(claimed.status, "accepted");
+        assert_eq!(claimed.user_id.as_deref(), Some(claimant_npub.as_str()));
+        assert_eq!(
+            claimed.claimed_by_npub.as_deref(),
+            Some(claimant_npub.as_str())
+        );
+        assert_eq!(claimed.bootstrap_wrapped_event_json, None);
+
+        let sync_before_retry = authed_request(
+            router.clone(),
+            &claimant_keys,
+            "GET",
+            "/_admin/vaults/acme/sync/records?after=0&limit=20",
+            None,
+            TEST_NOW + 3,
+        )
+        .await;
+        assert_eq!(sync_before_retry.status(), StatusCode::OK);
+        let sync_before_retry: SyncPullResponse = read_json(sync_before_retry).await;
+
+        let duplicate_claim_body = serde_json::json!({
+            "email": "friend@example.com",
+            "emailProofCreatedAt": format_unix_timestamp(TEST_NOW - 86_500).unwrap(),
+            "grants": []
+        })
+        .to_string();
+        let duplicate_claim = authed_request(
+            router.clone(),
+            &claimant_keys,
+            "POST",
+            &format!(
+                "/_admin/vault-invitation-links/{}/claim",
+                invitation.invite_code
+            ),
+            Some(duplicate_claim_body),
+            TEST_NOW + 4,
+        )
+        .await;
+        assert_eq!(duplicate_claim.status(), StatusCode::OK);
+        let duplicate_claim: VaultInvitationResponse = read_json(duplicate_claim).await;
+        assert!(duplicate_claim.duplicate_accept);
+
+        let sync_after_retry = authed_request(
+            router.clone(),
+            &claimant_keys,
+            "GET",
+            "/_admin/vaults/acme/sync/records?after=0&limit=20",
+            None,
+            TEST_NOW + 5,
+        )
+        .await;
+        assert_eq!(sync_after_retry.status(), StatusCode::OK);
+        let sync_after_retry: SyncPullResponse = read_json(sync_after_retry).await;
+        assert_eq!(
+            sync_after_retry.records.len(),
+            sync_before_retry.records.len()
+        );
+
+        let metadata = get_metadata(router, &claimant_keys, "acme", TEST_NOW + 6).await;
+        assert_eq!(metadata.status(), StatusCode::OK);
+        let metadata: VaultMetadataResponse = read_json(metadata).await;
+        assert!(metadata.members.contains(&claimant_npub));
+        let restricted = metadata
+            .folders
+            .iter()
+            .find(|folder| folder.id == "restricted")
+            .expect("restricted folder");
+        assert!(restricted.access_user_ids.contains(&claimant_npub));
+    }
+
+    #[tokio::test]
+    async fn vault_invitation_routing_keeps_active_finite_vip_nip05_on_npub_path() {
+        let admin_keys = Keys::generate();
+        let target_keys = Keys::generate();
+        let target_npub = npub(&target_keys);
+        let target_hex = NostrPublicKey::from_protocol(target_keys.public_key()).to_hex();
+        let identifier = Nip05Identifier::parse("alice@finite.vip").unwrap();
+        let document = serde_json::json!({
+            "names": { "alice": target_hex },
+        })
+        .to_string()
+        .into_bytes();
+        let router = router_with_state(
+            test_state().with_nip05_fixture(identifier.well_known_request().url, document),
+        );
+        let create_vault = post_vault(
+            router.clone(),
+            &admin_keys,
+            &create_vault_body("acme", "organization"),
+            TEST_NOW,
+            None,
+            None,
+            None,
+        )
+        .await;
+        assert_eq!(create_vault.status(), StatusCode::OK);
+
+        let create_body = serde_json::json!({
+            "target": "alice@finite.vip",
+            "initialFolderAccess": ["getting-started"],
+            "expiresAt": "2026-06-30T00:00:00.000Z",
+        })
+        .to_string();
+        let create = authed_request(
+            router,
+            &admin_keys,
+            "POST",
+            "/_admin/vaults/acme/invitations",
+            Some(create_body),
+            TEST_NOW,
+        )
+        .await;
+        assert_eq!(create.status(), StatusCode::OK);
+        let invitation: VaultInvitationResponse = read_json(create).await;
+        assert_eq!(invitation.target_kind, "npub");
+        assert_eq!(invitation.user_id.as_deref(), Some(target_npub.as_str()));
+        assert_eq!(invitation.invited_email, None);
     }
 
     #[tokio::test]
@@ -4405,18 +5123,76 @@ mod tests {
         key_version: u32,
         recipient_npub: &str,
     ) -> serde_json::Value {
+        let gift_wrap = gift_wrap_event_json(recipient_npub);
+        serde_json::json!({
+            "id": id,
+            "keyVersion": key_version,
+            "recipientNpub": recipient_npub,
+            "wrappedEventJson": gift_wrap,
+            "createdAt": "2026-06-23T00:00:00.000Z",
+        })
+    }
+
+    fn gift_wrap_event_json(recipient_npub: &str) -> String {
         let recipient = NostrPublicKey::parse(recipient_npub).unwrap();
         let gift_wrap = EventBuilder::new(Kind::GiftWrap, "encrypted grant placeholder")
             .tag(Tag::public_key(recipient.as_protocol()))
             .finalize(&Keys::generate())
             .unwrap();
-        serde_json::json!({
-            "id": id,
-            "keyVersion": key_version,
-            "recipientNpub": recipient_npub,
-            "wrappedEventJson": gift_wrap.as_json(),
-            "createdAt": "2026-06-23T00:00:00.000Z",
+        gift_wrap.as_json()
+    }
+
+    fn email_bootstrap_authorization_event(
+        keys: &Keys,
+        vault_id: &str,
+        invited_email: &str,
+        invite_unwrap_npub: &str,
+        bootstrap_payload_hash: &str,
+        expires_at: &str,
+        folders: &[(&str, FolderAccessMode, u32)],
+    ) -> String {
+        let content = serde_json::json!({
+            "version": "finite-email-invite-bootstrap-authorization-v1",
+            "vaultId": vault_id,
+            "invitedEmail": invited_email,
+            "inviteUnwrapNpub": invite_unwrap_npub,
+            "bootstrapPayloadHash": bootstrap_payload_hash,
+            "expiresAt": expires_at,
+            "folders": folders
+                .iter()
+                .map(|(folder_id, access, key_version)| {
+                    serde_json::json!({
+                        "folderId": folder_id,
+                        "access": access,
+                        "keyVersion": key_version,
+                    })
+                })
+                .collect::<Vec<_>>()
         })
+        .to_string();
+        sign_app_event(keys, content, Vec::new()).as_json()
+    }
+
+    fn email_bootstrap_claim_proof_event(
+        keys: &Keys,
+        vault_id: &str,
+        invite_code: &str,
+        invited_email: &str,
+        claimant_npub: &str,
+        bootstrap_payload_hash: &str,
+        email_proof_created_at: &str,
+    ) -> String {
+        let content = serde_json::json!({
+            "version": "finite-email-invite-bootstrap-claim-proof-v1",
+            "vaultId": vault_id,
+            "inviteCode": invite_code,
+            "invitedEmail": invited_email,
+            "claimantNpub": claimant_npub,
+            "bootstrapPayloadHash": bootstrap_payload_hash,
+            "emailProofCreatedAt": email_proof_created_at,
+        })
+        .to_string();
+        sign_app_event(keys, content, Vec::new()).as_json()
     }
 
     fn test_rfc3339() -> String {

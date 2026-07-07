@@ -18,11 +18,19 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .unwrap_or_else(|_| format!("http://{address}"));
     let database_path =
         std::env::var("FINITE_BRAIN_DB").unwrap_or_else(|_| "finite-brain.sqlite3".to_owned());
+    let identity_authority_url = std::env::var("FINITE_IDENTITY_AUTHORITY")
+        .ok()
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty());
     let listener = tokio::net::TcpListener::bind(address).await?;
 
     println!("FiniteBrain smoke server listening on http://{address}");
 
-    let router = finite_brain_server::router_with_sqlite_path(database_path, public_base_url)?;
+    let router = finite_brain_server::router_with_sqlite_path_and_identity_authority(
+        database_path,
+        public_base_url,
+        identity_authority_url,
+    )?;
     axum::serve(listener, router).await?;
 
     Ok(())

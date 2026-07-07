@@ -103,7 +103,23 @@ pub(crate) fn vault_invitation_response(
     VaultInvitationResponse {
         id: invitation.id,
         vault_id: invitation.vault_id.to_string(),
-        user_id: invitation.user_id.to_string(),
+        target_kind: invitation.target_kind.as_str().to_owned(),
+        user_id: invitation.user_id.map(|user_id| user_id.to_string()),
+        invited_email: invitation.invited_email,
+        invite_unwrap_npub: invitation.invite_unwrap_npub.map(|npub| npub.to_string()),
+        bootstrap_payload_hash: invitation.bootstrap_payload_hash,
+        bootstrap_wrapped_event_json: invitation.bootstrap_wrapped_event_json,
+        bootstrap_authorization_event_json: invitation.bootstrap_authorization_event_json,
+        bootstrap_scope: invitation
+            .bootstrap_scope
+            .into_iter()
+            .map(|scope| EmailInviteBootstrapScopeResponse {
+                folder_id: scope.folder_id.to_string(),
+                access: scope.access,
+                key_version: scope.key_version,
+            })
+            .collect(),
+        claimed_by_npub: invitation.claimed_by_npub.map(|npub| npub.to_string()),
         identities: Vec::new(),
         status: link_status_str(invitation.status).to_owned(),
         invite_code: invitation.invite_code,

@@ -282,41 +282,47 @@ pub(crate) async fn create_vault_invitation_handler(
     let request: CreateVaultInvitationRequest = serde_json::from_slice(&body)
         .map_err(|_| ApiError::new(StatusCode::BAD_REQUEST, "invalid JSON request body"))?;
     let vault_id = VaultId::new(vault_id)?;
-    let target_identity = resolve_and_record_identity(&state, &request.target_npub)?;
-    let target = UserId::new(target_identity.npub.clone())?;
-    let initial_folder_access = request
-        .initial_folder_access
-        .into_iter()
-        .map(FolderId::new)
-        .collect::<Result<Vec<_>, _>>()?;
     let actor_user_id = UserId::new(actor.clone())?;
     let created_at = server_timestamp(&state);
-    let id = generated_link_id(
-        "invitation",
-        &[
-            vault_id.as_str(),
-            target.as_str(),
-            actor_user_id.as_str(),
-            request.expires_at.as_str(),
-            created_at.as_str(),
-        ],
-        16,
-    );
-    let invite_code = generated_link_id(
-        "invite",
-        &[
-            vault_id.as_str(),
-            target.as_str(),
-            actor_user_id.as_str(),
-            request.expires_at.as_str(),
-            created_at.as_str(),
-            "code",
-        ],
-        16,
-    );
-    let accept_path = format!("/_admin/vault-invitation-links/{invite_code}/accept");
+    let target_input = invitation_target_input(&request)?;
 
-    let invitation = {
+    let npub_target = if let Ok(public_key) = NostrPublicKey::parse(&target_input) {
+        Some(public_key.to_npub().map_err(nostr_identity_error)?)
+    } else if finite_vip_email(&target_input) {
+        resolve_and_record_identity(&state, &target_input)
+            .ok()
+            .map(|identity| identity.npub)
+    } else {
+        None
+    };
+
+    let invitation = if let Some(target_npub) = npub_target {
+        let target = UserId::new(target_npub)?;
+        let initial_folder_access = selected_folder_ids(&request.initial_folder_access)?;
+        let id = generated_link_id(
+            "invitation",
+            &[
+                vault_id.as_str(),
+                target.as_str(),
+                actor_user_id.as_str(),
+                request.expires_at.as_str(),
+                created_at.as_str(),
+            ],
+            16,
+        );
+        let invite_code = generated_link_id(
+            "invite",
+            &[
+                vault_id.as_str(),
+                target.as_str(),
+                actor_user_id.as_str(),
+                request.expires_at.as_str(),
+                created_at.as_str(),
+                "code",
+            ],
+            16,
+        );
+        let accept_path = format!("/_admin/vault-invitation-links/{invite_code}/accept");
         let mut store = state.store.lock().map_err(lock_error)?;
         let stored = store.load_vault(&vault_id)?;
         ensure_vault_admin(&stored, &actor)?;
@@ -327,6 +333,111 @@ pub(crate) async fn create_vault_invitation_handler(
             &invite_code,
             &accept_path,
             &initial_folder_access,
+            &actor_user_id,
+            &request.expires_at,
+            &created_at,
+        )?
+    } else {
+        if !email_like(&target_input) {
+            return Err(ApiError::new(
+                StatusCode::BAD_REQUEST,
+                "invitation target must be npub, hex, active finite.vip NIP-05, or email",
+            ));
+        }
+        let invited_email = canonical_email(&target_input)?;
+        let invite_unwrap_npub = UserId::new(canonical_npub_from_public_key_input(
+            request.invite_unwrap_npub.as_deref().ok_or_else(|| {
+                ApiError::new(
+                    StatusCode::BAD_REQUEST,
+                    "inviteUnwrapNpub is required for email bootstrap invitations",
+                )
+            })?,
+        )?)?;
+        let bootstrap_payload_hash = request
+            .bootstrap_payload_hash
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| {
+                ApiError::new(
+                    StatusCode::BAD_REQUEST,
+                    "bootstrapPayloadHash is required for email bootstrap invitations",
+                )
+            })?;
+        let bootstrap_wrapped_event_json = request
+            .bootstrap_wrapped_event_json
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| {
+                ApiError::new(
+                    StatusCode::BAD_REQUEST,
+                    "bootstrapWrappedEventJson is required for email bootstrap invitations",
+                )
+            })?;
+        let bootstrap_authorization_event_json = request
+            .bootstrap_authorization_event_json
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| {
+                ApiError::new(
+                    StatusCode::BAD_REQUEST,
+                    "bootstrapAuthorizationEventJson is required for email bootstrap invitations",
+                )
+            })?;
+        validate_folder_key_grant_wrapper(bootstrap_wrapped_event_json, &invite_unwrap_npub)?;
+        let selected_restricted_folder_access =
+            selected_folder_ids(&request.initial_folder_access)?;
+        let id = generated_link_id(
+            "invitation",
+            &[
+                vault_id.as_str(),
+                invited_email.as_str(),
+                actor_user_id.as_str(),
+                request.expires_at.as_str(),
+                created_at.as_str(),
+            ],
+            16,
+        );
+        let invite_code = generated_link_id(
+            "invite",
+            &[
+                vault_id.as_str(),
+                invited_email.as_str(),
+                actor_user_id.as_str(),
+                request.expires_at.as_str(),
+                created_at.as_str(),
+                "code",
+            ],
+            16,
+        );
+        let accept_path = format!("/_admin/vault-invitation-links/{invite_code}/claim");
+        let mut store = state.store.lock().map_err(lock_error)?;
+        let stored = store.load_vault(&vault_id)?;
+        ensure_vault_admin(&stored, &actor)?;
+        let scope = email_bootstrap_scope_for_vault(&stored, &selected_restricted_folder_access)?;
+        validate_email_bootstrap_authorization(
+            bootstrap_authorization_event_json,
+            &actor,
+            &vault_id,
+            &invited_email,
+            &invite_unwrap_npub,
+            bootstrap_payload_hash,
+            &request.expires_at,
+            &scope,
+        )?;
+        store.create_email_vault_invitation(
+            &vault_id,
+            &id,
+            &invited_email,
+            &invite_unwrap_npub,
+            bootstrap_payload_hash,
+            bootstrap_wrapped_event_json,
+            bootstrap_authorization_event_json,
+            &invite_code,
+            &accept_path,
+            &selected_restricted_folder_access,
             &actor_user_id,
             &request.expires_at,
             &created_at,
@@ -430,6 +541,118 @@ pub(crate) async fn accept_vault_invitation_link_handler(
         let mut store = state.store.lock().map_err(lock_error)?;
         store.accept_vault_invitation_by_code(&invite_code, &actor, &now)?
     };
+    let mut response = vault_invitation_response(invitation);
+    {
+        let store = state.store.lock().map_err(lock_error)?;
+        enrich_vault_invitation_identities(&store, &mut response)?;
+    }
+    Ok(Json(response))
+}
+
+pub(crate) async fn claim_email_vault_invitation_link_handler(
+    State(state): State<ServerState>,
+    headers: HeaderMap,
+    method: Method,
+    OriginalUri(uri): OriginalUri,
+    AxumPath(invite_code): AxumPath<String>,
+    body: Bytes,
+) -> Result<Json<VaultInvitationResponse>, ApiError> {
+    let actor = validate_request_auth(&state, &headers, &method, &uri, Some(&body))?;
+    let actor_user_id = UserId::new(actor.clone())?;
+    let request: ClaimEmailVaultInvitationRequest = serde_json::from_slice(&body)
+        .map_err(|_| ApiError::new(StatusCode::BAD_REQUEST, "invalid JSON request body"))?;
+    let now = server_timestamp(&state);
+    let invited_email = canonical_email(&request.email)?;
+
+    let invitation = {
+        let store = state.store.lock().map_err(lock_error)?;
+        store.load_vault_invitation_by_code(&invite_code)?
+    };
+    if invitation.target_kind != VaultInvitationTargetKind::EmailBootstrap {
+        return Err(StoreError::UnavailableLink {
+            kind: "vault invitation",
+        }
+        .into());
+    }
+    if invitation.invited_email.as_deref() != Some(invited_email.as_str()) {
+        return Err(StoreError::UnavailableLink {
+            kind: "vault invitation",
+        }
+        .into());
+    }
+
+    let invitation = if invitation.status == LinkStatus::Accepted {
+        if invitation.claimed_by_npub.as_ref() == Some(&actor_user_id) {
+            let mut invitation = invitation;
+            invitation.duplicate_accept = true;
+            invitation
+        } else {
+            return Err(StoreError::UnavailableLink {
+                kind: "vault invitation",
+            }
+            .into());
+        }
+    } else {
+        validate_email_proof_window(&invitation, &request.email_proof_created_at, &now)?;
+        verify_identity_authority_email_proof(&state, invited_email.as_str(), &actor_user_id)?;
+        if let (Some(authorization), Some(invite_unwrap_npub), Some(payload_hash)) = (
+            invitation.bootstrap_authorization_event_json.as_deref(),
+            invitation.invite_unwrap_npub.as_ref(),
+            invitation.bootstrap_payload_hash.as_deref(),
+        ) {
+            validate_email_bootstrap_authorization(
+                authorization,
+                invitation.created_by_npub.as_str(),
+                &invitation.vault_id,
+                invited_email.as_str(),
+                invite_unwrap_npub,
+                payload_hash,
+                &invitation.expires_at,
+                &invitation.bootstrap_scope,
+            )?;
+            let proof_event_json = request
+                .invite_unwrap_proof_event_json
+                .as_deref()
+                .filter(|value| !value.trim().is_empty())
+                .ok_or_else(|| {
+                    ApiError::new(
+                        StatusCode::BAD_REQUEST,
+                        "inviteUnwrapProofEventJson is required for email bootstrap claims",
+                    )
+                })?;
+            validate_email_bootstrap_claim_proof(
+                proof_event_json,
+                invite_unwrap_npub,
+                &invitation.vault_id,
+                &invite_code,
+                invited_email.as_str(),
+                &actor_user_id,
+                payload_hash,
+                &request.email_proof_created_at,
+            )?;
+        } else {
+            return Err(ApiError::new(
+                StatusCode::BAD_REQUEST,
+                "email bootstrap invitation is missing authorization metadata",
+            ));
+        }
+        let grants = bootstrap_grant_requests_to_metadata(&request.grants, &actor, &now)?;
+        let mut store = state.store.lock().map_err(lock_error)?;
+        let invitation = store.claim_email_vault_invitation_by_code(
+            &invite_code,
+            invited_email.as_str(),
+            &actor_user_id,
+            &grants,
+            &now,
+        )?;
+        if !invitation.duplicate_accept {
+            for grant in &grants {
+                append_folder_key_grant_record(&mut store, &invitation.vault_id, grant)?;
+            }
+        }
+        invitation
+    };
+
     let mut response = vault_invitation_response(invitation);
     {
         let store = state.store.lock().map_err(lock_error)?;

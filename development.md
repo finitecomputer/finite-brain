@@ -143,6 +143,8 @@ loopback addresses.
 - `FINITE_BRAIN_PUBLIC_BASE_URL`: browser-visible Product Client origin and
   legacy CLI fallback.
 - `FINITE_BRAIN_DB`: SQLite database path, default `finite-brain.sqlite3`.
+- `FINITE_IDENTITY_AUTHORITY`: finite-identity Authority base URL used by
+  email-targeted Vault Invitation claims to verify current email proof.
 - `FBRAIN_CONFIG_DIR`: local `fbrain` config directory for prototype signer
   state. Prefer global `--config-dir` in scripts and agent runtimes.
 
