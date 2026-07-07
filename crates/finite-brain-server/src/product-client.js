@@ -5820,10 +5820,13 @@ const FiniteBrainProductClient = (() => {
       hasOpenedAccessFolderKey(row) &&
       state.signerStatus === "connected";
     if (addPanel) {
-      addPanel.hidden = !canManage;
-      if (!canManage) addPanel.open = false;
+      addPanel.hidden = false;
     }
-    if (addForm) addForm.hidden = !canManage;
+    if (addForm) {
+      addForm.hidden = false;
+      addForm.classList.toggle("is-ready", canManage);
+      addForm.classList.toggle("is-locked", !canManage);
+    }
     if (manageToggle) {
       manageToggle.hidden = !canManage;
       setText("accessManageToggleLabel", addForm?.hidden ? "Manage" : "Cancel");
@@ -5962,8 +5965,14 @@ const FiniteBrainProductClient = (() => {
     const addInput = $("accessAddPersonInput");
     const addButton = $("accessAddPersonButton");
     const addHint = $("accessAddPersonHint");
+    const keyOpen = hasOpenedAccessFolderKey(row);
+    const canManage =
+      folderAllowsDirectGrant(row) &&
+      keyOpen &&
+      state.signerStatus === "connected";
 
-    addButton.disabled = state.accessBusy || state.signerStatus !== "connected";
+    addButton.disabled = state.accessBusy || !canManage;
+    addInput.disabled = state.accessBusy || !canManage;
 
     addButton.onclick = () => {
       const email = addInput.value.trim();
@@ -5982,12 +5991,15 @@ const FiniteBrainProductClient = (() => {
       }
     };
 
-    setText(
-      "accessAddPersonHint",
-      row.access === "all_members"
+    if (state.signerStatus !== "connected") {
+      addHint.textContent = "Connect a signer to grant access to this Folder.";
+    } else if (!folderAllowsDirectGrant(row) || !keyOpen) {
+      addHint.textContent = accessFlowHint(row, "people", keyOpen);
+    } else {
+      addHint.textContent = row.access === "all_members"
         ? `Enter an existing Vault member email to send the Folder Key for "${row.path}"`
-        : `Enter an email to grant access to "${row.path}"`
-    );
+        : `Enter an email to grant access to "${row.path}"`;
+    }
   }
 
   function removePersonAccess(personId, folderId) {

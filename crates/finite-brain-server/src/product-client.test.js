@@ -168,6 +168,11 @@ assert.equal(
   "2 members"
 );
 assert.match(htmlSource, /id="accessFolderButton"/);
+assert.equal((htmlSource.match(/id="accessFolderButton"/g) || []).length, 1);
+assert.equal((htmlSource.match(/id="accessFolderDropdown"/g) || []).length, 1);
+assert.equal((htmlSource.match(/id="accessFolderList"/g) || []).length, 1);
+assert.match(htmlSource, /id="accessAddPersonPanel"[\s\S]*class="access-folder-selector"[\s\S]*id="accessAddPersonForm"/);
+assert.doesNotMatch(htmlSource, /class="access-folder-selector"[\s\S]*id="accessInspector"/);
 assert.match(htmlSource, /id="loadVaultButton"[^>]*>\s*Load\s*<\/button>/s);
 assert.doesNotMatch(htmlSource, /id="loadVaultButton"[^>]*compact-icon-button/);
 assert.match(htmlSource, /id="accessWhoHasList"/);
@@ -213,6 +218,8 @@ assert.match(cssSource, /\[hidden\]\s*\{[^}]*display: none !important;/s);
 assert.match(cssSource, /\.access-view-switch/);
 assert.match(cssSource, /\.access-action-stack\s*\{[^}]*gap:\s*8px;/s);
 assert.match(cssSource, /\.access-state-stack\s*\{[^}]*gap:\s*12px;/s);
+assert.match(cssSource, /#accessAddPersonPanel\s+\.access-folder-selector\s*\{[^}]*margin:\s*0;/s);
+assert.match(cssSource, /#accessAddPersonPanel\s+\.access-advanced-content\s*\{[^}]*display:\s*grid;[^}]*gap:\s*12px;/s);
 assert.match(cssSource, /\.vault-management-section/);
 assert.match(cssSource, /#accessSidebarPanel\s*\{[^}]*overflow-x:\s*hidden;/s);
 assert.match(cssSource, /#accessSidebarPanel\s*\{[^}]*--access-panel-inset:\s*10px;/s);
