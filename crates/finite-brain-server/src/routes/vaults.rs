@@ -559,14 +559,78 @@ pub(crate) async fn post_proof_vault_invitation_instructions_handler(
     AxumPath(invite_code): AxumPath<String>,
     body: Bytes,
 ) -> Result<Response, ApiError> {
-    let actor = validate_request_auth(&state, &headers, &method, &uri, Some(&body))?;
-    let actor_user_id = UserId::new(actor)?;
     let request: PostProofInviteInstructionsRequest = serde_json::from_slice(&body)
         .map_err(|_| ApiError::new(StatusCode::BAD_REQUEST, "invalid JSON request body"))?;
+    let invitation = load_post_proof_email_invitation(
+        &state,
+        &headers,
+        &method,
+        &uri,
+        &invite_code,
+        &body,
+        &request,
+    )?;
+    let stored = {
+        let store = state.store.lock().map_err(lock_error)?;
+        store.load_vault(&invitation.vault_id)?
+    };
+    Ok(text_response(post_proof_invite_instructions_text(
+        &state,
+        &invitation,
+        &stored,
+    )))
+}
+
+pub(crate) async fn post_proof_vault_invitation_bootstrap_handler(
+    State(state): State<ServerState>,
+    headers: HeaderMap,
+    method: Method,
+    OriginalUri(uri): OriginalUri,
+    AxumPath(invite_code): AxumPath<String>,
+    body: Bytes,
+) -> Result<Json<VaultInvitationResponse>, ApiError> {
+    let request: PostProofInviteInstructionsRequest = serde_json::from_slice(&body)
+        .map_err(|_| ApiError::new(StatusCode::BAD_REQUEST, "invalid JSON request body"))?;
+    let invitation = load_post_proof_email_invitation(
+        &state,
+        &headers,
+        &method,
+        &uri,
+        &invite_code,
+        &body,
+        &request,
+    )?;
+    if invitation.status == LinkStatus::Pending && invitation.bootstrap_wrapped_event_json.is_none()
+    {
+        return Err(StoreError::UnavailableLink {
+            kind: "vault invitation",
+        }
+        .into());
+    }
+    let mut response = vault_invitation_response(invitation);
+    attach_invitation_public_url(&state, &mut response);
+    {
+        let store = state.store.lock().map_err(lock_error)?;
+        enrich_vault_invitation_identities(&store, &mut response)?;
+    }
+    Ok(Json(response))
+}
+
+fn load_post_proof_email_invitation(
+    state: &ServerState,
+    headers: &HeaderMap,
+    method: &Method,
+    uri: &axum::http::Uri,
+    invite_code: &str,
+    body: &Bytes,
+    request: &PostProofInviteInstructionsRequest,
+) -> Result<StoredVaultInvitation, ApiError> {
+    let actor = validate_request_auth(state, headers, method, uri, Some(body))?;
+    let actor_user_id = UserId::new(actor)?;
     let invited_email = canonical_email(&request.email)?;
     let invitation = {
         let store = state.store.lock().map_err(lock_error)?;
-        store.load_vault_invitation_by_code(&invite_code)?
+        store.load_vault_invitation_by_code(invite_code)?
     };
     if invitation.target_kind != VaultInvitationTargetKind::EmailBootstrap {
         return Err(StoreError::UnavailableLink {
@@ -591,18 +655,10 @@ pub(crate) async fn post_proof_vault_invitation_instructions_handler(
     validate_email_proof_window(
         &invitation,
         &request.email_proof_created_at,
-        &server_timestamp(&state),
+        &server_timestamp(state),
     )?;
-    verify_identity_authority_email_proof(&state, invited_email.as_str(), &actor_user_id)?;
-    let stored = {
-        let store = state.store.lock().map_err(lock_error)?;
-        store.load_vault(&invitation.vault_id)?
-    };
-    Ok(text_response(post_proof_invite_instructions_text(
-        &state,
-        &invitation,
-        &stored,
-    )))
+    verify_identity_authority_email_proof(state, invited_email.as_str(), &actor_user_id)?;
+    Ok(invitation)
 }
 
 pub(crate) async fn accept_vault_invitation_link_handler(

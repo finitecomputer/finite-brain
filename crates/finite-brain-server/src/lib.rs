@@ -442,6 +442,10 @@ pub fn router_with_state(state: ServerState) -> Router {
             post(post_proof_vault_invitation_instructions_handler),
         )
         .route(
+            "/_admin/vault-invitation-links/{invite_code}/bootstrap",
+            post(post_proof_vault_invitation_bootstrap_handler),
+        )
+        .route(
             "/_admin/vault-invitation-links/{invite_code}/accept",
             post(accept_vault_invitation_link_handler),
         )
@@ -1965,8 +1969,14 @@ mod tests {
     use axum::http::header::{
         ACCESS_CONTROL_ALLOW_METHODS, ACCESS_CONTROL_ALLOW_ORIGIN, AUTHORIZATION, ORIGIN,
     };
-    use finite_brain_core::{FolderKey, FolderObjectAad, encrypt_folder_object_with_nonce};
-    use finite_nostr::{HttpAuthEventRequest, encode_http_auth_header, sign_http_auth_event};
+    use finite_brain_core::{
+        EncryptedFolderObjectEnvelope, FolderKey, FolderObjectAad,
+        encrypt_folder_object_with_nonce, open_folder_object,
+    };
+    use finite_nostr::{
+        GiftWrapValidation, HttpAuthEventRequest, build_rumor, encode_http_auth_header,
+        open_gift_wrap, sign_http_auth_event, wrap_rumor,
+    };
     use nostr::event::FinalizeEvent;
     use nostr::{EventBuilder, Keys, Kind, Tag, Timestamp};
     use tower::ServiceExt;
@@ -3879,7 +3889,7 @@ mod tests {
             let body: ApiErrorBody = read_json(create).await;
             panic!("email bootstrap create failed: {}", body.error);
         }
-        let invitation: VaultInvitationResponse = read_json(create).await;
+        let invitation: VaultInvitationResponse = read_json_with_limit(create, 128 * 1024).await;
         assert_eq!(invitation.status, "pending");
         assert_eq!(invitation.user_id.as_deref(), Some(target_npub.as_str()));
         assert_eq!(
@@ -4097,7 +4107,7 @@ mod tests {
         )
         .await;
         assert_eq!(create.status(), StatusCode::OK);
-        let invitation: VaultInvitationResponse = read_json(create).await;
+        let invitation: VaultInvitationResponse = read_json_with_limit(create, 128 * 1024).await;
         assert_eq!(invitation.target_kind, "email_bootstrap");
         assert_eq!(invitation.delivery_status.as_deref(), Some("sent"));
         assert_eq!(invitation.user_id, None);
@@ -4196,7 +4206,7 @@ mod tests {
                 "/_admin/vault-invitation-links/{}/instructions",
                 invitation.invite_code
             ),
-            Some(post_proof_body),
+            Some(post_proof_body.clone()),
             TEST_NOW + 1,
         )
         .await;
@@ -4219,6 +4229,35 @@ mod tests {
                 "post-proof instructions leaked {forbidden}"
             );
         }
+
+        let post_proof_bootstrap = authed_request(
+            router.clone(),
+            &claimant_keys,
+            "POST",
+            &format!(
+                "/_admin/vault-invitation-links/{}/bootstrap",
+                invitation.invite_code
+            ),
+            Some(post_proof_body.clone()),
+            TEST_NOW + 1,
+        )
+        .await;
+        if post_proof_bootstrap.status() != StatusCode::OK {
+            let body: ApiErrorBody = read_json(post_proof_bootstrap).await;
+            panic!("post-proof bootstrap failed: {}", body.error);
+        }
+        let post_proof_bootstrap: VaultInvitationResponse =
+            read_json_with_limit(post_proof_bootstrap, 128 * 1024).await;
+        assert_eq!(
+            post_proof_bootstrap.bootstrap_wrapped_event_json.as_deref(),
+            Some(bootstrap_wrapped_event_json.as_str())
+        );
+        assert!(
+            !serde_json::to_string(&post_proof_bootstrap)
+                .unwrap()
+                .to_ascii_lowercase()
+                .contains("secret")
+        );
 
         let wrong_claim_proof_event_json = email_bootstrap_claim_proof_event(
             &Keys::generate(),
@@ -4369,6 +4408,432 @@ mod tests {
             .find(|folder| folder.id == "restricted")
             .expect("restricted folder");
         assert!(restricted.access_user_ids.contains(&claimant_npub));
+    }
+
+    #[tokio::test]
+    async fn email_vault_invitation_claim_unlocks_selected_encrypted_folders_only() {
+        let admin_keys = Keys::generate();
+        let claimant_keys = Keys::generate();
+        let unwrap_keys = Keys::generate();
+        let admin_npub = npub(&admin_keys);
+        let claimant_npub = npub(&claimant_keys);
+        let unwrap_npub = npub(&unwrap_keys);
+        let expected_claimant = claimant_npub.clone();
+        let folder_key_base64 = FolderKey::from_bytes([9; 32]).to_base64();
+        let router =
+            router_with_state(test_state().with_email_proof_verifier(move |email, actor| {
+                if email == "friend@example.com" && actor.to_string() == expected_claimant {
+                    Ok(())
+                } else {
+                    Err("email proof not found".to_owned())
+                }
+            }));
+
+        let create_vault = post_vault(
+            router.clone(),
+            &admin_keys,
+            &create_vault_body("acme", "organization"),
+            TEST_NOW,
+            None,
+            None,
+            None,
+        )
+        .await;
+        assert_eq!(create_vault.status(), StatusCode::OK);
+
+        let create_private_body = serde_json::json!({
+            "folderId": "private",
+            "name": "Private",
+            "role": "folder",
+            "access": "restricted",
+            "parentFolderId": null,
+            "path": "private",
+            "accessUserIds": [],
+            "grants": [
+                real_folder_key_grant_value(
+                    "grant-private-admin-v1",
+                    1,
+                    &admin_keys,
+                    "acme",
+                    "private",
+                    &admin_npub,
+                    &folder_key_base64,
+                )
+            ],
+            "accessChangeEvent": admin_event(
+                &admin_keys,
+                "acme",
+                "change_create_private",
+                AdminAccessAction::SetFolderAccessMode,
+                Some("private"),
+                None,
+                Some(1),
+            ),
+        })
+        .to_string();
+        let create_private = authed_request(
+            router.clone(),
+            &admin_keys,
+            "POST",
+            "/_admin/vaults/acme/folders",
+            Some(create_private_body),
+            TEST_NOW + 1,
+        )
+        .await;
+        assert_eq!(create_private.status(), StatusCode::OK);
+
+        for (folder_id, object_id, content, nonce) in [
+            (
+                "getting-started",
+                "obj_000000000401",
+                "shared encrypted page",
+                41,
+            ),
+            (
+                "restricted",
+                "obj_000000000402",
+                "selected restricted encrypted page",
+                42,
+            ),
+            ("private", "obj_000000000403", "private encrypted page", 43),
+        ] {
+            let path = format!("/_admin/vaults/acme/folders/{folder_id}/objects/{object_id}");
+            let body = object_write_body(
+                &admin_keys,
+                RevisionFixture {
+                    vault_id: "acme",
+                    folder_id,
+                    object_id,
+                    operation: FolderObjectOperation::Create,
+                    revision: 1,
+                    base_revision: None,
+                    key_version: 1,
+                    content,
+                    nonce,
+                    record_type: false,
+                },
+            );
+            let write = authed_request(
+                router.clone(),
+                &admin_keys,
+                "PUT",
+                &path,
+                Some(body),
+                TEST_NOW + 2,
+            )
+            .await;
+            assert_eq!(write.status(), StatusCode::OK);
+        }
+
+        let bootstrap_payload = serde_json::json!({
+            "version": "finite-email-invite-bootstrap-payload-v1",
+            "vaultId": "acme",
+            "invitedEmail": "friend@example.com",
+            "inviteUnwrapNpub": unwrap_npub,
+            "folders": [
+                {
+                    "folderId": "getting-started",
+                    "access": FolderAccessMode::AllMembers,
+                    "keyVersion": 1,
+                },
+                {
+                    "folderId": "restricted",
+                    "access": FolderAccessMode::Restricted,
+                    "keyVersion": 1,
+                },
+            ],
+            "grants": [
+                {
+                    "folderId": "getting-started",
+                    "grant": real_folder_key_grant_value(
+                        "bootstrap-getting-started-v1",
+                        1,
+                        &admin_keys,
+                        "acme",
+                        "getting-started",
+                        &unwrap_npub,
+                        &folder_key_base64,
+                    )
+                },
+                {
+                    "folderId": "restricted",
+                    "grant": real_folder_key_grant_value(
+                        "bootstrap-restricted-v1",
+                        1,
+                        &admin_keys,
+                        "acme",
+                        "restricted",
+                        &unwrap_npub,
+                        &folder_key_base64,
+                    )
+                },
+            ],
+        });
+        let bootstrap_payload_json = bootstrap_payload.to_string();
+        let payload_hash = sha256_payload_hash(&bootstrap_payload_json);
+        let bootstrap_wrapped_event_json = email_bootstrap_wrapped_event_json(
+            &admin_keys,
+            "acme",
+            &unwrap_npub,
+            &bootstrap_payload_json,
+        );
+        let authorization_event_json = email_bootstrap_authorization_event(
+            &admin_keys,
+            "acme",
+            "friend@example.com",
+            &unwrap_npub,
+            &payload_hash,
+            "2026-06-30T00:00:00.000Z",
+            &[
+                ("getting-started", FolderAccessMode::AllMembers, 1),
+                ("restricted", FolderAccessMode::Restricted, 1),
+            ],
+        );
+        let create_body = serde_json::json!({
+            "target": "friend@example.com",
+            "initialFolderAccess": ["restricted"],
+            "expiresAt": "2026-06-30T00:00:00.000Z",
+            "inviteUnwrapNpub": unwrap_npub,
+            "bootstrapPayloadHash": payload_hash,
+            "bootstrapWrappedEventJson": bootstrap_wrapped_event_json,
+            "bootstrapAuthorizationEventJson": authorization_event_json,
+        })
+        .to_string();
+        assert!(!create_body.contains("folderKey"));
+        let create = authed_request(
+            router.clone(),
+            &admin_keys,
+            "POST",
+            "/_admin/vaults/acme/invitations",
+            Some(create_body),
+            TEST_NOW + 3,
+        )
+        .await;
+        assert_eq!(create.status(), StatusCode::OK);
+        let invitation: VaultInvitationResponse = read_json_with_limit(create, 128 * 1024).await;
+
+        let proof_created_at = format_unix_timestamp(TEST_NOW).unwrap();
+        let post_proof_body = serde_json::json!({
+            "email": "friend@example.com",
+            "emailProofCreatedAt": proof_created_at,
+        })
+        .to_string();
+        let post_proof_bootstrap = authed_request(
+            router.clone(),
+            &claimant_keys,
+            "POST",
+            &format!(
+                "/_admin/vault-invitation-links/{}/bootstrap",
+                invitation.invite_code
+            ),
+            Some(post_proof_body),
+            TEST_NOW + 4,
+        )
+        .await;
+        if post_proof_bootstrap.status() != StatusCode::OK {
+            let body: ApiErrorBody = read_json(post_proof_bootstrap).await;
+            panic!("post-proof bootstrap failed: {}", body.error);
+        }
+        let post_proof_bootstrap: VaultInvitationResponse =
+            read_json_with_limit(post_proof_bootstrap, 128 * 1024).await;
+        let returned_bootstrap = post_proof_bootstrap
+            .bootstrap_wrapped_event_json
+            .as_deref()
+            .expect("post-proof bootstrap ciphertext");
+        let opened_bootstrap = open_gift_wrap(
+            &unwrap_keys,
+            &Event::from_json(returned_bootstrap).unwrap(),
+            &GiftWrapValidation::new(NostrPublicKey::from_protocol(unwrap_keys.public_key()))
+                .with_expected_issuer(NostrPublicKey::from_protocol(admin_keys.public_key())),
+        )
+        .unwrap();
+        assert_eq!(
+            sha256_payload_hash(&opened_bootstrap.rumor.content),
+            payload_hash
+        );
+        let opened_payload: serde_json::Value =
+            serde_json::from_str(&opened_bootstrap.rumor.content).unwrap();
+        assert_eq!(
+            opened_payload["grants"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|entry| entry["folderId"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            vec!["getting-started", "restricted"]
+        );
+        for entry in opened_payload["grants"].as_array().unwrap() {
+            let plaintext = open_wrapped_folder_key_grant(
+                &unwrap_keys,
+                entry["grant"]["wrappedEventJson"].as_str().unwrap(),
+            );
+            assert_eq!(
+                plaintext["folderKey"].as_str(),
+                Some(folder_key_base64.as_str())
+            );
+        }
+
+        let claim_proof_event_json = email_bootstrap_claim_proof_event(
+            &unwrap_keys,
+            "acme",
+            &invitation.invite_code,
+            "friend@example.com",
+            &claimant_npub,
+            &payload_hash,
+            post_proof_bootstrap.created_at.as_str(),
+        );
+        let claim_body = serde_json::json!({
+            "email": "friend@example.com",
+            "emailProofCreatedAt": post_proof_bootstrap.created_at,
+            "inviteUnwrapProofEventJson": claim_proof_event_json,
+            "grants": [
+                {
+                    "folderId": "getting-started",
+                    "grant": real_folder_key_grant_value(
+                        "claim-getting-started-v1",
+                        1,
+                        &claimant_keys,
+                        "acme",
+                        "getting-started",
+                        &claimant_npub,
+                        &folder_key_base64,
+                    )
+                },
+                {
+                    "folderId": "restricted",
+                    "grant": real_folder_key_grant_value(
+                        "claim-restricted-v1",
+                        1,
+                        &claimant_keys,
+                        "acme",
+                        "restricted",
+                        &claimant_npub,
+                        &folder_key_base64,
+                    )
+                },
+            ],
+        })
+        .to_string();
+        assert!(!claim_body.contains("folderKey"));
+        assert!(!claim_body.to_ascii_lowercase().contains("invite_secret"));
+        let claim = authed_request(
+            router.clone(),
+            &claimant_keys,
+            "POST",
+            &format!(
+                "/_admin/vault-invitation-links/{}/claim",
+                invitation.invite_code
+            ),
+            Some(claim_body),
+            TEST_NOW + 5,
+        )
+        .await;
+        assert_eq!(claim.status(), StatusCode::OK);
+
+        let export = authed_request(
+            router.clone(),
+            &claimant_keys,
+            "GET",
+            "/_admin/vaults/acme/export",
+            None,
+            TEST_NOW + 6,
+        )
+        .await;
+        assert_eq!(export.status(), StatusCode::OK);
+        let export: EncryptedVaultExportResponse = read_json_with_limit(export, 128 * 1024).await;
+        assert!(
+            export
+                .folders
+                .iter()
+                .find(|folder| folder.id == "getting-started")
+                .unwrap()
+                .accessible
+        );
+        assert!(
+            export
+                .folders
+                .iter()
+                .find(|folder| folder.id == "restricted")
+                .unwrap()
+                .accessible
+        );
+        assert!(
+            !export
+                .folders
+                .iter()
+                .find(|folder| folder.id == "private")
+                .unwrap()
+                .accessible
+        );
+        let getting_started_key =
+            folder_key_from_export_grant(&claimant_keys, &export, "getting-started");
+        let restricted_key = folder_key_from_export_grant(&claimant_keys, &export, "restricted");
+        assert_eq!(getting_started_key, folder_key_base64);
+        assert_eq!(restricted_key, folder_key_base64);
+        let getting_started_object = export
+            .objects
+            .iter()
+            .find(|object| object.object_id == "obj_000000000401")
+            .unwrap();
+        let restricted_object = export
+            .objects
+            .iter()
+            .find(|object| object.object_id == "obj_000000000402")
+            .unwrap();
+        let private_object = export
+            .objects
+            .iter()
+            .find(|object| object.object_id == "obj_000000000403")
+            .unwrap();
+        assert!(!getting_started_object.opaque);
+        assert!(!restricted_object.opaque);
+        assert!(private_object.opaque);
+        assert!(private_object.payload_json.is_none());
+        assert_eq!(
+            open_export_object_plaintext(getting_started_object, &getting_started_key),
+            "shared encrypted page"
+        );
+        assert_eq!(
+            open_export_object_plaintext(restricted_object, &restricted_key),
+            "selected restricted encrypted page"
+        );
+
+        let sync = authed_request(
+            router,
+            &claimant_keys,
+            "GET",
+            "/_admin/vaults/acme/sync/bootstrap",
+            None,
+            TEST_NOW + 7,
+        )
+        .await;
+        assert_eq!(sync.status(), StatusCode::OK);
+        let sync: SyncBootstrapResponse = read_json_with_limit(sync, 128 * 1024).await;
+        assert!(
+            sync.objects
+                .iter()
+                .any(|object| object.object_id == "obj_000000000401")
+        );
+        assert!(
+            sync.objects
+                .iter()
+                .any(|object| object.object_id == "obj_000000000402")
+        );
+        assert!(
+            !sync
+                .objects
+                .iter()
+                .any(|object| object.object_id == "obj_000000000403")
+        );
+        let synced_restricted = sync
+            .objects
+            .iter()
+            .find(|object| object.object_id == "obj_000000000402")
+            .unwrap();
+        assert_eq!(
+            open_sync_object_plaintext(synced_restricted, &restricted_key),
+            "selected restricted encrypted page"
+        );
     }
 
     #[tokio::test]
@@ -5557,6 +6022,158 @@ mod tests {
         })
     }
 
+    fn real_folder_key_grant_value(
+        id: &str,
+        key_version: u32,
+        issuer_keys: &Keys,
+        vault_id: &str,
+        folder_id: &str,
+        recipient_npub: &str,
+        folder_key_base64: &str,
+    ) -> serde_json::Value {
+        let issuer_npub = npub(issuer_keys);
+        let plaintext = serde_json::json!({
+            "version": "finite-folder-key-grant-v1",
+            "vaultId": vault_id,
+            "folderId": folder_id,
+            "keyVersion": key_version,
+            "folderKey": folder_key_base64,
+            "issuerNpub": issuer_npub,
+            "recipientNpub": recipient_npub,
+            "issuedAt": test_rfc3339(),
+        })
+        .to_string();
+        let recipient = NostrPublicKey::parse(recipient_npub).unwrap();
+        let rumor = build_rumor(
+            NostrPublicKey::from_protocol(issuer_keys.public_key()),
+            Kind::ApplicationSpecificData,
+            vec![
+                nostr_tag(vec![
+                    "d".to_owned(),
+                    format!("finite-folder-key-grant:{vault_id}:{folder_id}:{key_version}"),
+                ]),
+                nostr_tag(vec!["vault".to_owned(), vault_id.to_owned()]),
+                nostr_tag(vec!["folder".to_owned(), folder_id.to_owned()]),
+                nostr_tag(vec!["keyVersion".to_owned(), key_version.to_string()]),
+            ],
+            plaintext,
+            TEST_NOW,
+        );
+        let gift_wrap = wrap_rumor(issuer_keys, recipient, rumor).unwrap();
+        serde_json::json!({
+            "id": id,
+            "keyVersion": key_version,
+            "recipientNpub": recipient_npub,
+            "wrappedEventJson": gift_wrap.as_json(),
+            "createdAt": test_rfc3339(),
+        })
+    }
+
+    fn email_bootstrap_wrapped_event_json(
+        issuer_keys: &Keys,
+        vault_id: &str,
+        invite_unwrap_npub: &str,
+        payload_json: &str,
+    ) -> String {
+        let recipient = NostrPublicKey::parse(invite_unwrap_npub).unwrap();
+        let rumor = build_rumor(
+            NostrPublicKey::from_protocol(issuer_keys.public_key()),
+            Kind::ApplicationSpecificData,
+            vec![
+                nostr_tag(vec![
+                    "d".to_owned(),
+                    format!("finite-email-invite-bootstrap:{vault_id}"),
+                ]),
+                nostr_tag(vec!["vault".to_owned(), vault_id.to_owned()]),
+            ],
+            payload_json.to_owned(),
+            TEST_NOW,
+        );
+        wrap_rumor(issuer_keys, recipient, rumor).unwrap().as_json()
+    }
+
+    fn sha256_payload_hash(value: &str) -> String {
+        format!("sha256:{:x}", Sha256::digest(value.as_bytes()))
+    }
+
+    fn nostr_tag(parts: Vec<String>) -> Tag {
+        Tag::parse(parts).unwrap()
+    }
+
+    fn open_wrapped_folder_key_grant(
+        recipient_keys: &Keys,
+        wrapped_event_json: &str,
+    ) -> serde_json::Value {
+        let event = Event::from_json(wrapped_event_json).unwrap();
+        let opened = open_gift_wrap(
+            recipient_keys,
+            &event,
+            &GiftWrapValidation::new(NostrPublicKey::from_protocol(recipient_keys.public_key())),
+        )
+        .unwrap();
+        serde_json::from_str(&opened.rumor.content).unwrap()
+    }
+
+    fn folder_key_from_export_grant(
+        recipient_keys: &Keys,
+        export: &EncryptedVaultExportResponse,
+        folder_id: &str,
+    ) -> String {
+        let recipient_npub = npub(recipient_keys);
+        let grant = export
+            .key_grants
+            .iter()
+            .find(|grant| grant.folder_id == folder_id && grant.recipient_npub == recipient_npub)
+            .expect("recipient folder key grant");
+        let plaintext = open_wrapped_folder_key_grant(recipient_keys, &grant.wrapped_event_json);
+        assert_eq!(plaintext["folderId"].as_str(), Some(folder_id));
+        plaintext["folderKey"].as_str().unwrap().to_owned()
+    }
+
+    fn open_export_object_plaintext(
+        object: &EncryptedExportObjectResponse,
+        folder_key_base64: &str,
+    ) -> String {
+        let payload: serde_json::Value =
+            serde_json::from_str(object.payload_json.as_ref().unwrap()).unwrap();
+        let envelope_json = payload["ciphertext"].as_str().unwrap();
+        open_envelope_plaintext(
+            folder_key_base64,
+            &object.folder_id,
+            &object.object_id,
+            object.revision,
+            envelope_json,
+        )
+    }
+
+    fn open_sync_object_plaintext(object: &ObjectResponse, folder_key_base64: &str) -> String {
+        open_envelope_plaintext(
+            folder_key_base64,
+            &object.folder_id,
+            &object.object_id,
+            object.revision,
+            &object.ciphertext,
+        )
+    }
+
+    fn open_envelope_plaintext(
+        folder_key_base64: &str,
+        folder_id: &str,
+        object_id: &str,
+        key_version: u64,
+        envelope_json: &str,
+    ) -> String {
+        let key = FolderKey::from_base64(folder_key_base64).unwrap();
+        let aad = FolderObjectAad {
+            vault_id: VaultId::new("acme").unwrap(),
+            folder_id: FolderId::new(folder_id).unwrap(),
+            object_id: ObjectId::new(object_id).unwrap(),
+            key_version: key_version as u32,
+        };
+        let envelope = EncryptedFolderObjectEnvelope::from_json(envelope_json).unwrap();
+        String::from_utf8(open_folder_object(&key, &aad, &envelope).unwrap()).unwrap()
+    }
+
     fn gift_wrap_event_json(recipient_npub: &str) -> String {
         let recipient = NostrPublicKey::parse(recipient_npub).unwrap();
         let gift_wrap = EventBuilder::new(Kind::GiftWrap, "encrypted grant placeholder")
@@ -5712,7 +6329,14 @@ mod tests {
     where
         T: for<'de> Deserialize<'de>,
     {
-        let body = to_bytes(response.into_body(), 16 * 1024)
+        read_json_with_limit(response, 16 * 1024).await
+    }
+
+    async fn read_json_with_limit<T>(response: axum::response::Response, limit: usize) -> T
+    where
+        T: for<'de> Deserialize<'de>,
+    {
+        let body = to_bytes(response.into_body(), limit)
             .await
             .expect("response body");
         serde_json::from_slice(&body).expect("json response")

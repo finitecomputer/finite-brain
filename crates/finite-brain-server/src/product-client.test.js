@@ -523,6 +523,9 @@ assert.equal(client.readerPageRows("general", draftPages)[0].label, "Draft Page"
   assert.equal(client.vaultInvitationCreatePath("smoke org"), "/_admin/vaults/smoke%20org/invitations");
   assert.equal(client.vaultInvitationLinkPath("invite/code"), "/_admin/vault-invitation-links/invite%2Fcode");
   assert.equal(client.vaultInvitationAcceptPath("invite/code"), "/_admin/vault-invitation-links/invite%2Fcode/accept");
+  assert.equal(client.emailInviteBootstrapPath("invite/code"), "/_admin/vault-invitation-links/invite%2Fcode/bootstrap");
+  assert.equal(client.emailInviteInstructionsPath("invite/code"), "/_admin/vault-invitation-links/invite%2Fcode/instructions");
+  assert.equal(client.emailInviteClaimPath("invite/code"), "/_admin/vault-invitation-links/invite%2Fcode/claim");
   assert.equal(client.vaultInvitationIdentifierHint("invite-0fe6eda60e1bf6e662acb8e2b5c425d9"), null);
   assert.match(
     client.vaultInvitationIdentifierHint("invitation-4f82a37c1b82bcdd54973c466cdde914"),
@@ -537,6 +540,178 @@ assert.equal(client.readerPageRows("general", draftPages)[0].label, "Draft Page"
     client.vaultInvitationRevokePath("smoke org", "invitation/one"),
     "/_admin/vaults/smoke%20org/invitations/invitation%2Fone"
   );
+  assert.match(htmlSource, /id="vaultInviteUrlInput"/);
+  assert.match(htmlSource, /id="vaultInviteEmailInput"/);
+  assert.match(htmlSource, /id="vaultInviteEmailProofCreatedAtInput"/);
+  assert.match(htmlSource, /id="vaultInviteSecretInput"/);
+  assert.match(htmlSource, /id="getEmailInviteInstructionsButton"/);
+
+  const nip44VectorSender = client.inviteUnwrapKeypairFromSecret("2".padStart(64, "0"));
+  assert.equal(
+    await client.nip44DecryptWithSecret(
+      "1".padStart(64, "0"),
+      nip44VectorSender.publicKeyHex,
+      "AgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABee0G5VSK0/9YypIObAtDKfYEAjD35uVkHyB0F4DwrcNaCXlCWZKaArsGrY6M9wnuTMxWfp1RTN9Xga8no+kF5Vsb"
+    ),
+    "a"
+  );
+
+  const emailMetadata = {
+    folders: [
+      {
+        id: "getting-started",
+        path: "Getting Started",
+        access: "all_members",
+        currentKeyVersion: 1,
+      },
+      {
+        id: "restricted",
+        path: "Restricted",
+        access: "restricted",
+        currentKeyVersion: 3,
+      },
+      {
+        id: "vault-ops",
+        path: "Vault Ops",
+        access: "admin_only",
+        currentKeyVersion: 1,
+      },
+    ],
+  };
+  assert.equal(client.canonicalInviteEmail(" Friend@Example.COM "), "friend@example.com");
+  assert.equal(
+    JSON.stringify(
+      client.emailInviteScope(emailMetadata, "restricted").map((folder) => [
+        folder.folderId,
+        folder.access,
+        folder.keyVersion,
+      ])
+    ),
+    JSON.stringify([
+      ["getting-started", "all_members", 1],
+      ["restricted", "restricted", 3],
+    ])
+  );
+  assert.throws(() => client.emailInviteScope(emailMetadata, "vault-ops"), /all-members and selected restricted/);
+
+  const emailKeyring = client.createSessionKeyring();
+  const restrictedEmailFolderKey = Buffer.alloc(32, 8).toString("base64");
+  await client.openFolderKeyGrantPlaintext(emailKeyring, {
+    version: "finite-folder-key-grant-v1",
+    vaultId: "smoke",
+    folderId: "getting-started",
+    keyVersion: 1,
+    issuerNpub: authorNpub,
+    recipientNpub: authorNpub,
+    folderKey,
+    issuedAt: "2026-06-24T00:00:00.000Z",
+  });
+  await client.openFolderKeyGrantPlaintext(emailKeyring, {
+    version: "finite-folder-key-grant-v1",
+    vaultId: "smoke",
+    folderId: "restricted",
+    keyVersion: 3,
+    issuerNpub: authorNpub,
+    recipientNpub: authorNpub,
+    folderKey: restrictedEmailFolderKey,
+    issuedAt: "2026-06-24T00:00:00.000Z",
+  });
+  const inviteKeypair = client.inviteUnwrapKeypairFromSecret("3".padStart(64, "0"));
+  let emailInviteSignedIndex = 0;
+  const emailInviteSigner = async (template) => ({
+    ...template,
+    id: `email-invite-signed-${++emailInviteSignedIndex}`,
+    pubkey: "00".repeat(32),
+    sig: "email-invite-signature",
+  });
+  const emailInviteRequest = await client.buildEmailVaultInvitationRequest(emailKeyring, {
+    createdAtUnix: 1780000400,
+    expiresAt: "2026-07-04T00:00:00.000Z",
+    grantIdFactory: (item) => `bootstrap-${item.folderId}`,
+    initialFolderAccess: "restricted",
+    inviteKeypair,
+    issuerNpub: authorNpub,
+    metadata: emailMetadata,
+    provider: { signEvent: emailInviteSigner, nip44: { encrypt: fakeEncrypt, decrypt: fakeDecrypt } },
+    signEvent: emailInviteSigner,
+    target: "FRIEND@EXAMPLE.COM",
+    vaultId: "smoke",
+  });
+  assert.equal(emailInviteRequest.body.target, "friend@example.com");
+  assert.equal(emailInviteRequest.body.inviteUnwrapNpub, inviteKeypair.npub);
+  assert.match(emailInviteRequest.body.bootstrapPayloadHash, /^sha256:[0-9a-f]{64}$/);
+  assert.equal(JSON.stringify(emailInviteRequest.body.initialFolderAccess), JSON.stringify(["restricted"]));
+  assert.equal(
+    JSON.stringify(emailInviteRequest.scope.map((folder) => [folder.folderId, folder.access, folder.keyVersion])),
+    JSON.stringify([
+      ["getting-started", "all_members", 1],
+      ["restricted", "restricted", 3],
+    ])
+  );
+  assert.doesNotMatch(JSON.stringify(emailInviteRequest.body), /inviteSecret/i);
+  const scopedEmailInviteRequest = await client.buildEmailVaultInvitationRequest(emailKeyring, {
+    createdAtUnix: 1780000401,
+    expiresAt: "2026-07-04T00:00:00.000Z",
+    grantIdFactory: (item) => `scoped-bootstrap-${item.folderId}`,
+    inviteKeypair,
+    issuerNpub: authorNpub,
+    provider: { signEvent: emailInviteSigner, nip44: { encrypt: fakeEncrypt, decrypt: fakeDecrypt } },
+    scope: emailInviteRequest.scope,
+    signEvent: emailInviteSigner,
+    target: "friend@example.com",
+    vaultId: "smoke",
+  });
+  assert.equal(JSON.stringify(scopedEmailInviteRequest.body.initialFolderAccess), JSON.stringify(["restricted"]));
+
+  const emailInvitation = {
+    vaultId: "smoke",
+    inviteCode: "invite-email",
+    inviteUnwrapNpub: inviteKeypair.npub,
+    bootstrapPayloadHash: emailInviteRequest.body.bootstrapPayloadHash,
+    bootstrapWrappedEventJson: emailInviteRequest.body.bootstrapWrappedEventJson,
+    bootstrapScope: emailInviteRequest.scope,
+  };
+  const openedEmailBootstrap = await client.openEmailInviteBootstrap(emailInvitation, {
+    email: "friend@example.com",
+    inviteSecret: emailInviteRequest.inviteSecret,
+    inviteDecrypt: fakeDecrypt,
+  });
+  assert.equal(
+    JSON.stringify(openedEmailBootstrap.payload.grants.map((entry) => entry.folderId)),
+    JSON.stringify(["getting-started", "restricted"])
+  );
+  let emailClaimSignedIndex = 0;
+  const emailClaimSigner = async (template) => ({
+    ...template,
+    id: `email-claim-signed-${++emailClaimSignedIndex}`,
+    pubkey: "11".repeat(32),
+    sig: "email-claim-signature",
+  });
+  const emailClaimRequest = await client.buildEmailInviteClaimRequest({
+    claimantNpub: otherNpub,
+    claimGrantIdFactory: (entry) => `claim-${entry.folderId}`,
+    createdAtUnix: 1780000500,
+    email: "friend@example.com",
+    emailProofCreatedAt: "2026-06-23T00:00:00.000Z",
+    invitation: emailInvitation,
+    inviteDecrypt: fakeDecrypt,
+    inviteSecret: emailInviteRequest.inviteSecret,
+    provider: { signEvent: emailClaimSigner, nip44: { encrypt: fakeEncrypt, decrypt: fakeDecrypt } },
+    signEvent: emailClaimSigner,
+  });
+  assert.equal(emailClaimRequest.openedGrantCount, 2);
+  assert.equal(emailClaimRequest.body.email, "friend@example.com");
+  assert.equal(
+    JSON.stringify(emailClaimRequest.body.grants.map((entry) => [entry.folderId, entry.grant.id, entry.grant.recipientNpub])),
+    JSON.stringify([
+      ["getting-started", "claim-getting-started", otherNpub],
+      ["restricted", "claim-restricted", otherNpub],
+    ])
+  );
+  const inviteProof = JSON.parse(emailClaimRequest.body.inviteUnwrapProofEventJson);
+  assert.equal(inviteProof.pubkey, inviteKeypair.publicKeyHex);
+  assert.match(inviteProof.content, /finite-email-invite-bootstrap-claim-proof-v1/);
+  assert.doesNotMatch(JSON.stringify(emailClaimRequest.body), new RegExp(emailInviteRequest.inviteSecret, "i"));
 
   const accessGrant = await client.buildFolderKeyGrantRequest({
     id: "grant-test",
