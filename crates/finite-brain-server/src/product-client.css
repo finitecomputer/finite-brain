@@ -3203,16 +3203,21 @@ pre {
   overflow: hidden;
 }
 
-.access-advanced-summary {
+.access-advanced-summary,
+.access-admin-summary {
   min-height: 44px;
   padding: 11px 12px 11px 14px;
   background: transparent;
   border: none;
   cursor: pointer;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto auto;
+  grid-template-areas:
+    "icon title chevron"
+    "icon meta chevron";
+  grid-template-columns: 16px minmax(0, 1fr) auto;
   align-items: center;
-  gap: 8px;
+  column-gap: 8px;
+  row-gap: 2px;
   color: #dadada;
   font-size: 12px;
   font-weight: 500;
@@ -3227,12 +3232,14 @@ pre {
   display: none;
 }
 
-.access-advanced-summary:hover {
+.access-advanced-summary:hover,
+.access-admin-summary:hover {
   background: rgba(255, 255, 255, 0.04);
 }
 
 .access-advanced-summary::after,
 .access-admin-summary::after {
+  grid-area: chevron;
   content: "";
   width: 7px;
   height: 7px;
@@ -3251,19 +3258,33 @@ pre {
   transform: rotate(45deg);
 }
 
-.access-advanced-summary span {
+.access-advanced-summary .icon,
+.access-admin-summary .icon {
+  grid-area: icon;
+  align-self: center;
+  width: 14px;
+  height: 14px;
+  opacity: 0.7;
+}
+
+.access-advanced-summary span,
+.access-admin-summary span {
+  grid-area: title;
   min-width: 0;
+  color: #dadada;
   font-weight: 600;
   text-wrap: balance;
 }
 
-.access-advanced-summary small {
-  max-width: 145px;
+.access-advanced-summary small,
+.access-admin-summary small {
+  grid-area: meta;
+  max-width: none;
   color: #a6a6a6;
   font-size: 10px;
   font-weight: 400;
   line-height: 1.25;
-  text-align: right;
+  text-align: left;
   text-wrap: pretty;
 }
 
@@ -3798,67 +3819,6 @@ pre {
   background: rgba(255, 255, 255, 0.015);
   box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.052);
   overflow: hidden;
-}
-
-.access-admin-summary {
-  min-height: 44px;
-  padding: 11px 12px 11px 14px;
-  background: transparent;
-  border: none;
-  cursor: pointer;
-  display: grid;
-  grid-template-areas:
-    "icon title chevron"
-    "icon meta chevron";
-  grid-template-columns: 16px minmax(0, 1fr) auto;
-  align-items: center;
-  column-gap: 8px;
-  row-gap: 2px;
-  color: #dadada;
-  font-size: 12px;
-  font-weight: 500;
-  list-style: none;
-  transition-property: background-color;
-  transition-duration: 150ms;
-  transition-timing-function: cubic-bezier(0.2, 0, 0, 1);
-}
-
-.access-admin-summary:hover {
-  background: rgba(255, 255, 255, 0.04);
-}
-
-.access-admin-summary .icon {
-  grid-area: icon;
-  align-self: center;
-  width: 14px;
-  height: 14px;
-  opacity: 0.7;
-}
-
-.access-admin-summary span {
-  grid-area: title;
-  min-width: 0;
-  color: #dadada;
-  font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-  text-wrap: balance;
-}
-
-.access-admin-summary small {
-  grid-area: meta;
-  max-width: none;
-  color: #a6a6a6;
-  font-size: 10px;
-  font-weight: 400;
-  line-height: 1.25;
-  text-align: left;
-  text-wrap: pretty;
-}
-
-.access-admin-summary::after {
-  grid-area: chevron;
 }
 
 .access-admin-content {

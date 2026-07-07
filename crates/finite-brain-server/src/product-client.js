@@ -5117,9 +5117,9 @@ const FiniteBrainProductClient = (() => {
     } else if (codeHint) {
       setText("vaultInvitationHint", codeHint);
     } else if (inviteCodeUsable) {
-      setText("vaultInvitationHint", "Ready to accept");
+      setText("vaultInvitationHint", "Ready to join");
     } else {
-      setText("vaultInvitationHint", "Accept received invite");
+      setText("vaultInvitationHint", "Accept invite code");
     }
   }
 
@@ -5557,7 +5557,7 @@ const FiniteBrainProductClient = (() => {
           ? "Admins must already be Vault members."
           : "Only Vault admins can change organization members and admins.";
     setText("vaultPeopleHint", hint);
-    setText("vaultPeopleActionHint", canManage ? "Invite, add, or promote" : "Admin-only controls");
+    setText("vaultPeopleActionHint", canManage ? "Invite, add, promote" : "Admin-only");
   }
 
   function linkRowActionButton(label, onClick, options = {}) {
