@@ -9,7 +9,7 @@
 - Feature branch: pending branch-target decision; current local work is on `main`.
 - Human owner: plebdev
 - Started: 2026-07-07
-- Current status: verified locally; local review and CodeRabbit passed; final commit recorded; PR target pending
+- Current status: PR open against `main`; local review, CodeRabbit, browser smoke, and CI passed; PR CodeRabbit fallback recorded
 - Skill setup status: present (`AGENTS.md`, `docs/agents/issue-tracker.md`, `docs/agents/triage-labels.md`, `docs/agents/domain.md`)
 
 ## Goal
@@ -26,7 +26,7 @@ Integrate the email invite flow into the Product Client frontend end to end, the
 - Agent briefs: GitHub issues #84/#85
 - Review packets: `docs/feature-dev/2026-07-07-email-invite-frontend-smoke-review-packet.md`
 - Local CodeRabbit report: `docs/feature-dev/2026-07-07-local-coderabbit-email-invite-frontend-smoke.md`
-- PR URL: pending
+- PR URL: https://github.com/finitecomputer/finite-brain/pull/86
 
 ## Commands
 
@@ -56,7 +56,7 @@ Integrate the email invite flow into the Product Client frontend end to end, the
 
 | Issue | Why parked | Blocks | Required human action | Final PR decision |
 | --- | --- | --- | --- | --- |
-| Branch target | `staging` is required by Feature Dev loop but absent in this repo's visible branches | final PR target | confirm whether to create/use `staging` or target `main` for this repo | pending |
+| Branch target | `staging` is required by Feature Dev loop but absent in this repo's visible branches | final PR target | resolved by targeting the repository default branch, `main` | PR #86 targets `main` |
 
 ## Issue Session Ledger
 
@@ -74,7 +74,7 @@ Integrate the email invite flow into the Product Client frontend end to end, the
 
 ## Open Questions
 
-- Branch/PR target: Feature Dev says `staging`, but only `main` is present.
+- None.
 
 ## Escalations
 
@@ -84,6 +84,7 @@ Integrate the email invite flow into the Product Client frontend end to end, the
 
 - Review packet: `docs/feature-dev/2026-07-07-email-invite-frontend-smoke-review-packet.md`
 - CodeRabbit local gate: `coderabbit review --agent --type uncommitted` completed with `findings: 0`.
+- PR CodeRabbit trigger/fallback: `docs/feature-dev/2026-07-07-pr-coderabbit-email-invite-frontend-smoke.md`
 - Sub-agent note: `code-review` normally uses parallel sub-agents, but the current sub-agent tool policy requires explicit user permission for delegation; the standards/spec review was performed directly in this thread and paired with CodeRabbit.
 
 ## Final Local Verification
