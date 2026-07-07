@@ -410,6 +410,9 @@ pub struct VaultInvitationResponse {
     pub status: String,
     pub invite_code: String,
     pub accept_path: String,
+    pub public_instructions_path: String,
+    pub public_instructions_url: Option<String>,
+    pub delivery_status: Option<String>,
     pub initial_folder_access: Vec<String>,
     pub expires_at: String,
     pub created_at: String,
@@ -428,6 +431,14 @@ pub struct ClaimEmailVaultInvitationRequest {
     pub invite_unwrap_proof_event_json: Option<String>,
     #[serde(default)]
     pub grants: Vec<CreateVaultFolderKeyGrantRequest>,
+}
+
+/// Request authenticated, post-proof Invite Instructions for an Email Invite Bootstrap.
+#[derive(Debug, Clone, Eq, PartialEq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PostProofInviteInstructionsRequest {
+    pub email: String,
+    pub email_proof_created_at: String,
 }
 
 /// Vault Invitation list response.

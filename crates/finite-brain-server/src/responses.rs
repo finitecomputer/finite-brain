@@ -124,6 +124,9 @@ pub(crate) fn vault_invitation_response(
         status: link_status_str(invitation.status).to_owned(),
         invite_code: invitation.invite_code,
         accept_path: invitation.accept_path,
+        public_instructions_path: String::new(),
+        public_instructions_url: None,
+        delivery_status: None,
         initial_folder_access: invitation
             .initial_folder_access
             .into_iter()

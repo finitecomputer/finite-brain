@@ -126,6 +126,20 @@ impl BrainStore {
             }
         })?;
 
+        self.conn.execute(
+            r#"
+            UPDATE vault_invitations
+            SET status = 'revoked',
+                bootstrap_wrapped_event_json = NULL,
+                updated_at = ?3
+            WHERE vault_id = ?1
+              AND target_kind = 'email_bootstrap'
+              AND invited_email = ?2
+              AND status = 'pending'
+            "#,
+            params![vault_id.as_str(), invited_email, created_at],
+        )?;
+
         self.conn
             .execute(
                 r#"
@@ -219,6 +233,23 @@ impl BrainStore {
         Ok(invitations)
     }
 
+    fn tombstone_email_bootstrap_ciphertext(
+        &mut self,
+        invitation_id: &str,
+        updated_at: &str,
+    ) -> Result<(), StoreError> {
+        self.conn.execute(
+            r#"
+            UPDATE vault_invitations
+            SET bootstrap_wrapped_event_json = NULL,
+                updated_at = ?2
+            WHERE id = ?1 AND target_kind = 'email_bootstrap'
+            "#,
+            params![invitation_id, updated_at],
+        )?;
+        Ok(())
+    }
+
     /// Load a pending Vault Invitation by invite code for its target user only.
     pub fn load_available_vault_invitation_by_code(
         &self,
@@ -262,7 +293,16 @@ impl BrainStore {
             });
         }
         self.conn.execute(
-            "UPDATE vault_invitations SET status = 'revoked', updated_at = ?3 WHERE vault_id = ?1 AND id = ?2",
+            r#"
+            UPDATE vault_invitations
+            SET status = 'revoked',
+                bootstrap_wrapped_event_json = CASE
+                    WHEN target_kind = 'email_bootstrap' THEN NULL
+                    ELSE bootstrap_wrapped_event_json
+                END,
+                updated_at = ?3
+            WHERE vault_id = ?1 AND id = ?2
+            "#,
             params![vault_id.as_str(), invitation_id, updated_at],
         )?;
         self.load_vault_invitation(invitation_id)
@@ -367,9 +407,13 @@ impl BrainStore {
                 kind: "vault invitation",
             });
         }
-        if invitation.status != LinkStatus::Pending
-            || timestamp_expired(&invitation.expires_at, now)
-        {
+        if invitation.status != LinkStatus::Pending {
+            return Err(StoreError::UnavailableLink {
+                kind: "vault invitation",
+            });
+        }
+        if timestamp_expired(&invitation.expires_at, now) {
+            self.tombstone_email_bootstrap_ciphertext(&invitation.id, now)?;
             return Err(StoreError::UnavailableLink {
                 kind: "vault invitation",
             });
@@ -382,6 +426,12 @@ impl BrainStore {
         }
 
         let stored = self.load_vault(&invitation.vault_id)?;
+        if email_bootstrap_scope_stale(&stored.vault, &invitation.bootstrap_scope)? {
+            self.tombstone_email_bootstrap_ciphertext(&invitation.id, now)?;
+            return Err(StoreError::BrokenInvariant {
+                reason: "email bootstrap scope is stale for current Folder Key versions".to_owned(),
+            });
+        }
         validate_email_claim_grants(&stored.vault, &invitation.bootstrap_scope, claimant, grants)?;
         let restricted_scope = invitation
             .bootstrap_scope

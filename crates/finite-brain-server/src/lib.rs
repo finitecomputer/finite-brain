@@ -102,9 +102,22 @@ pub struct ServerState {
     cors_allowed_origins: Arc<BTreeSet<String>>,
     nip05_fetcher: Nip05Fetcher,
     email_proof_verifier: Option<EmailProofVerifier>,
+    invite_mailer: Option<BrainInviteMailer>,
 }
 
 type EmailProofVerifier = Arc<dyn Fn(&str, &UserId) -> Result<(), String> + Send + Sync>;
+type BrainInviteMailer = Arc<dyn Fn(&BrainInviteEmail) -> Result<(), String> + Send + Sync>;
+
+/// Server-visible Brain invitation email payload.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct BrainInviteEmail {
+    /// Recipient email address.
+    pub to: String,
+    /// Email subject.
+    pub subject: String,
+    /// Plaintext body.
+    pub text: String,
+}
 
 #[derive(Debug, Clone, Copy)]
 struct RateLimitConfig {
@@ -131,6 +144,7 @@ impl ServerState {
             cors_allowed_origins: Arc::new(cors_allowed_origins),
             nip05_fetcher: default_nip05_fetcher(),
             email_proof_verifier: None,
+            invite_mailer: None,
         }
     }
 
@@ -165,12 +179,53 @@ impl ServerState {
         self
     }
 
+    /// Deliver Brain-owned Vault invitation emails through a local dev sink.
+    pub fn with_dev_invite_mailer(mut self) -> Self {
+        self.invite_mailer = Some(Arc::new(|email| {
+            eprintln!(
+                "finite-brain dev invite email\nTo: {}\nSubject: {}\n\n{}",
+                email.to, email.subject, email.text
+            );
+            Ok(())
+        }));
+        self
+    }
+
+    /// Deliver Brain-owned Vault invitation emails through Resend.
+    pub fn with_resend_invite_mailer(
+        mut self,
+        api_key: impl Into<String>,
+        from: impl Into<String>,
+    ) -> Self {
+        self.invite_mailer = Some(resend_invite_mailer(api_key.into(), from.into()));
+        self
+    }
+
+    /// Deliver Brain-owned Vault invitation emails through Postmark.
+    pub fn with_postmark_invite_mailer(
+        mut self,
+        server_token: impl Into<String>,
+        from: impl Into<String>,
+    ) -> Self {
+        self.invite_mailer = Some(postmark_invite_mailer(server_token.into(), from.into()));
+        self
+    }
+
     #[cfg(test)]
     fn with_email_proof_verifier(
         mut self,
         verifier: impl Fn(&str, &UserId) -> Result<(), String> + Send + Sync + 'static,
     ) -> Self {
         self.email_proof_verifier = Some(Arc::new(verifier));
+        self
+    }
+
+    #[cfg(test)]
+    fn with_invite_mailer(
+        mut self,
+        mailer: impl Fn(&BrainInviteEmail) -> Result<(), String> + Send + Sync + 'static,
+    ) -> Self {
+        self.invite_mailer = Some(Arc::new(mailer));
         self
     }
 
@@ -291,10 +346,18 @@ pub fn router_with_sqlite_path(
     path: impl AsRef<Path>,
     public_base_url: impl Into<String>,
 ) -> Result<Router, StoreError> {
-    Ok(router_with_state(ServerState::new(
-        BrainStore::open(path)?,
+    Ok(router_with_state(server_state_with_sqlite_path(
+        path,
         public_base_url,
-    )))
+    )?))
+}
+
+/// Build server state backed by an on-disk SQLite store.
+pub fn server_state_with_sqlite_path(
+    path: impl AsRef<Path>,
+    public_base_url: impl Into<String>,
+) -> Result<ServerState, StoreError> {
+    Ok(ServerState::new(BrainStore::open(path)?, public_base_url))
 }
 
 /// Build a router backed by SQLite and an optional finite-identity Authority.
@@ -303,7 +366,7 @@ pub fn router_with_sqlite_path_and_identity_authority(
     public_base_url: impl Into<String>,
     identity_authority_url: Option<String>,
 ) -> Result<Router, StoreError> {
-    let mut state = ServerState::new(BrainStore::open(path)?, public_base_url);
+    let mut state = server_state_with_sqlite_path(path, public_base_url)?;
     if let Some(url) = identity_authority_url {
         state = state.with_identity_authority_url(url);
     }
@@ -369,6 +432,14 @@ pub fn router_with_state(state: ServerState) -> Router {
         .route(
             "/_admin/vault-invitation-links/{invite_code}",
             get(get_vault_invitation_link_handler),
+        )
+        .route(
+            "/_admin/vault-invitation-links/{invite_code}/llms.txt",
+            get(public_vault_invitation_instructions_handler),
+        )
+        .route(
+            "/_admin/vault-invitation-links/{invite_code}/instructions",
+            post(post_proof_vault_invitation_instructions_handler),
         )
         .route(
             "/_admin/vault-invitation-links/{invite_code}/accept",
@@ -691,6 +762,201 @@ fn canonical_email(value: &str) -> Result<String, ApiError> {
         ));
     }
     Ok(value)
+}
+
+fn public_invite_instructions_path(invite_code: &str) -> String {
+    format!("/_admin/vault-invitation-links/{invite_code}/llms.txt")
+}
+
+fn absolute_public_url(state: &ServerState, path: &str) -> String {
+    format!("{}{}", state.public_base_url.trim_end_matches('/'), path)
+}
+
+fn attach_invitation_public_url(state: &ServerState, response: &mut VaultInvitationResponse) {
+    response.public_instructions_path = public_invite_instructions_path(&response.invite_code);
+    response.public_instructions_url = Some(absolute_public_url(
+        state,
+        &response.public_instructions_path,
+    ));
+}
+
+fn text_response(text: String) -> Response {
+    (
+        [(
+            axum::http::header::CONTENT_TYPE,
+            "text/plain; charset=utf-8",
+        )],
+        text,
+    )
+        .into_response()
+}
+
+fn invite_email_payload(
+    state: &ServerState,
+    invited_email: &str,
+    invite_code: &str,
+) -> BrainInviteEmail {
+    let instructions_path = public_invite_instructions_path(invite_code);
+    let instructions_url = absolute_public_url(state, &instructions_path);
+    BrainInviteEmail {
+        to: invited_email.to_owned(),
+        subject: "FiniteBrain Vault invitation".to_owned(),
+        text: format!(
+            "You have a FiniteBrain Vault invitation.\n\n\
+             Start with the public agent instructions:\n{instructions_url}\n\n\
+             Invite code: {invite_code}\n\n\
+             This email intentionally does not include an Invite Secret or a full fragment URL. \
+             Keep any URL fragment or inviteSecret value client-side, and never paste it into \
+             server-visible logs, query strings, analytics redirects, or email replies."
+        ),
+    }
+}
+
+fn deliver_email_invitation(
+    state: &ServerState,
+    invitation: &StoredVaultInvitation,
+) -> Result<Option<String>, ApiError> {
+    let Some(invited_email) = invitation.invited_email.as_deref() else {
+        return Ok(None);
+    };
+    let Some(mailer) = state.invite_mailer.as_ref() else {
+        return Ok(Some("not_configured".to_owned()));
+    };
+    let email = invite_email_payload(state, invited_email, &invitation.invite_code);
+    mailer(&email).map_err(|error| {
+        ApiError::new(
+            StatusCode::BAD_GATEWAY,
+            format!("Brain invite email delivery failed: {error}"),
+        )
+    })?;
+    Ok(Some("sent".to_owned()))
+}
+
+fn resend_invite_mailer(api_key: String, from: String) -> BrainInviteMailer {
+    Arc::new(move |email| {
+        let body = serde_json::to_string(&serde_json::json!({
+            "from": from,
+            "to": [email.to],
+            "subject": email.subject,
+            "text": email.text,
+        }))
+        .map_err(|error| format!("could not encode Resend invite email: {error}"))?;
+        ureq::post("https://api.resend.com/emails")
+            .set("Authorization", &format!("Bearer {api_key}"))
+            .set("Content-Type", "application/json")
+            .send_string(&body)
+            .map_err(|error| format!("Resend request failed: {error}"))?;
+        Ok(())
+    })
+}
+
+fn postmark_invite_mailer(server_token: String, from: String) -> BrainInviteMailer {
+    Arc::new(move |email| {
+        let body = serde_json::to_string(&serde_json::json!({
+            "From": from,
+            "To": email.to,
+            "Subject": email.subject,
+            "TextBody": email.text,
+            "TrackOpens": false,
+            "TrackLinks": "None",
+        }))
+        .map_err(|error| format!("could not encode Postmark invite email: {error}"))?;
+        ureq::post("https://api.postmarkapp.com/email")
+            .set("X-Postmark-Server-Token", &server_token)
+            .set("Content-Type", "application/json")
+            .send_string(&body)
+            .map_err(|error| format!("Postmark request failed: {error}"))?;
+        Ok(())
+    })
+}
+
+fn public_invite_instructions_text() -> String {
+    "FiniteBrain public invite instructions\n\n\
+     This public page is safe to read before email proof. It intentionally omits \
+     the invited email, Vault identity, Folder identity, access scope, claim state, \
+     Folder Keys, bootstrap plaintext, and encrypted invite structure.\n\n\
+     Workflow:\n\
+     1. Prove control of the invited email through finite-identity.\n\
+     2. Act with the Nostr key that will become your FiniteBrain User npub.\n\
+     3. Keep any URL fragment or inviteSecret value client-side. Never paste it \
+     into server-visible request bodies, query strings, logs, analytics redirects, \
+     email replies, or issue trackers.\n\
+     4. After email proof, request authenticated post-proof instructions from this \
+     invite URL to receive the scoped claim, open, and sync steps.\n\
+     5. Only a trusted FiniteBrain client or agent runtime should unwrap bootstrap \
+     material and create durable claim grants.\n"
+        .to_owned()
+}
+
+fn access_label(access: FolderAccessMode) -> &'static str {
+    match access {
+        FolderAccessMode::Owner => "owner",
+        FolderAccessMode::AdminOnly => "admin_only",
+        FolderAccessMode::AllMembers => "all_members",
+        FolderAccessMode::Restricted => "restricted",
+    }
+}
+
+fn status_label(status: LinkStatus) -> &'static str {
+    match status {
+        LinkStatus::Pending => "pending",
+        LinkStatus::Accepted => "accepted",
+        LinkStatus::Revoked => "revoked",
+    }
+}
+
+fn post_proof_invite_instructions_text(
+    state: &ServerState,
+    invitation: &StoredVaultInvitation,
+    stored: &StoredVault,
+) -> String {
+    let mut text = format!(
+        "FiniteBrain post-proof invite instructions\n\n\
+         Invited email: {}\n\
+         Claiming status: {}\n\
+         Vault: {} ({})\n\
+         Claim endpoint: {}{}\n\
+         Public instructions: {}\n\n\
+         Authorized initial Folder scope:\n",
+        invitation.invited_email.as_deref().unwrap_or("unknown"),
+        status_label(invitation.status),
+        stored.vault.name,
+        stored.vault.id,
+        state.public_base_url.trim_end_matches('/'),
+        invitation.accept_path,
+        absolute_public_url(
+            state,
+            &public_invite_instructions_path(&invitation.invite_code)
+        )
+    );
+    for scope in &invitation.bootstrap_scope {
+        let name = stored
+            .vault
+            .folders
+            .iter()
+            .find(|folder| folder.id == scope.folder_id)
+            .map(|folder| folder.name.to_string())
+            .unwrap_or_else(|| "unknown".to_owned());
+        text.push_str(&format!(
+            "- {} (id: {}, access: {}, expected key version: {})\n",
+            name,
+            scope.folder_id,
+            access_label(scope.access),
+            scope.key_version
+        ));
+    }
+    text.push_str(
+        "\nWorkflow:\n\
+         1. Keep the Invite Secret in local client memory. Do not send it to the server.\n\
+         2. Locally unwrap the bootstrap material with the Invite Secret.\n\
+         3. Sign an Invite Unwrap Proof with the temporary Invite Unwrap Key.\n\
+         4. Submit the claim request with emailProofCreatedAt, inviteUnwrapProofEventJson, \
+         and durable npub-bound grant envelopes for exactly the Folder scope above.\n\
+         5. After claim succeeds, open or reuse a Vault Working Tree intentionally, then sync.\n\n\
+         This authenticated instruction response still does not include Folder Keys, \
+         decrypted bootstrap payloads, auth files, or decrypted Vault content.\n",
+    );
+    text
 }
 
 #[derive(Debug, Deserialize)]
@@ -3766,14 +4032,25 @@ mod tests {
         let claimant_npub = npub(&claimant_keys);
         let unwrap_npub = npub(&unwrap_keys);
         let expected_claimant = claimant_npub.clone();
-        let router =
-            router_with_state(test_state().with_email_proof_verifier(move |email, actor| {
-                if email == "friend@example.com" && actor.to_string() == expected_claimant {
+        let delivered_invites = Arc::new(Mutex::new(Vec::<BrainInviteEmail>::new()));
+        let delivered_for_mailer = delivered_invites.clone();
+        let router = router_with_state(
+            test_state()
+                .with_email_proof_verifier(move |email, actor| {
+                    if email == "friend@example.com" && actor.to_string() == expected_claimant {
+                        Ok(())
+                    } else {
+                        Err("email proof not found".to_owned())
+                    }
+                })
+                .with_invite_mailer(move |email| {
+                    delivered_for_mailer
+                        .lock()
+                        .expect("delivery capture mutex")
+                        .push(email.clone());
                     Ok(())
-                } else {
-                    Err("email proof not found".to_owned())
-                }
-            }));
+                }),
+        );
         let create_vault = post_vault(
             router.clone(),
             &admin_keys,
@@ -3822,6 +4099,7 @@ mod tests {
         assert_eq!(create.status(), StatusCode::OK);
         let invitation: VaultInvitationResponse = read_json(create).await;
         assert_eq!(invitation.target_kind, "email_bootstrap");
+        assert_eq!(invitation.delivery_status.as_deref(), Some("sent"));
         assert_eq!(invitation.user_id, None);
         assert_eq!(
             invitation.invited_email.as_deref(),
@@ -3832,6 +4110,26 @@ mod tests {
             Some(unwrap_npub.as_str())
         );
         assert!(invitation.accept_path.ends_with("/claim"));
+        assert!(invitation.public_instructions_path.ends_with("/llms.txt"));
+        let expected_public_instructions_url =
+            format!("{TEST_BASE_URL}{}", invitation.public_instructions_path);
+        assert_eq!(
+            invitation.public_instructions_url.as_deref(),
+            Some(expected_public_instructions_url.as_str())
+        );
+        {
+            let delivered = delivered_invites.lock().expect("delivery capture mutex");
+            assert_eq!(delivered.len(), 1);
+            assert_eq!(delivered[0].to, "friend@example.com");
+            assert!(delivered[0].text.contains(&invitation.invite_code));
+            assert!(
+                delivered[0]
+                    .text
+                    .contains(invitation.public_instructions_url.as_deref().unwrap())
+            );
+            assert!(!delivered[0].text.contains('#'));
+            assert!(!delivered[0].text.contains(payload_hash));
+        }
         assert_eq!(
             invitation
                 .bootstrap_scope
@@ -3854,7 +4152,74 @@ mod tests {
                 .contains("secret")
         );
 
+        let public_instructions = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri(&invitation.public_instructions_path)
+                    .body(Body::empty())
+                    .expect("valid public instructions request"),
+            )
+            .await
+            .expect("public instructions response");
+        assert_eq!(public_instructions.status(), StatusCode::OK);
+        let public_instructions = read_text(public_instructions).await;
+        assert!(public_instructions.contains("FiniteBrain public invite instructions"));
+        for forbidden in [
+            "friend@example.com",
+            "Acme",
+            "getting-started",
+            "restricted",
+            payload_hash,
+            "pending",
+            "encrypted grant placeholder",
+        ] {
+            assert!(
+                !public_instructions.contains(forbidden),
+                "public instructions leaked {forbidden}"
+            );
+        }
+        assert!(public_instructions.contains("inviteSecret"));
+
         let proof_created_at = format_unix_timestamp(TEST_NOW).unwrap();
+        let post_proof_body = serde_json::json!({
+            "email": "friend@example.com",
+            "emailProofCreatedAt": proof_created_at.clone(),
+        })
+        .to_string();
+        let post_proof = authed_request(
+            router.clone(),
+            &claimant_keys,
+            "POST",
+            &format!(
+                "/_admin/vault-invitation-links/{}/instructions",
+                invitation.invite_code
+            ),
+            Some(post_proof_body),
+            TEST_NOW + 1,
+        )
+        .await;
+        assert_eq!(post_proof.status(), StatusCode::OK);
+        let post_proof = read_text(post_proof).await;
+        assert!(post_proof.contains("FiniteBrain post-proof invite instructions"));
+        assert!(post_proof.contains("friend@example.com"));
+        assert!(post_proof.contains("Acme"));
+        assert!(post_proof.contains("getting-started"));
+        assert!(post_proof.contains("restricted"));
+        assert!(post_proof.contains("expected key version: 1"));
+        for forbidden in [
+            payload_hash,
+            "encrypted grant placeholder",
+            "claim-grant-getting-started",
+            "claim-grant-restricted",
+        ] {
+            assert!(
+                !post_proof.contains(forbidden),
+                "post-proof instructions leaked {forbidden}"
+            );
+        }
+
         let wrong_claim_proof_event_json = email_bootstrap_claim_proof_event(
             &Keys::generate(),
             "acme",
@@ -4004,6 +4369,65 @@ mod tests {
             .find(|folder| folder.id == "restricted")
             .expect("restricted folder");
         assert!(restricted.access_user_ids.contains(&claimant_npub));
+    }
+
+    #[tokio::test]
+    async fn email_vault_invitation_creation_without_mailer_returns_manual_delivery_details() {
+        let admin_keys = Keys::generate();
+        let unwrap_keys = Keys::generate();
+        let unwrap_npub = npub(&unwrap_keys);
+        let router = router_with_bootstrapped_org(&admin_keys).await;
+        let payload_hash = "sha256-bootstrap-payload";
+        let authorization_event_json = email_bootstrap_authorization_event(
+            &admin_keys,
+            "acme",
+            "manual@example.com",
+            &unwrap_npub,
+            payload_hash,
+            "2026-06-30T00:00:00.000Z",
+            &[
+                ("getting-started", FolderAccessMode::AllMembers, 1),
+                ("restricted", FolderAccessMode::Restricted, 1),
+            ],
+        );
+        let create_body = serde_json::json!({
+            "target": "manual@example.com",
+            "initialFolderAccess": ["restricted"],
+            "expiresAt": "2026-06-30T00:00:00.000Z",
+            "inviteUnwrapNpub": unwrap_npub,
+            "bootstrapPayloadHash": payload_hash,
+            "bootstrapWrappedEventJson": gift_wrap_event_json(&npub(&unwrap_keys)),
+            "bootstrapAuthorizationEventJson": authorization_event_json,
+        })
+        .to_string();
+        let create = authed_request(
+            router,
+            &admin_keys,
+            "POST",
+            "/_admin/vaults/acme/invitations",
+            Some(create_body),
+            TEST_NOW,
+        )
+        .await;
+        assert_eq!(create.status(), StatusCode::OK);
+        let invitation: VaultInvitationResponse = read_json(create).await;
+        assert_eq!(
+            invitation.delivery_status.as_deref(),
+            Some("not_configured")
+        );
+        assert!(invitation.public_instructions_path.ends_with("/llms.txt"));
+        assert!(
+            invitation
+                .public_instructions_url
+                .as_deref()
+                .unwrap()
+                .starts_with(TEST_BASE_URL)
+        );
+        assert!(
+            !serde_json::to_string(&invitation)
+                .unwrap()
+                .contains("inviteSecret")
+        );
     }
 
     #[tokio::test]
@@ -5292,6 +5716,13 @@ mod tests {
             .await
             .expect("response body");
         serde_json::from_slice(&body).expect("json response")
+    }
+
+    async fn read_text(response: axum::response::Response) -> String {
+        let body = to_bytes(response.into_body(), 16 * 1024)
+            .await
+            .expect("response body");
+        String::from_utf8(body.to_vec()).expect("utf8 response")
     }
 
     async fn assert_error(response: axum::response::Response, status: StatusCode, contains: &str) {

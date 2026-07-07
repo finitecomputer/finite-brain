@@ -698,6 +698,7 @@ struct SharedFolderAccessRemoval<'a> {
     new_key_version: u32,
     grants: &'a [FolderKeyGrantMetadata],
     reencrypted_records: &'a [FolderObjectRevisionSyncRecord],
+    updated_at: &'a str,
 }
 
 /// Bootstrap response data for rebuilding current encrypted state.
@@ -1270,6 +1271,12 @@ impl BrainStore {
                 connection.source_folder_id.as_str(),
                 rotation.new_key_version
             ],
+        )?;
+        invalidate_pending_email_bootstraps_for_rotated_folder(
+            &tx,
+            &connection.source_vault_id,
+            &connection.source_folder_id,
+            rotation.updated_at,
         )?;
         for grant in rotation.grants {
             insert_grant(&tx, &connection.source_vault_id, grant)?;
@@ -2178,6 +2185,69 @@ fn validate_email_claim_grants(
         }
     }
 
+    Ok(())
+}
+
+fn email_bootstrap_scope_stale(
+    vault: &Vault,
+    scope: &[EmailInviteBootstrapScopeFolder],
+) -> Result<bool, StoreError> {
+    for item in scope {
+        let folder = vault
+            .folders
+            .iter()
+            .find(|folder| folder.id == item.folder_id)
+            .ok_or_else(|| StoreError::MissingFolder {
+                folder_id: item.folder_id.to_string(),
+            })?;
+        if folder.current_key_version != item.key_version {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+fn invalidate_pending_email_bootstraps_for_rotated_folder(
+    tx: &Transaction<'_>,
+    vault_id: &VaultId,
+    folder_id: &FolderId,
+    updated_at: &str,
+) -> Result<(), StoreError> {
+    let mut statement = tx.prepare(
+        r#"
+        SELECT id, bootstrap_scope_json
+        FROM vault_invitations
+        WHERE vault_id = ?1
+          AND target_kind = 'email_bootstrap'
+          AND status = 'pending'
+          AND bootstrap_wrapped_event_json IS NOT NULL
+        "#,
+    )?;
+    let invitations = statement
+        .query_map(params![vault_id.as_str()], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    drop(statement);
+
+    for (invitation_id, scope_json) in invitations {
+        let scope: Vec<EmailInviteBootstrapScopeFolder> = serde_json::from_str(&scope_json)
+            .map_err(|error| StoreError::BrokenInvariant {
+                reason: format!("stored email bootstrap scope JSON is invalid: {error}"),
+            })?;
+        if scope.iter().any(|item| item.folder_id == *folder_id) {
+            tx.execute(
+                r#"
+                UPDATE vault_invitations
+                SET status = 'revoked',
+                    bootstrap_wrapped_event_json = NULL,
+                    updated_at = ?2
+                WHERE id = ?1
+                "#,
+                params![invitation_id, updated_at],
+            )?;
+        }
+    }
     Ok(())
 }
 
@@ -3269,6 +3339,7 @@ mod tests {
         assert_eq!(claimed.status, LinkStatus::Accepted);
         assert_eq!(claimed.user_id, Some(claimant.clone()));
         assert_eq!(claimed.claimed_by_npub, Some(claimant.clone()));
+        assert_eq!(claimed.bootstrap_wrapped_event_json, None);
         assert!(!claimed.duplicate_accept);
 
         let stored = store.load_vault(&vault_id).unwrap();
@@ -3297,6 +3368,252 @@ mod tests {
             )
             .unwrap();
         assert!(retry.duplicate_accept);
+        assert_eq!(
+            store
+                .claim_email_vault_invitation_by_code(
+                    "invite-email0123456789abcdef012345",
+                    "friend@example.com",
+                    &UserId::new("npub-other-claimant").unwrap(),
+                    &[],
+                    now,
+                )
+                .unwrap_err(),
+            StoreError::UnavailableLink {
+                kind: "vault invitation"
+            }
+        );
+    }
+
+    #[test]
+    fn email_vault_invitation_terminal_states_tombstone_bootstrap_ciphertext() {
+        let mut store = bootstrapped_org_store();
+        let vault_id = VaultId::new("acme").unwrap();
+        let restricted = FolderId::new("restricted").unwrap();
+        let admin = UserId::new("npub-admin").unwrap();
+        let unwrap_npub = UserId::new("npub-unwrap").unwrap();
+        let claimant = UserId::new("npub-claimant").unwrap();
+        let now = "2026-06-23T00:00:00.000Z";
+
+        let create_invite =
+            |store: &mut BrainStore, id: &str, code: &str, email: &str, expires_at: &str| {
+                store
+                    .create_email_vault_invitation(
+                        &vault_id,
+                        id,
+                        email,
+                        &unwrap_npub,
+                        "sha256-bootstrap-payload",
+                        "{\"kind\":1059}",
+                        "{\"kind\":30078}",
+                        code,
+                        &format!("/_admin/vault-invitation-links/{code}/claim"),
+                        std::slice::from_ref(&restricted),
+                        &admin,
+                        expires_at,
+                        now,
+                    )
+                    .unwrap()
+            };
+
+        let revoked = create_invite(
+            &mut store,
+            "invitation-email-revoked",
+            "invite-email-revoked012345678901",
+            "revoked@example.com",
+            "2026-06-30T00:00:00.000Z",
+        );
+        store
+            .revoke_vault_invitation(&vault_id, &revoked.id, &admin, "2026-06-24T00:00:00.000Z")
+            .unwrap();
+        assert_eq!(
+            store
+                .load_vault_invitation(&revoked.id)
+                .unwrap()
+                .bootstrap_wrapped_event_json,
+            None
+        );
+
+        let superseded_old = create_invite(
+            &mut store,
+            "invitation-email-superseded-old",
+            "invite-email-supersedeold123456",
+            "superseded@example.com",
+            "2026-06-30T00:00:00.000Z",
+        );
+        let superseded_new = create_invite(
+            &mut store,
+            "invitation-email-superseded-new",
+            "invite-email-supersedenew123456",
+            "superseded@example.com",
+            "2026-06-30T00:00:00.000Z",
+        );
+        let superseded_old = store.load_vault_invitation(&superseded_old.id).unwrap();
+        assert_eq!(superseded_old.status, LinkStatus::Revoked);
+        assert_eq!(superseded_old.bootstrap_wrapped_event_json, None);
+        assert_eq!(superseded_new.status, LinkStatus::Pending);
+        assert!(superseded_new.bootstrap_wrapped_event_json.is_some());
+
+        let expired = create_invite(
+            &mut store,
+            "invitation-email-expired",
+            "invite-email-expired012345678901",
+            "expired@example.com",
+            "2026-06-22T00:00:00.000Z",
+        );
+        assert!(matches!(
+            store.claim_email_vault_invitation_by_code(
+                "invite-email-expired012345678901",
+                "expired@example.com",
+                &claimant,
+                &[],
+                now,
+            ),
+            Err(StoreError::UnavailableLink { .. })
+        ));
+        assert_eq!(
+            store
+                .load_vault_invitation(&expired.id)
+                .unwrap()
+                .bootstrap_wrapped_event_json,
+            None
+        );
+
+        let stale = create_invite(
+            &mut store,
+            "invitation-email-stale",
+            "invite-email-stale01234567890123",
+            "stale@example.com",
+            "2026-06-30T00:00:00.000Z",
+        );
+        store
+            .conn
+            .execute(
+                "UPDATE folders SET current_key_version = 2 WHERE vault_id = ?1 AND id = ?2",
+                params![vault_id.as_str(), restricted.as_str()],
+            )
+            .unwrap();
+        assert_eq!(
+            store
+                .claim_email_vault_invitation_by_code(
+                    "invite-email-stale01234567890123",
+                    "stale@example.com",
+                    &claimant,
+                    &[
+                        grant(
+                            "claim-grant-getting-started-stale",
+                            "getting-started",
+                            1,
+                            "npub-claimant",
+                            "npub-claimant",
+                        ),
+                        grant(
+                            "claim-grant-restricted-stale",
+                            "restricted",
+                            1,
+                            "npub-claimant",
+                            "npub-claimant",
+                        ),
+                    ],
+                    now,
+                )
+                .unwrap_err(),
+            StoreError::BrokenInvariant {
+                reason: "email bootstrap scope is stale for current Folder Key versions".to_owned()
+            }
+        );
+        assert_eq!(
+            store
+                .load_vault_invitation(&stale.id)
+                .unwrap()
+                .bootstrap_wrapped_event_json,
+            None
+        );
+    }
+
+    #[test]
+    fn folder_key_rotation_invalidates_pending_email_bootstrap() {
+        let mut store = bootstrapped_org_store();
+        let vault_id = VaultId::new("acme").unwrap();
+        let restricted = FolderId::new("restricted").unwrap();
+        let admin = UserId::new("npub-admin").unwrap();
+        let member = UserId::new("npub-member").unwrap();
+        let unwrap_npub = UserId::new("npub-unwrap").unwrap();
+        let now = "2026-06-23T00:00:00.000Z";
+        store.add_member(&vault_id, &member).unwrap();
+        store
+            .grant_folder_access(
+                &vault_id,
+                &restricted,
+                &member,
+                &grant(
+                    "grant-restricted-member-rotation",
+                    "restricted",
+                    1,
+                    "npub-admin",
+                    member.as_str(),
+                ),
+            )
+            .unwrap();
+        let invitation = store
+            .create_email_vault_invitation(
+                &vault_id,
+                "invitation-email-rotation",
+                "rotation@example.com",
+                &unwrap_npub,
+                "sha256-bootstrap-payload",
+                "{\"kind\":1059}",
+                "{\"kind\":30078}",
+                "invite-email-rotation0123456789",
+                "/_admin/vault-invitation-links/invite-email-rotation0123456789/claim",
+                std::slice::from_ref(&restricted),
+                &admin,
+                "2026-06-30T00:00:00.000Z",
+                now,
+            )
+            .unwrap();
+        assert_eq!(invitation.status, LinkStatus::Pending);
+        assert!(invitation.bootstrap_wrapped_event_json.is_some());
+        let reencrypted_records = store
+            .load_current_objects(&vault_id)
+            .unwrap()
+            .into_iter()
+            .filter(|object| object.folder_id == restricted && !object.deleted)
+            .enumerate()
+            .map(|(index, object)| FolderObjectRevisionSyncRecord {
+                record_event_id: format!("event-email-bootstrap-rotation-{index}"),
+                folder_id: object.folder_id,
+                object_id: object.object_id,
+                revision: object.revision + 1,
+                base_revision: Some(object.revision),
+                actor_npub: admin.clone(),
+                client_created_at: now.to_owned(),
+                payload_json: object.payload_json,
+                record_event_kind: APP_SPECIFIC_KIND,
+            })
+            .collect::<Vec<_>>();
+
+        store
+            .rotate_folder_key_for_access_removal(
+                &vault_id,
+                &restricted,
+                &member,
+                2,
+                &[grant(
+                    "grant-restricted-admin-v2",
+                    "restricted",
+                    2,
+                    "npub-admin",
+                    "npub-admin",
+                )],
+                &reencrypted_records,
+                "2026-06-24T00:00:00.000Z",
+            )
+            .unwrap();
+
+        let invalidated = store.load_vault_invitation(&invitation.id).unwrap();
+        assert_eq!(invalidated.status, LinkStatus::Revoked);
+        assert_eq!(invalidated.bootstrap_wrapped_event_json, None);
+        assert_eq!(invalidated.updated_at, "2026-06-24T00:00:00.000Z");
     }
 
     #[test]
@@ -3806,6 +4123,7 @@ mod tests {
                     ),
                 ],
                 &[],
+                now,
             )
             .unwrap();
         assert!(!connection.member_npubs.contains(&destination_member));
@@ -3995,6 +4313,7 @@ mod tests {
                         Some(1),
                         "shared-v2",
                     )],
+                    now,
                 )
                 .unwrap();
             let locked_projection = store
@@ -4099,6 +4418,7 @@ mod tests {
                     Some(1),
                     "reencrypted",
                 )],
+                "2026-06-23T00:00:00.000Z",
             )
             .unwrap();
 
@@ -4176,6 +4496,7 @@ mod tests {
                         "npub-admin",
                     )],
                     &[],
+                    "2026-06-23T00:00:00.000Z",
                 )
                 .unwrap_err(),
             StoreError::BrokenInvariant {
@@ -4206,6 +4527,7 @@ mod tests {
                         Some(1),
                         "reencrypted",
                     )],
+                    "2026-06-23T00:00:00.000Z",
                 )
                 .unwrap_err(),
             StoreError::DuplicateId {

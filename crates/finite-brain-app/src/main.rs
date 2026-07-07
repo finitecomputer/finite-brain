@@ -26,11 +26,35 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     println!("FiniteBrain smoke server listening on http://{address}");
 
-    let router = finite_brain_server::router_with_sqlite_path_and_identity_authority(
-        database_path,
-        public_base_url,
-        identity_authority_url,
-    )?;
+    let mut state =
+        finite_brain_server::server_state_with_sqlite_path(database_path, public_base_url)?;
+    if let Some(url) = identity_authority_url {
+        state = state.with_identity_authority_url(url);
+    }
+    if let Ok(mailer) = std::env::var("FINITE_BRAIN_INVITE_MAILER") {
+        match mailer.trim() {
+            "" | "none" => {}
+            "dev" => {
+                state = state.with_dev_invite_mailer();
+            }
+            "resend" => {
+                let api_key = std::env::var("RESEND_API_KEY")?;
+                let from = std::env::var("FINITE_BRAIN_INVITE_MAIL_FROM")?;
+                state = state.with_resend_invite_mailer(api_key, from);
+            }
+            "postmark" => {
+                let token = std::env::var("POSTMARK_SERVER_TOKEN")?;
+                let from = std::env::var("FINITE_BRAIN_INVITE_MAIL_FROM")?;
+                state = state.with_postmark_invite_mailer(token, from);
+            }
+            other => {
+                return Err(
+                    format!("unsupported FINITE_BRAIN_INVITE_MAILER value: {other}").into(),
+                );
+            }
+        }
+    }
+    let router = finite_brain_server::router_with_state(state);
     axum::serve(listener, router).await?;
 
     Ok(())

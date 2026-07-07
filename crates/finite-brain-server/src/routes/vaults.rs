@@ -264,6 +264,7 @@ pub(crate) async fn list_vault_invitations_handler(
             .collect::<Vec<_>>();
         for response in &mut responses {
             enrich_vault_invitation_identities(&store, response)?;
+            attach_invitation_public_url(&state, response);
         }
         responses
     };
@@ -444,7 +445,10 @@ pub(crate) async fn create_vault_invitation_handler(
         )?
     };
 
+    let delivery_status = deliver_email_invitation(&state, &invitation)?;
     let mut response = vault_invitation_response(invitation);
+    response.delivery_status = delivery_status;
+    attach_invitation_public_url(&state, &mut response);
     {
         let store = state.store.lock().map_err(lock_error)?;
         enrich_vault_invitation_identities(&store, &mut response)?;
@@ -468,6 +472,7 @@ pub(crate) async fn revoke_vault_invitation_handler(
         store.revoke_vault_invitation(&vault_id, &invitation_id, &actor_user_id, &updated_at)?
     };
     let mut response = vault_invitation_response(invitation);
+    attach_invitation_public_url(&state, &mut response);
     {
         let store = state.store.lock().map_err(lock_error)?;
         enrich_vault_invitation_identities(&store, &mut response)?;
@@ -498,6 +503,7 @@ pub(crate) async fn accept_vault_invitation_handler(
         store.accept_vault_invitation_by_code(&invitation.invite_code, &actor, &now)?
     };
     let mut response = vault_invitation_response(invitation);
+    attach_invitation_public_url(&state, &mut response);
     {
         let store = state.store.lock().map_err(lock_error)?;
         enrich_vault_invitation_identities(&store, &mut response)?;
@@ -520,11 +526,83 @@ pub(crate) async fn get_vault_invitation_link_handler(
         store.load_available_vault_invitation_by_code(&invite_code, &actor, &now)?
     };
     let mut response = vault_invitation_response(invitation);
+    attach_invitation_public_url(&state, &mut response);
     {
         let store = state.store.lock().map_err(lock_error)?;
         enrich_vault_invitation_identities(&store, &mut response)?;
     }
     Ok(Json(response))
+}
+
+pub(crate) async fn public_vault_invitation_instructions_handler(
+    State(state): State<ServerState>,
+    AxumPath(invite_code): AxumPath<String>,
+) -> Result<Response, ApiError> {
+    {
+        let store = state.store.lock().map_err(lock_error)?;
+        let invitation = store.load_vault_invitation_by_code(&invite_code)?;
+        if invitation.target_kind != VaultInvitationTargetKind::EmailBootstrap {
+            return Err(StoreError::UnavailableLink {
+                kind: "vault invitation",
+            }
+            .into());
+        }
+    }
+    Ok(text_response(public_invite_instructions_text()))
+}
+
+pub(crate) async fn post_proof_vault_invitation_instructions_handler(
+    State(state): State<ServerState>,
+    headers: HeaderMap,
+    method: Method,
+    OriginalUri(uri): OriginalUri,
+    AxumPath(invite_code): AxumPath<String>,
+    body: Bytes,
+) -> Result<Response, ApiError> {
+    let actor = validate_request_auth(&state, &headers, &method, &uri, Some(&body))?;
+    let actor_user_id = UserId::new(actor)?;
+    let request: PostProofInviteInstructionsRequest = serde_json::from_slice(&body)
+        .map_err(|_| ApiError::new(StatusCode::BAD_REQUEST, "invalid JSON request body"))?;
+    let invited_email = canonical_email(&request.email)?;
+    let invitation = {
+        let store = state.store.lock().map_err(lock_error)?;
+        store.load_vault_invitation_by_code(&invite_code)?
+    };
+    if invitation.target_kind != VaultInvitationTargetKind::EmailBootstrap {
+        return Err(StoreError::UnavailableLink {
+            kind: "vault invitation",
+        }
+        .into());
+    }
+    if invitation.invited_email.as_deref() != Some(invited_email.as_str()) {
+        return Err(StoreError::UnavailableLink {
+            kind: "vault invitation",
+        }
+        .into());
+    }
+    if invitation.status == LinkStatus::Accepted
+        && invitation.claimed_by_npub.as_ref() != Some(&actor_user_id)
+    {
+        return Err(StoreError::UnavailableLink {
+            kind: "vault invitation",
+        }
+        .into());
+    }
+    validate_email_proof_window(
+        &invitation,
+        &request.email_proof_created_at,
+        &server_timestamp(&state),
+    )?;
+    verify_identity_authority_email_proof(&state, invited_email.as_str(), &actor_user_id)?;
+    let stored = {
+        let store = state.store.lock().map_err(lock_error)?;
+        store.load_vault(&invitation.vault_id)?
+    };
+    Ok(text_response(post_proof_invite_instructions_text(
+        &state,
+        &invitation,
+        &stored,
+    )))
 }
 
 pub(crate) async fn accept_vault_invitation_link_handler(
@@ -542,6 +620,7 @@ pub(crate) async fn accept_vault_invitation_link_handler(
         store.accept_vault_invitation_by_code(&invite_code, &actor, &now)?
     };
     let mut response = vault_invitation_response(invitation);
+    attach_invitation_public_url(&state, &mut response);
     {
         let store = state.store.lock().map_err(lock_error)?;
         enrich_vault_invitation_identities(&store, &mut response)?;
@@ -654,6 +733,7 @@ pub(crate) async fn claim_email_vault_invitation_link_handler(
     };
 
     let mut response = vault_invitation_response(invitation);
+    attach_invitation_public_url(&state, &mut response);
     {
         let store = state.store.lock().map_err(lock_error)?;
         enrich_vault_invitation_identities(&store, &mut response)?;
