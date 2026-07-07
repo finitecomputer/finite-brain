@@ -435,6 +435,16 @@
                     <button id="createVaultInvitationButton" type="button">Create invite</button>
                     <button id="revokeVaultInvitationButton" class="danger-action" type="button">Revoke invite</button>
                   </div>
+                  <label class="access-field">
+                    <span>Client-only invite URL</span>
+                    <input
+                      id="vaultInviteUrlInput"
+                      type="password"
+                      autocomplete="off"
+                      spellcheck="false"
+                      readonly
+                    />
+                  </label>
                 </div>
 
                 <div class="access-admin-section">
@@ -448,8 +458,36 @@
                       spellcheck="false"
                     />
                   </label>
+                  <label class="access-field">
+                    <span>Invited email</span>
+                    <input
+                      id="vaultInviteEmailInput"
+                      placeholder="name@example.com"
+                      autocomplete="off"
+                      spellcheck="false"
+                    />
+                  </label>
+                  <label class="access-field">
+                    <span>Email proof time</span>
+                    <input
+                      id="vaultInviteEmailProofCreatedAtInput"
+                      type="datetime-local"
+                      autocomplete="off"
+                    />
+                  </label>
+                  <label class="access-field">
+                    <span>Invite Secret</span>
+                    <input
+                      id="vaultInviteSecretInput"
+                      type="password"
+                      autocomplete="off"
+                      spellcheck="false"
+                    />
+                  </label>
                   <div class="access-button-row">
+                    <button id="vaultInviteConnectSignerButton" type="button">Connect signer</button>
                     <button id="getVaultInvitationButton" type="button">Inspect invite</button>
+                    <button id="getEmailInviteInstructionsButton" type="button">Load email scope</button>
                     <button id="acceptVaultInvitationButton" type="button">Accept invite</button>
                   </div>
                 </div>

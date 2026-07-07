@@ -458,6 +458,30 @@ assert.equal(client.readerPageRows("general", draftPages)[0].label, "Draft Page"
     if (!String(ciphertext).startsWith("nip44:")) throw new Error("bad fake ciphertext");
     return Buffer.from(String(ciphertext).slice("nip44:".length), "base64url").toString("utf8");
   };
+  const localSignerSecret = "1".padStart(64, "0");
+  const peerSignerSecret = "2".padStart(64, "0");
+  const localSigner = client.createLocalNip07ProviderFromSecret(localSignerSecret);
+  const peerSigner = client.createLocalNip07ProviderFromSecret(peerSignerSecret);
+  const localPublicKey = await localSigner.getPublicKey();
+  const peerPublicKey = await peerSigner.getPublicKey();
+  assert.equal(localPublicKey, client.inviteUnwrapKeypairFromSecret(localSignerSecret).publicKeyHex);
+  const localSigned = await localSigner.signEvent({
+    kind: 27235,
+    created_at: 1780000000,
+    tags: [["u", "http://finite.test/_admin/vaults"]],
+    content: "",
+  });
+  assert.equal(localSigned.pubkey, localPublicKey);
+  assert.match(localSigned.id, /^[0-9a-f]{64}$/);
+  assert.match(localSigned.sig, /^[0-9a-f]{128}$/);
+  const localToPeer = await localSigner.nip44.encrypt(peerPublicKey, "hello peer");
+  assert.equal(await peerSigner.nip44.decrypt(localPublicKey, localToPeer), "hello peer");
+  const peerToLocal = await peerSigner.nip44.encrypt(localPublicKey, "hello local");
+  assert.equal(await localSigner.nip44.decrypt(peerPublicKey, peerToLocal), "hello local");
+  assert.equal(
+    await client.nip44DecryptWithSecret(peerSignerSecret, localPublicKey, localToPeer),
+    "hello peer"
+  );
   let grantSignedIndex = 0;
   context.window.nostr = {
     signEvent: async (template) => ({
@@ -523,6 +547,18 @@ assert.equal(client.readerPageRows("general", draftPages)[0].label, "Draft Page"
   assert.equal(client.vaultInvitationCreatePath("smoke org"), "/_admin/vaults/smoke%20org/invitations");
   assert.equal(client.vaultInvitationLinkPath("invite/code"), "/_admin/vault-invitation-links/invite%2Fcode");
   assert.equal(client.vaultInvitationAcceptPath("invite/code"), "/_admin/vault-invitation-links/invite%2Fcode/accept");
+  assert.equal(client.emailInviteBootstrapPath("invite/code"), "/_admin/vault-invitation-links/invite%2Fcode/bootstrap");
+  assert.equal(client.emailInviteInstructionsPath("invite/code"), "/_admin/vault-invitation-links/invite%2Fcode/instructions");
+  assert.equal(client.emailInviteClaimPath("invite/code"), "/_admin/vault-invitation-links/invite%2Fcode/claim");
+  assert.equal(
+    client.emailInviteClientUrl({
+      publicBaseUrl: "https://finite.test/app/",
+      inviteCode: "invite/code",
+      invitedEmail: "Friend@Example.com",
+      inviteSecret: "secret-value",
+    }),
+    "https://finite.test/app/client#inviteCode=invite%2Fcode&inviteEmail=friend%40example.com&inviteSecret=secret-value"
+  );
   assert.equal(client.vaultInvitationIdentifierHint("invite-0fe6eda60e1bf6e662acb8e2b5c425d9"), null);
   assert.match(
     client.vaultInvitationIdentifierHint("invitation-4f82a37c1b82bcdd54973c466cdde914"),
@@ -536,6 +572,321 @@ assert.equal(client.readerPageRows("general", draftPages)[0].label, "Draft Page"
   assert.equal(
     client.vaultInvitationRevokePath("smoke org", "invitation/one"),
     "/_admin/vaults/smoke%20org/invitations/invitation%2Fone"
+  );
+  assert.match(htmlSource, /id="vaultInviteUrlInput"/);
+  assert.match(htmlSource, /id="vaultInviteEmailInput"/);
+  assert.match(htmlSource, /id="vaultInviteEmailProofCreatedAtInput"/);
+  assert.match(htmlSource, /id="vaultInviteSecretInput"/);
+  assert.match(htmlSource, /id="vaultInviteConnectSignerButton"/);
+  assert.match(htmlSource, /id="getEmailInviteInstructionsButton"/);
+
+  const nip44VectorSender = client.inviteUnwrapKeypairFromSecret("2".padStart(64, "0"));
+  assert.equal(
+    await client.nip44DecryptWithSecret(
+      "1".padStart(64, "0"),
+      nip44VectorSender.publicKeyHex,
+      "AgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABee0G5VSK0/9YypIObAtDKfYEAjD35uVkHyB0F4DwrcNaCXlCWZKaArsGrY6M9wnuTMxWfp1RTN9Xga8no+kF5Vsb"
+    ),
+    "a"
+  );
+
+  const emailMetadata = {
+    folders: [
+      {
+        id: "getting-started",
+        path: "Getting Started",
+        access: "all_members",
+        currentKeyVersion: 1,
+      },
+      {
+        id: "restricted",
+        path: "Restricted",
+        access: "restricted",
+        currentKeyVersion: 3,
+      },
+      {
+        id: "vault-ops",
+        path: "Vault Ops",
+        access: "admin_only",
+        currentKeyVersion: 1,
+      },
+    ],
+  };
+  assert.equal(client.canonicalInviteEmail(" Friend@Example.COM "), "friend@example.com");
+  assert.equal(
+    JSON.stringify(
+      client.emailInviteScope(emailMetadata, "restricted").map((folder) => [
+        folder.folderId,
+        folder.access,
+        folder.keyVersion,
+      ])
+    ),
+    JSON.stringify([
+      ["getting-started", "all_members", 1],
+      ["restricted", "restricted", 3],
+    ])
+  );
+  assert.throws(() => client.emailInviteScope(emailMetadata, "vault-ops"), /all-members and selected restricted/);
+
+  const emailKeyring = client.createSessionKeyring();
+  const restrictedEmailFolderKey = Buffer.alloc(32, 8).toString("base64");
+  await client.openFolderKeyGrantPlaintext(emailKeyring, {
+    version: "finite-folder-key-grant-v1",
+    vaultId: "smoke",
+    folderId: "getting-started",
+    keyVersion: 1,
+    issuerNpub: authorNpub,
+    recipientNpub: authorNpub,
+    folderKey,
+    issuedAt: "2026-06-24T00:00:00.000Z",
+  });
+  await client.openFolderKeyGrantPlaintext(emailKeyring, {
+    version: "finite-folder-key-grant-v1",
+    vaultId: "smoke",
+    folderId: "restricted",
+    keyVersion: 3,
+    issuerNpub: authorNpub,
+    recipientNpub: authorNpub,
+    folderKey: restrictedEmailFolderKey,
+    issuedAt: "2026-06-24T00:00:00.000Z",
+  });
+  const inviteKeypair = client.inviteUnwrapKeypairFromSecret("3".padStart(64, "0"));
+  let emailInviteSignedIndex = 0;
+  const emailInviteSigner = async (template) => ({
+    ...template,
+    id: `email-invite-signed-${++emailInviteSignedIndex}`,
+    pubkey: "00".repeat(32),
+    sig: "email-invite-signature",
+  });
+  const emailInviteRequest = await client.buildEmailVaultInvitationRequest(emailKeyring, {
+    createdAtUnix: 1780000400,
+    expiresAt: "2026-07-04T00:00:00.000Z",
+    grantIdFactory: (item) => `bootstrap-${item.folderId}`,
+    initialFolderAccess: "restricted",
+    inviteKeypair,
+    issuerNpub: authorNpub,
+    metadata: emailMetadata,
+    provider: { signEvent: emailInviteSigner, nip44: { encrypt: fakeEncrypt, decrypt: fakeDecrypt } },
+    signEvent: emailInviteSigner,
+    target: "FRIEND@EXAMPLE.COM",
+    vaultId: "smoke",
+  });
+  assert.equal(emailInviteRequest.body.target, "friend@example.com");
+  assert.equal(emailInviteRequest.body.inviteUnwrapNpub, inviteKeypair.npub);
+  assert.match(emailInviteRequest.body.bootstrapPayloadHash, /^sha256:[0-9a-f]{64}$/);
+  assert.equal(JSON.stringify(emailInviteRequest.body.initialFolderAccess), JSON.stringify(["restricted"]));
+  assert.equal(
+    JSON.stringify(emailInviteRequest.scope.map((folder) => [folder.folderId, folder.access, folder.keyVersion])),
+    JSON.stringify([
+      ["getting-started", "all_members", 1],
+      ["restricted", "restricted", 3],
+    ])
+  );
+  assert.doesNotMatch(JSON.stringify(emailInviteRequest.body), /inviteSecret/i);
+  const scopedEmailInviteRequest = await client.buildEmailVaultInvitationRequest(emailKeyring, {
+    createdAtUnix: 1780000401,
+    expiresAt: "2026-07-04T00:00:00.000Z",
+    grantIdFactory: (item) => `scoped-bootstrap-${item.folderId}`,
+    inviteKeypair,
+    issuerNpub: authorNpub,
+    provider: { signEvent: emailInviteSigner, nip44: { encrypt: fakeEncrypt, decrypt: fakeDecrypt } },
+    scope: emailInviteRequest.scope,
+    signEvent: emailInviteSigner,
+    target: "friend@example.com",
+    vaultId: "smoke",
+  });
+  assert.equal(JSON.stringify(scopedEmailInviteRequest.body.initialFolderAccess), JSON.stringify(["restricted"]));
+
+  const emailInvitation = {
+    vaultId: "smoke",
+    inviteCode: "invite-email",
+    inviteUnwrapNpub: inviteKeypair.npub,
+    bootstrapPayloadHash: emailInviteRequest.body.bootstrapPayloadHash,
+    bootstrapWrappedEventJson: emailInviteRequest.body.bootstrapWrappedEventJson,
+    bootstrapScope: emailInviteRequest.scope,
+  };
+  const openedEmailBootstrap = await client.openEmailInviteBootstrap(emailInvitation, {
+    email: "friend@example.com",
+    inviteSecret: emailInviteRequest.inviteSecret,
+    inviteDecrypt: fakeDecrypt,
+  });
+  assert.equal(
+    JSON.stringify(openedEmailBootstrap.payload.grants.map((entry) => entry.folderId)),
+    JSON.stringify(["getting-started", "restricted"])
+  );
+  await assert.rejects(
+    () =>
+      client.openEmailInviteBootstrap(emailInvitation, {
+        email: "friend@example.com",
+        inviteSecret: "4".padStart(64, "0"),
+        inviteDecrypt: fakeDecrypt,
+      }),
+    /Invite Secret does not match/
+  );
+  await assert.rejects(
+    () =>
+      client.openEmailInviteBootstrap(emailInvitation, {
+        email: "other@example.com",
+        inviteSecret: emailInviteRequest.inviteSecret,
+        inviteDecrypt: fakeDecrypt,
+      }),
+    /email mismatch/
+  );
+  await assert.rejects(
+    () =>
+      client.openEmailInviteBootstrap(
+        {
+          ...emailInvitation,
+          bootstrapPayloadHash: "sha256:" + "0".repeat(64),
+        },
+        {
+          email: "friend@example.com",
+          inviteSecret: emailInviteRequest.inviteSecret,
+          inviteDecrypt: fakeDecrypt,
+        }
+      ),
+    /payload hash mismatch/
+  );
+  await assert.rejects(
+    () =>
+      client.openEmailInviteBootstrap(
+        {
+          ...emailInvitation,
+          bootstrapScope: emailInvitation.bootstrapScope.slice(0, 1),
+        },
+        {
+          email: "friend@example.com",
+          inviteSecret: emailInviteRequest.inviteSecret,
+          inviteDecrypt: fakeDecrypt,
+        }
+      ),
+    /scope mismatch/
+  );
+  await assert.rejects(
+    () =>
+      client.openEmailInviteBootstrap(
+        {
+          ...emailInvitation,
+          inviteUnwrapNpub: client.inviteUnwrapKeypairFromSecret("5".padStart(64, "0")).npub,
+        },
+        {
+          email: "friend@example.com",
+          inviteSecret: emailInviteRequest.inviteSecret,
+          inviteDecrypt: fakeDecrypt,
+        }
+      ),
+    /Invite Secret does not match/
+  );
+  let emailClaimSignedIndex = 0;
+  const emailClaimSigner = async (template) => ({
+    ...template,
+    id: `email-claim-signed-${++emailClaimSignedIndex}`,
+    pubkey: "11".repeat(32),
+    sig: "email-claim-signature",
+  });
+  const emailClaimRequest = await client.buildEmailInviteClaimRequest({
+    claimantNpub: otherNpub,
+    claimGrantIdFactory: (entry) => `claim-${entry.folderId}`,
+    createdAtUnix: 1780000500,
+    email: "friend@example.com",
+    emailProofCreatedAt: "2026-06-23T00:00:00.000Z",
+    invitation: emailInvitation,
+    inviteDecrypt: fakeDecrypt,
+    inviteSecret: emailInviteRequest.inviteSecret,
+    provider: { signEvent: emailClaimSigner, nip44: { encrypt: fakeEncrypt, decrypt: fakeDecrypt } },
+    signEvent: emailClaimSigner,
+  });
+  assert.equal(emailClaimRequest.openedGrantCount, 2);
+  assert.equal(emailClaimRequest.body.email, "friend@example.com");
+  assert.equal(
+    JSON.stringify(emailClaimRequest.body.grants.map((entry) => [entry.folderId, entry.grant.id, entry.grant.recipientNpub])),
+    JSON.stringify([
+      ["getting-started", "claim-getting-started", otherNpub],
+      ["restricted", "claim-restricted", otherNpub],
+    ])
+  );
+  const inviteProof = JSON.parse(emailClaimRequest.body.inviteUnwrapProofEventJson);
+  assert.equal(inviteProof.pubkey, inviteKeypair.publicKeyHex);
+  assert.match(inviteProof.content, /finite-email-invite-bootstrap-claim-proof-v1/);
+  assert.doesNotMatch(JSON.stringify(emailClaimRequest.body), new RegExp(emailInviteRequest.inviteSecret, "i"));
+  assert.doesNotMatch(JSON.stringify(emailClaimRequest.body), /folderKey/);
+
+  const claimedKeyring = client.createSessionKeyring();
+  const claimedOpen = await client.openFolderKeyGrants(
+    claimedKeyring,
+    {
+      keyGrants: emailClaimRequest.body.grants.map((entry) => ({
+        ...entry.grant,
+        folderId: entry.folderId,
+      })),
+    },
+    otherNpub,
+    { decrypt: fakeDecrypt }
+  );
+  assert.equal(claimedOpen.opened.length, 2);
+  assert.equal(claimedOpen.skipped.length, 0);
+  assert.equal(claimedKeyring.keys.has("smoke:getting-started:1"), true);
+  assert.equal(claimedKeyring.keys.has("smoke:restricted:3"), true);
+  assert.equal(claimedKeyring.keys.has("smoke:vault-ops:1"), false);
+
+  const claimedSharedWrite = await client.buildPageWriteRequest(claimedKeyring, {
+    authorNpub: otherNpub,
+    baseRevision: null,
+    createdAtUnix: 1780000600,
+    folderId: "getting-started",
+    keyVersion: 1,
+    nonceBytes: new Uint8Array(12).fill(4),
+    objectId: "obj_email_shared01",
+    plaintext: "# Shared Email Invite Page\n\nOpened through the claimed all-members grant.",
+    signEvent: emailClaimSigner,
+    vaultId: "smoke",
+  });
+  const openedClaimedShared = await client.openFolderObject(claimedKeyring, {
+    vaultId: "smoke",
+    folderId: "getting-started",
+    objectId: "obj_email_shared01",
+    revision: 1,
+    ciphertext: claimedSharedWrite.ciphertext,
+  });
+  assert.equal(openedClaimedShared.status, "ready");
+  assert.match(openedClaimedShared.text, /claimed all-members grant/);
+
+  const claimedRestrictedWrite = await client.buildPageWriteRequest(claimedKeyring, {
+    authorNpub: otherNpub,
+    baseRevision: null,
+    createdAtUnix: 1780000601,
+    folderId: "restricted",
+    keyVersion: 3,
+    nonceBytes: new Uint8Array(12).fill(5),
+    objectId: "obj_email_restricted01",
+    plaintext: "# Restricted Email Invite Page\n\nOpened through the selected restricted grant.",
+    signEvent: emailClaimSigner,
+    vaultId: "smoke",
+  });
+  const openedClaimedRestricted = await client.openFolderObject(claimedKeyring, {
+    vaultId: "smoke",
+    folderId: "restricted",
+    objectId: "obj_email_restricted01",
+    revision: 1,
+    ciphertext: claimedRestrictedWrite.ciphertext,
+  });
+  assert.equal(openedClaimedRestricted.status, "ready");
+  assert.match(openedClaimedRestricted.text, /selected restricted grant/);
+  await assert.rejects(
+    () =>
+      client.buildPageWriteRequest(claimedKeyring, {
+        authorNpub: otherNpub,
+        baseRevision: null,
+        createdAtUnix: 1780000602,
+        folderId: "vault-ops",
+        keyVersion: 1,
+        nonceBytes: new Uint8Array(12).fill(6),
+        objectId: "obj_email_locked01",
+        plaintext: "# Locked\n\nThis should not encrypt.",
+        signEvent: emailClaimSigner,
+        vaultId: "smoke",
+      }),
+    /No Folder Key opened/
   );
 
   const accessGrant = await client.buildFolderKeyGrantRequest({

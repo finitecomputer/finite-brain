@@ -26,6 +26,9 @@ const FiniteBrainProductClient = (() => {
     lastShareLinkId: null,
     lastVaultInvitationCode: null,
     lastVaultInvitationId: null,
+    lastEmailInviteSecret: null,
+    lastEmailInviteUrl: null,
+    lastEmailInvitePostProof: null,
     vaultInvitations: null,
     folderShareLinks: null,
     folderShareLinksFolderId: null,
@@ -1070,6 +1073,418 @@ const FiniteBrainProductClient = (() => {
     return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
   }
 
+  function concatBytes(...parts) {
+    const length = parts.reduce((sum, part) => sum + part.length, 0);
+    const output = new Uint8Array(length);
+    let offset = 0;
+    for (const part of parts) {
+      output.set(part, offset);
+      offset += part.length;
+    }
+    return output;
+  }
+
+  function bytesToBigInt(bytes) {
+    const hex = bytesToHex(bytes);
+    return hex ? BigInt(`0x${hex}`) : 0n;
+  }
+
+  function bigIntToBytes(value, length = 32) {
+    let hex = value.toString(16);
+    if (hex.length > length * 2) throw new Error("integer does not fit target byte length");
+    hex = hex.padStart(length * 2, "0");
+    return hexToBytes(hex);
+  }
+
+  const SECP_P = BigInt("0xfffffffffffffffffffffffffffffffffffffffffffffffffffffffefffffc2f");
+  const SECP_N = BigInt("0xfffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141");
+  const SECP_G = {
+    x: BigInt("0x79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798"),
+    y: BigInt("0x483ada7726a3c4655da4fbfc0e1108a8fd17b448a68554199c47d08ffb10d4b8"),
+  };
+
+  function mod(value, modulo = SECP_P) {
+    const result = value % modulo;
+    return result >= 0n ? result : result + modulo;
+  }
+
+  function powMod(base, exponent, modulo = SECP_P) {
+    let result = 1n;
+    let value = mod(base, modulo);
+    let power = exponent;
+    while (power > 0n) {
+      if (power & 1n) result = mod(result * value, modulo);
+      value = mod(value * value, modulo);
+      power >>= 1n;
+    }
+    return result;
+  }
+
+  function invertMod(value, modulo = SECP_P) {
+    let low = mod(value, modulo);
+    let high = modulo;
+    let lm = 1n;
+    let hm = 0n;
+    while (low > 1n) {
+      const ratio = high / low;
+      [lm, hm] = [hm - lm * ratio, lm];
+      [low, high] = [high - low * ratio, low];
+    }
+    return mod(lm, modulo);
+  }
+
+  function secpPointAdd(left, right) {
+    if (!left) return right;
+    if (!right) return left;
+    if (left.x === right.x) {
+      if (mod(left.y + right.y) === 0n) return null;
+      const slope = mod(3n * left.x * left.x * invertMod(2n * left.y));
+      const x = mod(slope * slope - 2n * left.x);
+      return { x, y: mod(slope * (left.x - x) - left.y) };
+    }
+    const slope = mod((right.y - left.y) * invertMod(right.x - left.x));
+    const x = mod(slope * slope - left.x - right.x);
+    return { x, y: mod(slope * (left.x - x) - left.y) };
+  }
+
+  function secpPointMultiply(point, scalar) {
+    let n = mod(scalar, SECP_N);
+    if (!point || n === 0n) return null;
+    let result = null;
+    let addend = point;
+    while (n > 0n) {
+      if (n & 1n) result = secpPointAdd(result, addend);
+      addend = secpPointAdd(addend, addend);
+      n >>= 1n;
+    }
+    return result;
+  }
+
+  function secpLiftX(x) {
+    if (x < 0n || x >= SECP_P) throw new Error("secp256k1 x coordinate is out of range");
+    const y2 = mod(x * x * x + 7n);
+    let y = powMod(y2, (SECP_P + 1n) / 4n);
+    if (mod(y * y) !== y2) throw new Error("secp256k1 point is not on curve");
+    if (y & 1n) y = SECP_P - y;
+    return { x, y };
+  }
+
+  function normalizeInviteSecretBytes(secretHex) {
+    const secretBytes = hexToBytes(String(secretHex || "").trim());
+    if (secretBytes.length !== 32) throw new Error("Invite Secret must be a 32-byte hex key");
+    const scalar = bytesToBigInt(secretBytes);
+    if (scalar <= 0n || scalar >= SECP_N) throw new Error("Invite Secret is outside secp256k1 range");
+    return secretBytes;
+  }
+
+  function inviteUnwrapKeypairFromSecret(secretHex) {
+    const secretBytes = normalizeInviteSecretBytes(secretHex);
+    const scalar = bytesToBigInt(secretBytes);
+    const publicPoint = secpPointMultiply(SECP_G, scalar);
+    if (!publicPoint) throw new Error("Invite Secret did not produce a public key");
+    const publicKeyHex = bytesToHex(bigIntToBytes(publicPoint.x));
+    return {
+      npub: npubFromHex(publicKeyHex),
+      publicKeyHex,
+      secretBytes,
+      secretHex: bytesToHex(secretBytes),
+    };
+  }
+
+  function randomInviteSecretBytes() {
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      const secretBytes = crypto.getRandomValues(new Uint8Array(32));
+      const scalar = bytesToBigInt(secretBytes);
+      if (scalar > 0n && scalar < SECP_N) return secretBytes;
+    }
+    throw new Error("Unable to generate Invite Secret");
+  }
+
+  function createInviteUnwrapKeypair() {
+    return inviteUnwrapKeypairFromSecret(bytesToHex(randomInviteSecretBytes()));
+  }
+
+  async function sha256Bytes(bytes) {
+    return new Uint8Array(await crypto.subtle.digest("SHA-256", bytes));
+  }
+
+  async function taggedHash(tag, ...messages) {
+    const tagBytes = new TextEncoder().encode(tag);
+    const tagHash = await sha256Bytes(tagBytes);
+    return sha256Bytes(concatBytes(tagHash, tagHash, ...messages));
+  }
+
+  function xorBytes(left, right) {
+    if (left.length !== right.length) throw new Error("byte arrays must have equal length");
+    const output = new Uint8Array(left.length);
+    for (let index = 0; index < left.length; index += 1) output[index] = left[index] ^ right[index];
+    return output;
+  }
+
+  async function schnorrSign(message32, secretBytes, auxBytes = crypto.getRandomValues(new Uint8Array(32))) {
+    if (message32.length !== 32) throw new Error("Schnorr signing requires a 32-byte message hash");
+    if (auxBytes.length !== 32) throw new Error("Schnorr aux randomness must be 32 bytes");
+    const d0 = bytesToBigInt(secretBytes);
+    const point = secpPointMultiply(SECP_G, d0);
+    if (!point) throw new Error("Schnorr private key is invalid");
+    const d = point.y & 1n ? SECP_N - d0 : d0;
+    const publicKey = bigIntToBytes(point.x);
+    const t = xorBytes(bigIntToBytes(d), await taggedHash("BIP0340/aux", auxBytes));
+    const k0 = bytesToBigInt(await taggedHash("BIP0340/nonce", t, publicKey, message32)) % SECP_N;
+    if (k0 === 0n) throw new Error("Schnorr nonce is invalid");
+    const noncePoint = secpPointMultiply(SECP_G, k0);
+    const k = noncePoint.y & 1n ? SECP_N - k0 : k0;
+    const r = bigIntToBytes(noncePoint.x);
+    const e = bytesToBigInt(await taggedHash("BIP0340/challenge", r, publicKey, message32)) % SECP_N;
+    const s = bigIntToBytes(mod(k + e * d, SECP_N));
+    return bytesToHex(concatBytes(r, s));
+  }
+
+  async function signEventWithInviteSecret(eventTemplate, inviteSecret, options = {}) {
+    const keypair = inviteUnwrapKeypairFromSecret(inviteSecret);
+    const event = {
+      ...eventTemplate,
+      pubkey: keypair.publicKeyHex,
+    };
+    event.id = await sha256Hex(canonicalNostrEventIdInput(event));
+    event.sig = await schnorrSign(
+      hexToBytes(event.id),
+      keypair.secretBytes,
+      options.auxBytes || crypto.getRandomValues(new Uint8Array(32))
+    );
+    return event;
+  }
+
+  async function hmacSha256(keyBytes, messageBytes) {
+    const key = await crypto.subtle.importKey(
+      "raw",
+      keyBytes,
+      { name: "HMAC", hash: "SHA-256" },
+      false,
+      ["sign"]
+    );
+    return new Uint8Array(await crypto.subtle.sign("HMAC", key, messageBytes));
+  }
+
+  async function hkdfExtract(salt, ikm) {
+    return hmacSha256(salt, ikm);
+  }
+
+  async function hkdfExpand(prk, info, length) {
+    const blocks = [];
+    let previous = new Uint8Array();
+    let outputLength = 0;
+    for (let counter = 1; outputLength < length; counter += 1) {
+      previous = await hmacSha256(prk, concatBytes(previous, info, Uint8Array.of(counter)));
+      blocks.push(previous);
+      outputLength += previous.length;
+    }
+    return concatBytes(...blocks).slice(0, length);
+  }
+
+  async function nip44ConversationKey(secretHex, peerHex) {
+    const secretBytes = normalizeInviteSecretBytes(secretHex);
+    const peerPoint = secpLiftX(bytesToBigInt(hexToBytes(peerHex)));
+    const shared = secpPointMultiply(peerPoint, bytesToBigInt(secretBytes));
+    if (!shared) throw new Error("NIP-44 shared point is invalid");
+    return hkdfExtract(new TextEncoder().encode("nip44-v2"), bigIntToBytes(shared.x));
+  }
+
+  async function nip44MessageKeys(conversationKey, nonce) {
+    if (conversationKey.length !== 32 || nonce.length !== 32) {
+      throw new Error("NIP-44 key derivation requires 32-byte inputs");
+    }
+    const keys = await hkdfExpand(conversationKey, nonce, 76);
+    return {
+      chachaKey: keys.slice(0, 32),
+      chachaNonce: keys.slice(32, 44),
+      hmacKey: keys.slice(44, 76),
+    };
+  }
+
+  function readU32Le(bytes, offset) {
+    return (
+      (bytes[offset] |
+        (bytes[offset + 1] << 8) |
+        (bytes[offset + 2] << 16) |
+        (bytes[offset + 3] << 24)) >>>
+      0
+    );
+  }
+
+  function writeU32Le(bytes, offset, value) {
+    bytes[offset] = value & 0xff;
+    bytes[offset + 1] = (value >>> 8) & 0xff;
+    bytes[offset + 2] = (value >>> 16) & 0xff;
+    bytes[offset + 3] = (value >>> 24) & 0xff;
+  }
+
+  function rotateLeft32(value, bits) {
+    return ((value << bits) | (value >>> (32 - bits))) >>> 0;
+  }
+
+  function chachaQuarterRound(state, a, b, c, d) {
+    state[a] = (state[a] + state[b]) >>> 0;
+    state[d] = rotateLeft32(state[d] ^ state[a], 16);
+    state[c] = (state[c] + state[d]) >>> 0;
+    state[b] = rotateLeft32(state[b] ^ state[c], 12);
+    state[a] = (state[a] + state[b]) >>> 0;
+    state[d] = rotateLeft32(state[d] ^ state[a], 8);
+    state[c] = (state[c] + state[d]) >>> 0;
+    state[b] = rotateLeft32(state[b] ^ state[c], 7);
+  }
+
+  function chacha20Block(key, nonce, counter) {
+    const state = new Uint32Array(16);
+    state[0] = 0x61707865;
+    state[1] = 0x3320646e;
+    state[2] = 0x79622d32;
+    state[3] = 0x6b206574;
+    for (let index = 0; index < 8; index += 1) state[4 + index] = readU32Le(key, index * 4);
+    state[12] = counter >>> 0;
+    state[13] = readU32Le(nonce, 0);
+    state[14] = readU32Le(nonce, 4);
+    state[15] = readU32Le(nonce, 8);
+    const working = new Uint32Array(state);
+    for (let round = 0; round < 10; round += 1) {
+      chachaQuarterRound(working, 0, 4, 8, 12);
+      chachaQuarterRound(working, 1, 5, 9, 13);
+      chachaQuarterRound(working, 2, 6, 10, 14);
+      chachaQuarterRound(working, 3, 7, 11, 15);
+      chachaQuarterRound(working, 0, 5, 10, 15);
+      chachaQuarterRound(working, 1, 6, 11, 12);
+      chachaQuarterRound(working, 2, 7, 8, 13);
+      chachaQuarterRound(working, 3, 4, 9, 14);
+    }
+    const output = new Uint8Array(64);
+    for (let index = 0; index < 16; index += 1) {
+      writeU32Le(output, index * 4, (working[index] + state[index]) >>> 0);
+    }
+    return output;
+  }
+
+  function chacha20Xor(key, nonce, data) {
+    if (key.length !== 32 || nonce.length !== 12) throw new Error("invalid ChaCha20 key or nonce");
+    const output = new Uint8Array(data.length);
+    let counter = 0;
+    for (let offset = 0; offset < data.length; offset += 64) {
+      const block = chacha20Block(key, nonce, counter);
+      counter += 1;
+      for (let index = 0; index < Math.min(64, data.length - offset); index += 1) {
+        output[offset + index] = data[offset + index] ^ block[index];
+      }
+    }
+    return output;
+  }
+
+  function timingSafeEqual(left, right) {
+    if (left.length !== right.length) return false;
+    let diff = 0;
+    for (let index = 0; index < left.length; index += 1) diff |= left[index] ^ right[index];
+    return diff === 0;
+  }
+
+  function nip44PaddedLength(length) {
+    if (length <= 32) return 32;
+    const nextPower = 2 ** (Math.floor(Math.log2(length - 1)) + 1);
+    const chunk = nextPower <= 256 ? 32 : nextPower / 8;
+    return chunk * (Math.floor((length - 1) / chunk) + 1);
+  }
+
+  function nip44Unpad(padded) {
+    if (padded.length < 34) throw new Error("NIP-44 padding is invalid");
+    const firstTwo = (padded[0] << 8) | padded[1];
+    let plaintextLength;
+    let prefixLength;
+    if (firstTwo === 0) {
+      if (padded.length < 6) throw new Error("NIP-44 extended padding is invalid");
+      plaintextLength =
+        padded[2] * 0x1000000 + ((padded[3] << 16) | (padded[4] << 8) | padded[5]);
+      if (plaintextLength < 65536) throw new Error("NIP-44 padding is invalid");
+      prefixLength = 6;
+    } else {
+      plaintextLength = firstTwo;
+      prefixLength = 2;
+    }
+    const paddedLength = nip44PaddedLength(plaintextLength);
+    if (!plaintextLength || padded.length !== prefixLength + paddedLength) {
+      throw new Error("NIP-44 padding is invalid");
+    }
+    return new TextDecoder().decode(padded.slice(prefixLength, prefixLength + plaintextLength));
+  }
+
+  function nip44Pad(plaintext) {
+    const plaintextBytes = new TextEncoder().encode(String(plaintext ?? ""));
+    const paddedLength = nip44PaddedLength(plaintextBytes.length);
+    let prefixLength;
+    if (plaintextBytes.length < 65536) {
+      prefixLength = 2;
+    } else {
+      prefixLength = 6;
+    }
+    const padded = new Uint8Array(prefixLength + paddedLength);
+    if (prefixLength === 2) {
+      padded[0] = (plaintextBytes.length >>> 8) & 0xff;
+      padded[1] = plaintextBytes.length & 0xff;
+    } else {
+      padded[2] = (plaintextBytes.length >>> 24) & 0xff;
+      padded[3] = (plaintextBytes.length >>> 16) & 0xff;
+      padded[4] = (plaintextBytes.length >>> 8) & 0xff;
+      padded[5] = plaintextBytes.length & 0xff;
+    }
+    padded.set(plaintextBytes, prefixLength);
+    return padded;
+  }
+
+  async function nip44EncryptWithSecret(inviteSecret, recipientHex, plaintext, options = {}) {
+    const nonce = options.nonceBytes || crypto.getRandomValues(new Uint8Array(32));
+    if (nonce.length !== 32) throw new Error("NIP-44 nonce must be 32 bytes");
+    const conversationKey = await nip44ConversationKey(inviteSecret, recipientHex);
+    const keys = await nip44MessageKeys(conversationKey, nonce);
+    const ciphertext = chacha20Xor(keys.chachaKey, keys.chachaNonce, nip44Pad(plaintext));
+    const mac = await hmacSha256(keys.hmacKey, concatBytes(nonce, ciphertext));
+    return bytesToBase64(concatBytes(Uint8Array.of(2), nonce, ciphertext, mac));
+  }
+
+  async function nip44DecryptWithSecret(inviteSecret, senderHex, payload) {
+    const value = String(payload || "");
+    if (!value || value[0] === "#" || value.length < 132) throw new Error("NIP-44 payload is invalid");
+    const data = base64ToBytes(value);
+    if (data.length < 99 || data[0] !== 2) throw new Error("NIP-44 payload version is unsupported");
+    const nonce = data.slice(1, 33);
+    const ciphertext = data.slice(33, data.length - 32);
+    const mac = data.slice(data.length - 32);
+    const conversationKey = await nip44ConversationKey(inviteSecret, senderHex);
+    const keys = await nip44MessageKeys(conversationKey, nonce);
+    const calculatedMac = await hmacSha256(keys.hmacKey, concatBytes(nonce, ciphertext));
+    if (!timingSafeEqual(calculatedMac, mac)) throw new Error("NIP-44 payload MAC is invalid");
+    return nip44Unpad(chacha20Xor(keys.chachaKey, keys.chachaNonce, ciphertext));
+  }
+
+  function inviteSecretDecryptAdapter(inviteSecret) {
+    return (senderHex, ciphertext) => nip44DecryptWithSecret(inviteSecret, senderHex, ciphertext);
+  }
+
+  function createLocalNip07ProviderFromSecret(secretHex, options = {}) {
+    const keypair = inviteUnwrapKeypairFromSecret(secretHex);
+    return {
+      async getPublicKey() {
+        return keypair.publicKeyHex;
+      },
+      async signEvent(eventTemplate) {
+        return signEventWithInviteSecret(eventTemplate, secretHex, options);
+      },
+      nip44: {
+        async encrypt(peerHex, plaintext) {
+          return nip44EncryptWithSecret(secretHex, peerHex, plaintext);
+        },
+        async decrypt(peerHex, ciphertext) {
+          return nip44DecryptWithSecret(secretHex, peerHex, ciphertext);
+        },
+      },
+    };
+  }
+
   function convertBits(data, fromBits, toBits, pad) {
     let accumulator = 0;
     let bits = 0;
@@ -1398,20 +1813,34 @@ const FiniteBrainProductClient = (() => {
     }
   }
 
-  async function plaintextGrantFromGiftWrappedExportGrant(grant, expectedRecipientNpub = null, options = {}) {
-    if (!grant?.wrappedEventJson) throw new Error("Folder Key Grant wrapper is missing");
+  async function openGiftWrappedRumorContent(wrappedEventJson, expectedRecipientNpub = null, options = {}, label = "Folder Key Grant") {
+    if (!wrappedEventJson) throw new Error(`${label} wrapper is missing`);
     const decrypt = nip44DecryptAdapter(options);
     if (!decrypt) throw new Error("NIP-44 decryption is unavailable");
     const expectedRecipientHex = expectedRecipientNpub ? npubToHex(expectedRecipientNpub) : null;
-    const giftWrap = parseJsonObject(grant.wrappedEventJson, "Folder Key Grant wrapper");
+    const giftWrap = parseJsonObject(wrappedEventJson, `${label} wrapper`);
     validateGiftWrapShell(giftWrap, expectedRecipientHex);
     const sealPlaintext = await decrypt(requireHex64(giftWrap.pubkey, "gift wrap pubkey"), giftWrap.content);
-    const seal = parseJsonObject(sealPlaintext, "Folder Key Grant seal");
+    const seal = parseJsonObject(sealPlaintext, `${label} seal`);
     validateSealEvent(seal);
     const sealIssuerHex = requireHex64(seal.pubkey, "seal pubkey");
     const rumorPlaintext = await decrypt(sealIssuerHex, seal.content);
-    const rumor = parseJsonObject(rumorPlaintext, "Folder Key Grant rumor");
+    const rumor = parseJsonObject(rumorPlaintext, `${label} rumor`);
     await validateRumorEvent(rumor, sealIssuerHex);
+    return {
+      giftWrap,
+      rumor,
+      seal,
+    };
+  }
+
+  async function plaintextGrantFromGiftWrappedExportGrant(grant, expectedRecipientNpub = null, options = {}) {
+    const { rumor } = await openGiftWrappedRumorContent(
+      grant?.wrappedEventJson,
+      expectedRecipientNpub,
+      options,
+      "Folder Key Grant"
+    );
     const plaintext = parseJsonObject(rumor.content, "Folder Key Grant plaintext");
     return validateFolderKeyGrantPlaintext(plaintext, expectedRecipientNpub, grant);
   }
@@ -4613,8 +5042,17 @@ const FiniteBrainProductClient = (() => {
     if (!$("vaultInviteExpiresAtInput").value) {
       $("vaultInviteExpiresAtInput").value = defaultShareExpiryDateTimeLocal();
     }
+    if ($("vaultInviteEmailProofCreatedAtInput") && !$("vaultInviteEmailProofCreatedAtInput").value) {
+      $("vaultInviteEmailProofCreatedAtInput").value = dateTimeLocalFromIso(new Date().toISOString());
+    }
     if (state.lastVaultInvitationCode && !$("vaultInviteCodeInput").value) {
       $("vaultInviteCodeInput").value = state.lastVaultInvitationCode;
+    }
+    if (state.lastEmailInviteSecret && $("vaultInviteSecretInput") && !$("vaultInviteSecretInput").value) {
+      $("vaultInviteSecretInput").value = state.lastEmailInviteSecret;
+    }
+    if (state.lastEmailInviteUrl && $("vaultInviteUrlInput")) {
+      $("vaultInviteUrlInput").value = state.lastEmailInviteUrl;
     }
     const connected = state.signerStatus === "connected";
     const busy = state.accessBusy;
@@ -4623,8 +5061,16 @@ const FiniteBrainProductClient = (() => {
     const codeAvailable = Boolean(invitationInput);
     const codeHint = vaultInvitationIdentifierHint(invitationInput);
     const inviteCodeUsable = codeAvailable && !codeHint;
+    const emailClaimReady = Boolean(
+      inviteCodeUsable &&
+        $("vaultInviteEmailInput")?.value.trim() &&
+        $("vaultInviteSecretInput")?.value.trim()
+    );
+    safeSetHidden("vaultInviteConnectSignerButton", connected);
+    setOptionalDisabled("vaultInviteConnectSignerButton", busy || !deriveSignerState(window.nostr).canConnect);
     $("createVaultInvitationButton").disabled = !connected || busy || !state.activeVaultId || !organizationVault;
     $("getVaultInvitationButton").disabled = !connected || busy || !inviteCodeUsable;
+    setOptionalDisabled("getEmailInviteInstructionsButton", !connected || busy || !emailClaimReady);
     $("acceptVaultInvitationButton").disabled = !connected || busy || !inviteCodeUsable;
     $("revokeVaultInvitationButton").disabled = !connected || busy || !codeAvailable || !organizationVault;
     if (!connected) {
@@ -4954,6 +5400,11 @@ const FiniteBrainProductClient = (() => {
   function renderVaultManagementPanel(metadata) {
     const signerConnected = state.signerStatus === "connected";
     const organizationVault = hasOrganizationVaultControls(metadata);
+    const inviteInProgress = Boolean(
+      state.lastVaultInvitationCode ||
+        $("vaultInviteCodeInput")?.value.trim() ||
+        $("vaultInviteSecretInput")?.value.trim()
+    );
     setText("vaultManagementTitle", "Vaults");
     setText("vaultManagementSummary", vaultManagementSummary(metadata));
     renderVaultSwitchList();
@@ -4962,7 +5413,7 @@ const FiniteBrainProductClient = (() => {
     safeSetHidden("vaultPeopleSection", !organizationVault);
     safeSetHidden("vaultInvitationListSection", !organizationVault);
     safeSetHidden("sharedFolderSection", !organizationVault);
-    safeSetHidden("vaultInvitationPanel", !organizationVault);
+    safeSetHidden("vaultInvitationPanel", !(organizationVault || inviteInProgress));
     setOptionalDisabled("accessConnectSignerButton", !deriveSignerState(window.nostr).canConnect);
     setOptionalDisabled("accessLoadVaultButton", !canLoadVault());
     setOptionalDisabled(
@@ -5955,10 +6406,12 @@ const FiniteBrainProductClient = (() => {
     render();
   }
 
-  async function loadVaultMetadata() {
-    setActiveVaultId(selectedVaultIdFromControls(), { reset: false });
-    await ensureInvitedVaultAcceptedForActiveSelection();
-    await ensurePersonalVaultForActiveSelection();
+  async function loadVaultMetadata(options = {}) {
+    if (!options.preserveActive) {
+      setActiveVaultId(selectedVaultIdFromControls(), { reset: false });
+      await ensureInvitedVaultAcceptedForActiveSelection();
+      await ensurePersonalVaultForActiveSelection();
+    }
     const path = `/_admin/vaults/${encodeURIComponent(state.activeVaultId)}/metadata`;
     const metadata = await protectedRequest(path);
     state.metadata = metadata;
@@ -6245,7 +6698,21 @@ const FiniteBrainProductClient = (() => {
   function defaultShareExpiryDateTimeLocal() {
     const date = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
     date.setSeconds(0, 0);
-    return date.toISOString().slice(0, 16);
+    return dateTimeLocalValue(date);
+  }
+
+  function dateTimeLocalFromIso(value) {
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) throw new Error("Timestamp is invalid");
+    date.setSeconds(0, 0);
+    return dateTimeLocalValue(date);
+  }
+
+  function dateTimeLocalValue(date) {
+    const pad = (value) => String(value).padStart(2, "0");
+    return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(
+      date.getHours()
+    )}:${pad(date.getMinutes())}`;
   }
 
   function slugFromFolderName(name) {
@@ -6365,6 +6832,18 @@ const FiniteBrainProductClient = (() => {
     const value = $("vaultInviteExpiresAtInput").value.trim();
     const date = value ? new Date(value) : new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
     if (Number.isNaN(date.getTime())) throw new Error("Vault invitation expiry is invalid");
+    return date.toISOString();
+  }
+
+  function emailProofCreatedAtIso() {
+    const value = $("vaultInviteEmailProofCreatedAtInput")?.value.trim();
+    if (!value) return new Date().toISOString();
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) throw new Error("Email proof timestamp is invalid");
+    const now = new Date();
+    if (now.getTime() >= date.getTime() && now.getTime() - date.getTime() < 60 * 1000) {
+      return now.toISOString();
+    }
     return date.toISOString();
   }
 
@@ -6629,6 +7108,368 @@ const FiniteBrainProductClient = (() => {
       recipientNpub: input.recipientNpub,
       wrappedEventJson: JSON.stringify(wrappedEvent),
       createdAt,
+    };
+  }
+
+  function inviteEmailLike(value) {
+    return looksLikeEmailIdentity(value);
+  }
+
+  function finiteVipEmail(value) {
+    return /@finite\.vip$/i.test(String(value || "").trim());
+  }
+
+  function canonicalInviteEmail(value) {
+    const email = String(value || "").trim().toLowerCase();
+    if (!inviteEmailLike(email)) throw new Error("Email invite target must be an email address");
+    if (/[\u0000-\u001f\u007f]/.test(email)) {
+      throw new Error("Email invite target must be printable");
+    }
+    return email;
+  }
+
+  function emailInviteScope(metadata, selectedFolders) {
+    const selectedValues = Array.isArray(selectedFolders)
+      ? selectedFolders
+      : initialVaultInvitationFolders(selectedFolders || "");
+    const selected = new Set(uniqueValues(selectedValues));
+    const seenSelected = new Set();
+    const scope = [];
+    for (const folder of metadataFolderRows(metadata)) {
+      const selectedFolder = selected.has(folder.id);
+      if (selectedFolder) seenSelected.add(folder.id);
+      if (folder.access === "all_members" || (folder.access === "restricted" && selectedFolder)) {
+        scope.push({
+          folderId: folder.id,
+          access: folder.access,
+          keyVersion: folder.currentKeyVersion || 1,
+        });
+        continue;
+      }
+      if (selectedFolder) {
+        throw new Error("Email invite bootstrap can include all-members and selected restricted Folders only");
+      }
+    }
+    if (seenSelected.size !== selected.size) throw new Error("Folder not found");
+    return scope;
+  }
+
+  function emailInviteScopeJson(scope) {
+    return (scope || []).map((folder) => ({
+      folderId: folder.folderId,
+      access: folder.access,
+      keyVersion: Number(folder.keyVersion),
+    }));
+  }
+
+  function canonicalEmailInviteAuthorizationPayload(input) {
+    return JSON.stringify({
+      version: "finite-email-invite-bootstrap-authorization-v1",
+      vaultId: input.vaultId,
+      invitedEmail: input.invitedEmail,
+      inviteUnwrapNpub: input.inviteUnwrapNpub,
+      bootstrapPayloadHash: input.bootstrapPayloadHash,
+      expiresAt: input.expiresAt,
+      folders: emailInviteScopeJson(input.scope),
+    });
+  }
+
+  function emailInviteAuthorizationTags(input) {
+    return [
+      ["d", `finite-email-invite-bootstrap-authorization:${input.vaultId}:${input.invitedEmail}`],
+      ["vault", input.vaultId],
+      ["email", input.invitedEmail],
+    ];
+  }
+
+  async function buildEmailInviteAuthorizationEvent(input) {
+    const signEvent = requireNip07SignEvent(input);
+    const createdAtUnix = input.createdAtUnix || Math.floor(Date.now() / 1000);
+    return signEvent({
+      kind: APP_EVENT_KIND,
+      created_at: createdAtUnix,
+      tags: emailInviteAuthorizationTags(input),
+      content: canonicalEmailInviteAuthorizationPayload(input),
+    });
+  }
+
+  function emailInviteBootstrapPayload(input) {
+    return {
+      version: "finite-email-invite-bootstrap-payload-v1",
+      vaultId: input.vaultId,
+      invitedEmail: input.invitedEmail,
+      inviteUnwrapNpub: input.inviteUnwrapNpub,
+      folders: emailInviteScopeJson(input.scope),
+      grants: input.grants,
+    };
+  }
+
+  async function buildEmailInviteBootstrapWrappedEvent(input) {
+    const signEvent = requireNip07SignEvent(input);
+    const encrypt = nip44EncryptAdapter(input);
+    if (!encrypt) throw new Error("NIP-44 encryption is unavailable");
+    const createdAtUnix = input.createdAtUnix || Math.floor(Date.now() / 1000);
+    const issuerNpub = input.issuerNpub || currentActorNpub();
+    const issuerHex = npubToHex(issuerNpub);
+    const recipientHex = npubToHex(input.inviteUnwrapNpub);
+    const rumor = {
+      pubkey: issuerHex,
+      created_at: createdAtUnix,
+      kind: APP_EVENT_KIND,
+      tags: [
+        ["d", `finite-email-invite-bootstrap:${input.vaultId}`],
+        ["vault", input.vaultId],
+      ],
+      content: input.bootstrapPayloadJson,
+    };
+    rumor.id = await sha256Hex(canonicalNostrEventIdInput(rumor));
+    const sealContent = await encrypt(recipientHex, JSON.stringify(rumor));
+    const seal = await signEvent({
+      kind: 13,
+      created_at: createdAtUnix,
+      tags: [],
+      content: sealContent,
+    });
+    const wrappedContent = await encrypt(recipientHex, JSON.stringify(seal));
+    const wrapped = await signEvent({
+      kind: 1059,
+      created_at: createdAtUnix,
+      tags: [["p", recipientHex]],
+      content: wrappedContent,
+    });
+    return JSON.stringify(wrapped);
+  }
+
+  function openedKeyForScopeItem(keyring, vaultId, item) {
+    const key = keyring?.keys?.get(folderKeyId(vaultId, item.folderId, item.keyVersion));
+    if (!key) throw new Error(`Open Folder Key for ${item.folderId} v${item.keyVersion} before creating the invite`);
+    return key;
+  }
+
+  async function buildEmailVaultInvitationRequest(keyring, input) {
+    const invitedEmail = canonicalInviteEmail(input.target || input.invitedEmail);
+    const vaultId = input.vaultId || state.activeVaultId;
+    const issuerNpub = input.issuerNpub || currentActorNpub();
+    const signEvent = requireNip07SignEvent(input);
+    const inviteKeypair = input.inviteKeypair || createInviteUnwrapKeypair();
+    const inviteUnwrapNpub = inviteKeypair.npub || inviteKeypair.inviteUnwrapNpub;
+    const inviteSecret = inviteKeypair.secretHex || inviteKeypair.inviteSecret;
+    const scope = input.scope || emailInviteScope(input.metadata || state.metadata, input.initialFolderAccess || []);
+    const initialFolderAccess =
+      input.initialFolderAccess === undefined || input.initialFolderAccess === null
+        ? scope.filter((folder) => folder.access === "restricted").map((folder) => folder.folderId)
+        : initialVaultInvitationFolders(input.initialFolderAccess || "");
+    const bootstrapGrants = [];
+    for (const item of scope) {
+      const key = openedKeyForScopeItem(keyring, vaultId, item);
+      bootstrapGrants.push({
+        folderId: item.folderId,
+        grant: await buildFolderKeyGrantRequest({
+          id: input.grantIdFactory ? input.grantIdFactory(item) : undefined,
+          vaultId,
+          folderId: item.folderId,
+          keyVersion: item.keyVersion,
+          folderKey: bytesToBase64(key.rawKey),
+          issuerNpub,
+          provider: input.provider,
+          recipientNpub: inviteUnwrapNpub,
+          signEvent,
+          createdAtUnix: input.createdAtUnix,
+        }),
+      });
+    }
+    const bootstrapPayload = emailInviteBootstrapPayload({
+      vaultId,
+      invitedEmail,
+      inviteUnwrapNpub,
+      scope,
+      grants: bootstrapGrants,
+    });
+    const bootstrapPayloadJson = JSON.stringify(bootstrapPayload);
+    const bootstrapPayloadHash = `sha256:${await sha256Hex(bootstrapPayloadJson)}`;
+    const bootstrapWrappedEventJson = await buildEmailInviteBootstrapWrappedEvent({
+      ...input,
+      vaultId,
+      issuerNpub,
+      inviteUnwrapNpub,
+      bootstrapPayloadJson,
+      signEvent,
+    });
+    const bootstrapAuthorizationEventJson = JSON.stringify(
+      await buildEmailInviteAuthorizationEvent({
+        ...input,
+        vaultId,
+        invitedEmail,
+        inviteUnwrapNpub,
+        bootstrapPayloadHash,
+        expiresAt: input.expiresAt,
+        scope,
+        signEvent,
+      })
+    );
+    return {
+      body: {
+        target: invitedEmail,
+        initialFolderAccess,
+        expiresAt: input.expiresAt,
+        inviteUnwrapNpub,
+        bootstrapPayloadHash,
+        bootstrapWrappedEventJson,
+        bootstrapAuthorizationEventJson,
+      },
+      bootstrapPayloadJson,
+      inviteSecret,
+      inviteUnwrapNpub,
+      scope,
+    };
+  }
+
+  function emailInviteBootstrapPath(code) {
+    return `${vaultInvitationLinkPath(code)}/bootstrap`;
+  }
+
+  function emailInviteInstructionsPath(code) {
+    return `${vaultInvitationLinkPath(code)}/instructions`;
+  }
+
+  function emailInviteClaimPath(code) {
+    return `${vaultInvitationLinkPath(code)}/claim`;
+  }
+
+  function emailInviteClientUrl(input) {
+    const inviteCode = String(input.inviteCode || "").trim();
+    const inviteSecret = String(input.inviteSecret || "").trim();
+    if (!inviteCode) throw new Error("Email invite URL needs an invite code");
+    if (!inviteSecret) throw new Error("Email invite URL needs an Invite Secret");
+    const base = String(input.publicBaseUrl || state.config?.publicBaseUrl || window.location.origin).replace(/\/$/, "");
+    const fragment = [`inviteCode=${encodeURIComponent(inviteCode)}`];
+    if (input.invitedEmail) fragment.push(`inviteEmail=${encodeURIComponent(canonicalInviteEmail(input.invitedEmail))}`);
+    fragment.push(`inviteSecret=${encodeURIComponent(inviteSecret)}`);
+    return `${base}/client#${fragment.join("&")}`;
+  }
+
+  function emailInviteClaimProofPayload(input) {
+    return JSON.stringify({
+      version: "finite-email-invite-bootstrap-claim-proof-v1",
+      vaultId: input.vaultId,
+      inviteCode: input.inviteCode,
+      invitedEmail: input.invitedEmail,
+      claimantNpub: input.claimantNpub,
+      bootstrapPayloadHash: input.bootstrapPayloadHash,
+      emailProofCreatedAt: input.emailProofCreatedAt,
+    });
+  }
+
+  async function buildEmailInviteClaimProofEvent(input) {
+    const createdAtUnix = input.createdAtUnix || Math.floor(Date.now() / 1000);
+    return signEventWithInviteSecret(
+      {
+        kind: APP_EVENT_KIND,
+        created_at: createdAtUnix,
+        tags: [],
+        content: emailInviteClaimProofPayload(input),
+      },
+      input.inviteSecret,
+      input
+    );
+  }
+
+  function validateEmailBootstrapPayload(payload, payloadJson, invitation, input) {
+    if (payload.version !== "finite-email-invite-bootstrap-payload-v1") {
+      throw new Error("Unsupported Email Invite Bootstrap payload version");
+    }
+    const invitedEmail = canonicalInviteEmail(input.invitedEmail || input.email);
+    if (payload.vaultId !== invitation.vaultId) throw new Error("Email Invite Bootstrap Vault mismatch");
+    if (canonicalInviteEmail(payload.invitedEmail) !== invitedEmail) {
+      throw new Error("Email Invite Bootstrap email mismatch");
+    }
+    if (payload.inviteUnwrapNpub !== invitation.inviteUnwrapNpub) {
+      throw new Error("Email Invite Bootstrap unwrap npub mismatch");
+    }
+    const expectedScope = JSON.stringify(emailInviteScopeJson(invitation.bootstrapScope || []));
+    if (JSON.stringify(emailInviteScopeJson(payload.folders || [])) !== expectedScope) {
+      throw new Error("Email Invite Bootstrap scope mismatch");
+    }
+    return sha256Hex(payloadJson).then((hash) => {
+      if (`sha256:${hash}` !== invitation.bootstrapPayloadHash) {
+        throw new Error("Email Invite Bootstrap payload hash mismatch");
+      }
+      return payload;
+    });
+  }
+
+  async function openEmailInviteBootstrap(invitation, input) {
+    const inviteSecret = String(input.inviteSecret || "").trim();
+    const inviteKeypair = inviteUnwrapKeypairFromSecret(inviteSecret);
+    if (inviteKeypair.npub !== invitation.inviteUnwrapNpub) {
+      throw new Error("Invite Secret does not match this email invitation");
+    }
+    const inviteDecrypt = input.inviteDecrypt || inviteSecretDecryptAdapter(inviteSecret);
+    const { rumor } = await openGiftWrappedRumorContent(
+      invitation.bootstrapWrappedEventJson,
+      invitation.inviteUnwrapNpub,
+      { decrypt: inviteDecrypt },
+      "Email Invite Bootstrap"
+    );
+    const payloadJson = rumor.content;
+    const payload = parseJsonObject(payloadJson, "Email Invite Bootstrap payload");
+    await validateEmailBootstrapPayload(payload, payloadJson, invitation, input);
+    return { payload, payloadJson };
+  }
+
+  async function buildEmailInviteClaimRequest(input) {
+    const inviteSecret = String(input.inviteSecret || "").trim();
+    const invitation = input.invitation;
+    const claimantNpub = input.claimantNpub || currentActorNpub();
+    const { payload } = await openEmailInviteBootstrap(invitation, input);
+    const inviteDecrypt = input.inviteDecrypt || inviteSecretDecryptAdapter(inviteSecret);
+    const keyring = input.keyring || createSessionKeyring();
+    const grants = [];
+    for (const entry of payload.grants || []) {
+      const plaintext = await plaintextGrantFromGiftWrappedExportGrant(
+        entry.grant,
+        invitation.inviteUnwrapNpub,
+        { decrypt: inviteDecrypt }
+      );
+      await openFolderKeyGrantPlaintext(keyring, plaintext);
+      grants.push({
+        folderId: entry.folderId,
+        grant: await buildFolderKeyGrantRequest({
+          id: input.claimGrantIdFactory ? input.claimGrantIdFactory(entry, plaintext) : undefined,
+          vaultId: plaintext.vaultId,
+          folderId: plaintext.folderId,
+          keyVersion: plaintext.keyVersion,
+          folderKey: plaintext.folderKey,
+          issuerNpub: claimantNpub,
+          provider: input.provider,
+          recipientNpub: claimantNpub,
+          signEvent: requireNip07SignEvent(input),
+          createdAtUnix: input.createdAtUnix,
+        }),
+      });
+    }
+    const inviteUnwrapProofEventJson = JSON.stringify(
+      await buildEmailInviteClaimProofEvent({
+        inviteSecret,
+        vaultId: invitation.vaultId,
+        inviteCode: invitation.inviteCode,
+        invitedEmail: canonicalInviteEmail(input.invitedEmail || input.email),
+        claimantNpub,
+        bootstrapPayloadHash: invitation.bootstrapPayloadHash,
+        emailProofCreatedAt: input.emailProofCreatedAt,
+        createdAtUnix: input.createdAtUnix,
+        auxBytes: input.auxBytes,
+      })
+    );
+    return {
+      body: {
+        email: canonicalInviteEmail(input.invitedEmail || input.email),
+        emailProofCreatedAt: input.emailProofCreatedAt,
+        inviteUnwrapProofEventJson,
+        grants,
+      },
+      keyring,
+      openedGrantCount: grants.length,
     };
   }
 
@@ -7046,18 +7887,58 @@ const FiniteBrainProductClient = (() => {
   }
 
   async function createVaultInvitationFromPanel() {
-    const targetNpub = await normalizedNpubInput("vaultInviteTargetNpubInput", "Paste an invite email first");
+    const targetInput = $("vaultInviteTargetNpubInput").value.trim();
+    if (!targetInput) throw new Error("Paste an invite email first");
     state.accessBusy = true;
     state.accessResult = null;
     render();
     try {
-      const body = JSON.stringify(
-        buildVaultInvitationRequest({
-          targetNpub,
-          initialFolderAccess: $("vaultInviteFoldersInput").value,
-          expiresAt: vaultInvitationExpiryIso(),
-        })
-      );
+      let body;
+      let localInviteSecret = null;
+      let targetLabel = targetInput;
+      if (inviteEmailLike(targetInput)) {
+        let resolvedNpub = null;
+        if (finiteVipEmail(targetInput)) {
+          try {
+            resolvedNpub = (await resolveIdentityInputValue(targetInput, "Paste an invite email first")).npub;
+          } catch (_) {
+            resolvedNpub = null;
+          }
+        }
+        if (resolvedNpub) {
+          body = JSON.stringify(
+            buildVaultInvitationRequest({
+              targetNpub: resolvedNpub,
+              initialFolderAccess: $("vaultInviteFoldersInput").value,
+              expiresAt: vaultInvitationExpiryIso(),
+            })
+          );
+          targetLabel = identityDisplay(resolvedNpub);
+        } else {
+          if (!state.keyring) state.keyring = createSessionKeyring();
+          await openAvailableFolderKeyGrants();
+          const request = await buildEmailVaultInvitationRequest(state.keyring, {
+            target: targetInput,
+            metadata: state.metadata,
+            initialFolderAccess: $("vaultInviteFoldersInput").value,
+            expiresAt: vaultInvitationExpiryIso(),
+            vaultId: state.activeVaultId,
+          });
+          body = JSON.stringify(request.body);
+          localInviteSecret = request.inviteSecret;
+          targetLabel = canonicalInviteEmail(targetInput);
+        }
+      } else {
+        const targetNpub = await normalizedNpubInput("vaultInviteTargetNpubInput", "Paste an invite email first");
+        body = JSON.stringify(
+          buildVaultInvitationRequest({
+            targetNpub,
+            initialFolderAccess: $("vaultInviteFoldersInput").value,
+            expiresAt: vaultInvitationExpiryIso(),
+          })
+        );
+        targetLabel = identityDisplay(targetNpub);
+      }
       const invitation = await protectedRequest(
         vaultInvitationCreatePath(state.activeVaultId),
         { method: "POST", body }
@@ -7065,14 +7946,37 @@ const FiniteBrainProductClient = (() => {
       state.lastVaultInvitationId = invitation.id;
       state.lastVaultInvitationCode = invitation.inviteCode;
       $("vaultInviteCodeInput").value = invitation.inviteCode;
-      setAccessResult("ready", "Invitation created", `${identityDisplay(invitation.userId)} can join ${invitation.vaultId}.`, {
+      if (localInviteSecret && invitation.targetKind === "email_bootstrap") {
+        const invitedEmail = invitation.invitedEmail || canonicalInviteEmail(targetInput);
+        state.lastEmailInviteSecret = localInviteSecret;
+        state.lastEmailInviteUrl = emailInviteClientUrl({
+          publicBaseUrl: state.config.publicBaseUrl,
+          inviteCode: invitation.inviteCode,
+          invitedEmail,
+          inviteSecret: localInviteSecret,
+        });
+        $("vaultInviteSecretInput").value = localInviteSecret;
+        $("vaultInviteEmailInput").value = invitedEmail;
+        $("vaultInviteUrlInput").value = state.lastEmailInviteUrl;
+      } else {
+        state.lastEmailInviteSecret = null;
+        state.lastEmailInviteUrl = null;
+        $("vaultInviteUrlInput").value = "";
+      }
+      setAccessResult("ready", "Invitation created", `${targetLabel} can join ${invitation.vaultId}.`, {
         inviteCode: invitation.inviteCode,
         invitationId: invitation.id,
         acceptPath: invitation.acceptPath,
+        publicInstructions: invitation.publicInstructionsUrl || invitation.publicInstructionsPath || "none",
         expiresAt: invitation.expiresAt,
-        "target email": identityDisplay(invitation.userId),
+        target: invitation.invitedEmail || targetLabel,
+        delivery: invitation.deliveryStatus || "manual",
       });
-      log("Created Vault invitation.", { invitationId: invitation.id, vaultId: invitation.vaultId });
+      log("Created Vault invitation.", {
+        invitationId: invitation.id,
+        targetKind: invitation.targetKind,
+        vaultId: invitation.vaultId,
+      });
       await refreshVaultAdminLists();
     } catch (error) {
       setAccessResult("error", "Invite failed", vaultInvitationUnavailableDetail(error));
@@ -7111,8 +8015,59 @@ const FiniteBrainProductClient = (() => {
     }
   }
 
+  async function loadEmailInviteInstructionsFromPanel() {
+    const code = currentVaultInvitationCode();
+    const email = canonicalInviteEmail($("vaultInviteEmailInput").value);
+    const inviteSecret = $("vaultInviteSecretInput").value.trim();
+    if (!inviteSecret) throw new Error("Paste the client-only Invite Secret first");
+    state.accessBusy = true;
+    state.accessResult = null;
+    render();
+    try {
+      const body = JSON.stringify({
+        email,
+        emailProofCreatedAt: emailProofCreatedAtIso(),
+      });
+      const invitation = await protectedRequest(emailInviteBootstrapPath(code), {
+        method: "POST",
+        body,
+      });
+      state.lastVaultInvitationId = invitation.id;
+      state.lastVaultInvitationCode = invitation.inviteCode;
+      state.lastEmailInvitePostProof = invitation;
+      await openEmailInviteBootstrap(invitation, {
+        inviteSecret,
+        invitedEmail: email,
+      });
+      const folderScope = (invitation.bootstrapScope || [])
+        .map((folder) => `${folder.folderId} v${folder.keyVersion}`)
+        .join(", ");
+      setAccessResult("ready", "Email scope loaded", `${email} can claim ${invitation.vaultId}.`, {
+        inviteCode: invitation.inviteCode,
+        scope: folderScope || "none",
+        status: invitation.status,
+      });
+      log("Loaded post-proof email invitation scope.", {
+        invitationId: invitation.id,
+        vaultId: invitation.vaultId,
+      });
+      return invitation;
+    } catch (error) {
+      setAccessResult("error", "Email scope failed", vaultInvitationUnavailableDetail(error));
+      throw error;
+    } finally {
+      state.accessBusy = false;
+      render();
+    }
+  }
+
   async function acceptVaultInvitationFromPanel() {
     const code = currentVaultInvitationCode();
+    const email = $("vaultInviteEmailInput")?.value.trim();
+    const inviteSecret = $("vaultInviteSecretInput")?.value.trim();
+    if (email || inviteSecret) {
+      return claimEmailVaultInvitationFromPanel(code);
+    }
     state.accessBusy = true;
     state.accessResult = null;
     render();
@@ -7124,7 +8079,7 @@ const FiniteBrainProductClient = (() => {
       state.lastVaultInvitationCode = invitation.inviteCode;
       setActiveVaultId(invitation.vaultId);
       $("vaultInviteCodeInput").value = invitation.inviteCode;
-      await loadVaultMetadata();
+      await loadVaultMetadata({ preserveActive: true });
       await loadVisibleVaults();
       setAccessResult(
         "ready",
@@ -7140,6 +8095,72 @@ const FiniteBrainProductClient = (() => {
       log("Accepted Vault invitation.", { invitationId: invitation.id, vaultId: invitation.vaultId });
     } catch (error) {
       setAccessResult("error", "Accept failed", vaultInvitationUnavailableDetail(error));
+      throw error;
+    } finally {
+      state.accessBusy = false;
+      render();
+    }
+  }
+
+  async function claimEmailVaultInvitationFromPanel(code) {
+    const email = canonicalInviteEmail($("vaultInviteEmailInput").value);
+    const inviteSecret = $("vaultInviteSecretInput").value.trim();
+    if (!inviteSecret) throw new Error("Paste the client-only Invite Secret first");
+    state.accessBusy = true;
+    state.accessResult = null;
+    render();
+    try {
+      const proofCreatedAt = emailProofCreatedAtIso();
+      const proofBody = JSON.stringify({
+        email,
+        emailProofCreatedAt: proofCreatedAt,
+      });
+      const invitation =
+        state.lastEmailInvitePostProof?.inviteCode === code
+          ? state.lastEmailInvitePostProof
+          : await protectedRequest(emailInviteBootstrapPath(code), {
+              method: "POST",
+              body: proofBody,
+            });
+      const claimantNpub = currentActorNpub();
+      if (!state.keyring) state.keyring = createSessionKeyring();
+      const claimRequest = await buildEmailInviteClaimRequest({
+        claimantNpub,
+        email,
+        emailProofCreatedAt: proofCreatedAt,
+        invitation,
+        inviteSecret,
+        keyring: state.keyring,
+      });
+      const claimed = await protectedRequest(emailInviteClaimPath(code), {
+        method: "POST",
+        body: JSON.stringify(claimRequest.body),
+      });
+      state.lastVaultInvitationId = claimed.id;
+      state.lastVaultInvitationCode = claimed.inviteCode;
+      state.lastEmailInvitePostProof = null;
+      setActiveVaultId(claimed.vaultId);
+      $("vaultInviteCodeInput").value = claimed.inviteCode;
+      await loadVaultMetadata({ preserveActive: true });
+      const grants = await openAvailableFolderKeyGrants();
+      await pullSyncBootstrap();
+      selectDefaultReaderTargets();
+      setAccessResult(
+        "ready",
+        claimed.duplicateAccept ? "Email invite already claimed" : "Email invite claimed",
+        `${claimed.vaultId} is now available to this signer.`,
+        {
+          status: claimed.status,
+          openedKeys: String(grants.opened.length + claimRequest.openedGrantCount),
+          signer: state.pubkeyHex ? "connected" : "none",
+        }
+      );
+      log("Claimed email Vault invitation.", {
+        invitationId: claimed.id,
+        vaultId: claimed.vaultId,
+      });
+    } catch (error) {
+      setAccessResult("error", "Claim failed", vaultInvitationUnavailableDetail(error));
       throw error;
     } finally {
       state.accessBusy = false;
@@ -7661,10 +8682,23 @@ const FiniteBrainProductClient = (() => {
         log("Failed to inspect Vault invitation.", { error: error.message });
       });
     });
+    onOptionalClick("getEmailInviteInstructionsButton", () => {
+      loadEmailInviteInstructionsFromPanel().catch((error) => {
+        state.lastError = error.message;
+        log("Failed to load email Vault invitation scope.", { error: error.message });
+      });
+    });
     onOptionalClick("acceptVaultInvitationButton", () => {
       acceptVaultInvitationFromPanel().catch((error) => {
         state.lastError = error.message;
         log("Failed to accept Vault invitation.", { error: error.message });
+      });
+    });
+    onOptionalClick("vaultInviteConnectSignerButton", () => {
+      connectSigner().catch((error) => {
+        state.lastError = error.message;
+        log("Failed to connect signer for Vault invitation.", { error: error.message });
+        render();
       });
     });
     onOptionalClick("revokeVaultInvitationButton", () => {
@@ -7812,9 +8846,48 @@ const FiniteBrainProductClient = (() => {
     });
   }
 
+  function populateInviteFromHash() {
+    const hash = String(window.location?.hash || "");
+    if (!hash.includes("invite")) return;
+    const params = new URLSearchParams(hash.replace(/^#/, ""));
+    let populated = false;
+    const inviteCode = params.get("inviteCode") || params.get("code");
+    if (inviteCode) {
+      state.lastVaultInvitationCode = inviteCode;
+      if ($("vaultInviteCodeInput")) $("vaultInviteCodeInput").value = inviteCode;
+      populated = true;
+    }
+    const inviteEmail = params.get("inviteEmail") || params.get("email");
+    if (inviteEmail) {
+      try {
+        const email = canonicalInviteEmail(inviteEmail);
+        if ($("vaultInviteEmailInput")) $("vaultInviteEmailInput").value = email;
+        populated = true;
+      } catch (error) {
+        state.lastError = error.message;
+      }
+    }
+    const inviteSecret = params.get("inviteSecret");
+    if (inviteSecret) {
+      state.lastEmailInviteSecret = inviteSecret;
+      if ($("vaultInviteSecretInput")) $("vaultInviteSecretInput").value = inviteSecret;
+      populated = true;
+    }
+    if (!populated) return;
+    state.activeSidebarMode = "access";
+    state.activeAccessView = "folder";
+    try {
+      const cleanUrl = `${window.location.pathname || ""}${window.location.search || ""}`;
+      window.history?.replaceState?.(null, "", cleanUrl || window.location.href.split("#")[0]);
+    } catch (_) {
+      // Fragment cleanup is best-effort; invite data is already in client state.
+    }
+  }
+
   async function start() {
     bind();
     setEditorDraftText($("pageDraftInput").value);
+    populateInviteFromHash();
     await loadConfig();
     await detectSigner();
   }
@@ -7833,20 +8906,34 @@ const FiniteBrainProductClient = (() => {
     buildAuthEventTemplate,
     buildDefaultVaultPageWrites,
     buildFolderAccessRemovalRequest,
+    buildEmailInviteAuthorizationEvent,
+    buildEmailInviteClaimProofEvent,
+    buildEmailInviteClaimRequest,
+    buildEmailVaultInvitationRequest,
     buildVaultInvitationRequest,
     buildVaultBootstrapPlan,
     buildGraphProjection,
     buildReplayFrames,
     canonicalAdminAccessChangePayload,
+    canonicalEmailInviteAuthorizationPayload,
+    canonicalInviteEmail,
     commandPaletteCommands,
     commandPaletteRows,
     contextMenuItemsForTarget,
     createClientProjection,
+    createLocalNip07ProviderFromSecret,
     createSessionKeyring,
     deriveSignerState,
     defaultVaultBootstrapFolderIds,
     defaultVaultPages,
     defaultVaultPagesFolderId,
+    emailInviteAuthorizationTags,
+    emailInviteBootstrapPath,
+    emailInviteClaimPath,
+    emailInviteClientUrl,
+    emailInviteInstructionsPath,
+    emailInviteScope,
+    emailInviteScopeJson,
     decodeFolderObjectPlaintext,
     encryptFolderObject,
     encodeFolderObjectAssetPlaintext,
@@ -7861,6 +8948,9 @@ const FiniteBrainProductClient = (() => {
     graphStats,
     inlineLinkSegments,
     initialVaultInvitationFolders,
+    inviteUnwrapKeypairFromSecret,
+    nip44DecryptWithSecret,
+    nip44EncryptWithSecret,
     markdownFromEditorElement,
     markdownPreviewBlocks,
     mergeSyncProjection,
@@ -7874,6 +8964,7 @@ const FiniteBrainProductClient = (() => {
     npubFromHex,
     npubToHex,
     openFolderKeyGrants,
+    openEmailInviteBootstrap,
     openDevelopmentFolderKeyGrants,
     openFolderKeyGrantPlaintext,
     openFolderObject,

@@ -43,8 +43,9 @@ use finite_brain_core::{
     SafeRelativePath, VaultId, VaultKind, bootstrap_organization_vault, bootstrap_personal_vault,
     default_vault_pages, encrypt_folder_object,
 };
-use finite_nostr::{NostrPublicKey, decrypt_nip44, encrypt_nip44};
-use nostr::Kind;
+use finite_nostr::{NostrPublicKey, build_rumor, decrypt_nip44, encrypt_nip44, wrap_rumor};
+use nostr::{Keys, Kind};
+use sha2::{Digest, Sha256};
 
 pub(crate) const AGENT_STATE_VERSION: &str = "finitebrain-agent-state-v1";
 pub(crate) const VAULT_DIRECTORY_VERSION: &str = "finite-vault-directory-v1";
@@ -1798,18 +1799,73 @@ fn invites<W: Write>(
         Some("create") => {
             let vault_id = command_vault_id(args, env)?;
             let raw_target = required_option_or_positional(args, "--target", 1, "target-identity")?;
-            let target = resolve_identity_npub(env, args, &raw_target)?;
             let expires_at = option_value(args, "--expires")
                 .unwrap_or_else(|| "2099-01-01T00:00:00Z".to_owned());
             let folders = option_values(args, "--folder");
-            let body = serde_json::json!({
-                "targetNpub": target,
-                "initialFolderAccess": folders,
-                "expiresAt": expires_at
-            });
             let route = format!("/_admin/vaults/{vault_id}/invitations");
-            let response = signed_json_request(env, args, "POST", &route, Some(body))?;
-            write_command_response(output, json, &response)
+            if let Ok(public_key) = NostrPublicKey::parse(&raw_target) {
+                let target = public_key
+                    .to_npub()
+                    .map_err(|error| CliError::InvalidSigner(error.to_string()))?;
+                write_npub_invite_create(
+                    output,
+                    json,
+                    env,
+                    args,
+                    &route,
+                    &target,
+                    &folders,
+                    &expires_at,
+                )
+            } else if invite_finite_vip_email(&raw_target) {
+                match resolve_identity_npub(env, args, &raw_target) {
+                    Ok(target) => write_npub_invite_create(
+                        output,
+                        json,
+                        env,
+                        args,
+                        &route,
+                        &target,
+                        &folders,
+                        &expires_at,
+                    ),
+                    Err(_) => write_email_invite_create(
+                        output,
+                        json,
+                        env,
+                        args,
+                        &route,
+                        &vault_id,
+                        &raw_target,
+                        &folders,
+                        &expires_at,
+                    ),
+                }
+            } else if invite_email_like(&raw_target) {
+                write_email_invite_create(
+                    output,
+                    json,
+                    env,
+                    args,
+                    &route,
+                    &vault_id,
+                    &raw_target,
+                    &folders,
+                    &expires_at,
+                )
+            } else {
+                let target = resolve_identity_npub(env, args, &raw_target)?;
+                write_npub_invite_create(
+                    output,
+                    json,
+                    env,
+                    args,
+                    &route,
+                    &target,
+                    &folders,
+                    &expires_at,
+                )
+            }
         }
         Some("show") => {
             let code = require_invite_code(required_option_or_positional(
@@ -1849,6 +1905,78 @@ fn invites<W: Write>(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
+fn write_npub_invite_create<W: Write>(
+    output: &mut W,
+    json: bool,
+    env: &CliEnvironment,
+    args: &[String],
+    route: &str,
+    target: &str,
+    folders: &[String],
+    expires_at: &str,
+) -> Result<(), CliError> {
+    let body = serde_json::json!({
+        "targetNpub": target,
+        "initialFolderAccess": folders,
+        "expiresAt": expires_at
+    });
+    let response = signed_json_request(env, args, "POST", route, Some(body))?;
+    write_command_response(output, json, &response)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn write_email_invite_create<W: Write>(
+    output: &mut W,
+    json: bool,
+    env: &CliEnvironment,
+    args: &[String],
+    route: &str,
+    vault_id: &str,
+    raw_target: &str,
+    folders: &[String],
+    expires_at: &str,
+) -> Result<(), CliError> {
+    let (body, invite_secret) =
+        email_invite_create_body(env, args, vault_id, raw_target, folders, expires_at)?;
+    let server_url = server_url_for_command(env, args)?;
+    let mut response = signed_json_request_to_server(env, &server_url, "POST", route, Some(body))?;
+    if let Some(object) = response.as_object_mut() {
+        object.insert(
+            "inviteSecret".to_owned(),
+            serde_json::Value::String(invite_secret.clone()),
+        );
+        if let Some(accept_path) = object
+            .get("acceptPath")
+            .and_then(serde_json::Value::as_str)
+            .map(ToOwned::to_owned)
+        {
+            object.insert(
+                "inviteUrl".to_owned(),
+                serde_json::Value::String(format!(
+                    "{}{}#inviteSecret={}",
+                    server_url.trim_end_matches('/'),
+                    accept_path,
+                    invite_secret
+                )),
+            );
+        }
+    }
+    if json {
+        write_json(output, &response)
+    } else {
+        write_command_response(output, false, &response)?;
+        if let Some(invite_url) = response
+            .get("inviteUrl")
+            .and_then(serde_json::Value::as_str)
+        {
+            writeln!(output, "inviteUrl {invite_url}")?;
+        }
+        writeln!(output, "inviteSecret {invite_secret}")?;
+        Ok(())
+    }
+}
+
 fn require_invite_code(value: String) -> Result<String, CliError> {
     let value = value.trim().to_owned();
     if value.starts_with("invitation-") {
@@ -1858,6 +1986,259 @@ fn require_invite_code(value: String) -> Result<String, CliError> {
         ));
     }
     Ok(value)
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+struct EmailInviteScopeItem {
+    folder_id: String,
+    access: String,
+    key_version: u32,
+}
+
+fn invite_email_like(value: &str) -> bool {
+    let value = value.trim();
+    let Some((local, domain)) = value.split_once('@') else {
+        return false;
+    };
+    !local.is_empty() && !domain.is_empty() && domain.contains('.')
+}
+
+fn invite_finite_vip_email(value: &str) -> bool {
+    canonical_invite_email(value)
+        .map(|email| email.ends_with("@finite.vip"))
+        .unwrap_or(false)
+}
+
+fn canonical_invite_email(value: &str) -> Result<String, CliError> {
+    let value = value.trim().to_ascii_lowercase();
+    let Some((local, domain)) = value.split_once('@') else {
+        return Err(CliError::InvalidInput(
+            "email invite target must be an email address".to_owned(),
+        ));
+    };
+    if local.is_empty()
+        || domain.is_empty()
+        || value.len() > 320
+        || value.chars().any(|c| c == '\0' || c.is_control())
+    {
+        return Err(CliError::InvalidInput(
+            "email invite target must be a printable email address".to_owned(),
+        ));
+    }
+    Ok(value)
+}
+
+fn email_invite_scope(
+    metadata: &VaultMetadataView,
+    selected_folders: &[String],
+) -> Result<Vec<EmailInviteScopeItem>, CliError> {
+    let selected = selected_folders.iter().cloned().collect::<BTreeSet<_>>();
+    let mut seen_selected = BTreeSet::new();
+    let mut included = BTreeSet::new();
+    let mut scope = Vec::new();
+
+    for folder in &metadata.folders {
+        let selected_folder = selected.contains(&folder.id);
+        if selected_folder {
+            seen_selected.insert(folder.id.clone());
+        }
+        let include = match folder.access.as_str() {
+            "all_members" => true,
+            "restricted" => selected_folder,
+            "owner" | "admin_only" => {
+                if selected_folder {
+                    return Err(CliError::InvalidInput(
+                        "email invite bootstrap can include all-members folders and selected restricted folders only"
+                            .to_owned(),
+                    ));
+                }
+                false
+            }
+            other => {
+                return Err(CliError::InvalidInput(format!(
+                    "unknown folder access mode {other}"
+                )));
+            }
+        };
+        if include && included.insert(folder.id.clone()) {
+            scope.push(EmailInviteScopeItem {
+                folder_id: folder.id.clone(),
+                access: folder.access.clone(),
+                key_version: folder.current_key_version,
+            });
+        }
+    }
+
+    if seen_selected != selected {
+        let missing = selected
+            .difference(&seen_selected)
+            .next()
+            .cloned()
+            .unwrap_or_else(|| "unknown".to_owned());
+        return Err(CliError::NotFound(format!("folder {missing}")));
+    }
+    Ok(scope)
+}
+
+fn email_invite_scope_json(scope: &[EmailInviteScopeItem]) -> Vec<serde_json::Value> {
+    scope
+        .iter()
+        .map(|item| {
+            serde_json::json!({
+                "folderId": item.folder_id,
+                "access": item.access,
+                "keyVersion": item.key_version,
+            })
+        })
+        .collect()
+}
+
+fn email_invite_create_body(
+    env: &CliEnvironment,
+    args: &[String],
+    vault_id: &str,
+    target_email: &str,
+    selected_folders: &[String],
+    expires_at: &str,
+) -> Result<(serde_json::Value, String), CliError> {
+    let invited_email = canonical_invite_email(target_email)?;
+    let metadata = fetch_vault_metadata(env, args, vault_id)?;
+    let scope = email_invite_scope(&metadata, selected_folders)?;
+    let auth = load_signer(env)?;
+    let unwrap_keys = Keys::generate();
+    let invite_unwrap_npub = NostrPublicKey::from_protocol(unwrap_keys.public_key())
+        .to_npub()
+        .map_err(|error| CliError::InvalidSigner(error.to_string()))?;
+    let invite_secret = unwrap_keys.secret_key().to_secret_hex();
+
+    let mut bootstrap_grants = Vec::new();
+    for item in &scope {
+        let folder_key = opened_folder_key(env, &item.folder_id, item.key_version)?;
+        bootstrap_grants.push(serde_json::json!({
+            "folderId": item.folder_id,
+            "grant": folder_key_grant_request(
+                &auth,
+                vault_id,
+                &item.folder_id,
+                item.key_version,
+                &invite_unwrap_npub,
+                &folder_key,
+                env,
+            )?,
+        }));
+    }
+
+    let scope_json = email_invite_scope_json(&scope);
+    let bootstrap_payload = serde_json::json!({
+        "version": "finite-email-invite-bootstrap-payload-v1",
+        "vaultId": vault_id,
+        "invitedEmail": invited_email,
+        "inviteUnwrapNpub": invite_unwrap_npub,
+        "folders": scope_json,
+        "grants": bootstrap_grants,
+    });
+    let bootstrap_payload_json = serde_json::to_string(&bootstrap_payload)?;
+    let bootstrap_payload_hash = format!(
+        "sha256:{}",
+        hex_lower(Sha256::digest(bootstrap_payload_json.as_bytes()).as_slice())
+    );
+    let bootstrap_wrapped_event_json = wrap_email_invite_bootstrap_payload(
+        &auth,
+        vault_id,
+        &invite_unwrap_npub,
+        &bootstrap_payload_json,
+    )?;
+    let bootstrap_authorization_event_json = email_invite_authorization_event(
+        &auth,
+        vault_id,
+        &invited_email,
+        &invite_unwrap_npub,
+        &bootstrap_payload_hash,
+        expires_at,
+        &scope,
+    )?;
+
+    Ok((
+        serde_json::json!({
+            "target": invited_email,
+            "initialFolderAccess": selected_folders,
+            "expiresAt": expires_at,
+            "inviteUnwrapNpub": invite_unwrap_npub,
+            "bootstrapPayloadHash": bootstrap_payload_hash,
+            "bootstrapWrappedEventJson": bootstrap_wrapped_event_json,
+            "bootstrapAuthorizationEventJson": bootstrap_authorization_event_json,
+        }),
+        invite_secret,
+    ))
+}
+
+fn wrap_email_invite_bootstrap_payload(
+    auth: &LocalSigner,
+    vault_id: &str,
+    invite_unwrap_npub: &str,
+    bootstrap_payload_json: &str,
+) -> Result<String, CliError> {
+    let recipient = NostrPublicKey::parse(invite_unwrap_npub)
+        .map_err(|error| CliError::InvalidSigner(error.to_string()))?;
+    let rumor = build_rumor(
+        NostrPublicKey::from_protocol(auth.keys.public_key()),
+        Kind::Custom(APP_SPECIFIC_KIND),
+        vec![
+            tag_vec(["d", &format!("finite-email-invite-bootstrap:{vault_id}")])?,
+            tag_vec(["vault", vault_id])?,
+        ],
+        bootstrap_payload_json.to_owned(),
+        unix_timestamp(),
+    );
+    let wrapped = wrap_rumor(&auth.keys, recipient, rumor)
+        .map_err(|error| CliError::InvalidSigner(error.to_string()))?;
+    Ok(wrapped.as_json())
+}
+
+fn email_invite_authorization_event(
+    auth: &LocalSigner,
+    vault_id: &str,
+    invited_email: &str,
+    invite_unwrap_npub: &str,
+    bootstrap_payload_hash: &str,
+    expires_at: &str,
+    scope: &[EmailInviteScopeItem],
+) -> Result<String, CliError> {
+    let content = serde_json::json!({
+        "version": "finite-email-invite-bootstrap-authorization-v1",
+        "vaultId": vault_id,
+        "invitedEmail": invited_email,
+        "inviteUnwrapNpub": invite_unwrap_npub,
+        "bootstrapPayloadHash": bootstrap_payload_hash,
+        "expiresAt": expires_at,
+        "folders": email_invite_scope_json(scope),
+    })
+    .to_string();
+    let event = sign_event(
+        &auth.keys,
+        Kind::Custom(APP_SPECIFIC_KIND),
+        content,
+        vec![
+            tag_vec([
+                "d",
+                &format!("finite-email-invite-bootstrap-authorization:{vault_id}:{invited_email}"),
+            ])?,
+            tag_vec(["vault", vault_id])?,
+            tag_vec(["email", invited_email])?,
+        ],
+        unix_timestamp(),
+        None,
+    )?;
+    Ok(event.as_json())
+}
+
+fn hex_lower(bytes: &[u8]) -> String {
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        use std::fmt::Write as _;
+        write!(&mut out, "{byte:02x}").expect("write to string");
+    }
+    out
 }
 
 fn share<W: Write>(
@@ -2564,6 +2945,97 @@ mod tests {
         (url, handle)
     }
 
+    fn start_email_invite_server(
+        admin_npub: String,
+    ) -> (String, thread::JoinHandle<Vec<(String, String)>>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let handle = thread::spawn(move || {
+            let started = Instant::now();
+            let mut requests = Vec::new();
+            while requests.len() < 2 && started.elapsed() < Duration::from_secs(5) {
+                let Ok((mut stream, _)) = listener.accept() else {
+                    thread::sleep(Duration::from_millis(10));
+                    continue;
+                };
+                let (request_line, body) = read_http_request(&mut stream);
+                let response_body = if request_line.contains("/metadata") {
+                    serde_json::json!({
+                        "vaultId": "acme",
+                        "kind": "organization",
+                        "name": "Acme",
+                        "ownerUserId": null,
+                        "members": [admin_npub],
+                        "admins": [admin_npub],
+                        "folders": [
+                            {
+                                "id": "getting-started",
+                                "name": "getting-started",
+                                "role": "general",
+                                "access": "all_members",
+                                "parentFolderId": null,
+                                "path": "getting-started",
+                                "sharedFolderSource": false,
+                                "accessUserIds": [],
+                                "currentKeyVersion": 1,
+                                "setupIncomplete": false
+                            },
+                            {
+                                "id": "restricted",
+                                "name": "restricted",
+                                "role": "folder",
+                                "access": "restricted",
+                                "parentFolderId": null,
+                                "path": "restricted",
+                                "sharedFolderSource": false,
+                                "accessUserIds": [],
+                                "currentKeyVersion": 1,
+                                "setupIncomplete": false
+                            }
+                        ],
+                        "mountedFolders": [],
+                        "grantCount": 2
+                    })
+                    .to_string()
+                } else {
+                    serde_json::json!({
+                        "id": "invitation-email",
+                        "vaultId": "acme",
+                        "targetKind": "email_bootstrap",
+                        "userId": null,
+                        "invitedEmail": "friend@example.com",
+                        "inviteUnwrapNpub": null,
+                        "bootstrapPayloadHash": null,
+                        "bootstrapWrappedEventJson": null,
+                        "bootstrapAuthorizationEventJson": null,
+                        "bootstrapScope": [],
+                        "claimedByNpub": null,
+                        "identities": [],
+                        "status": "pending",
+                        "inviteCode": "invite-email",
+                        "acceptPath": "/_admin/vault-invitation-links/invite-email/claim",
+                        "initialFolderAccess": ["getting-started", "restricted"],
+                        "expiresAt": "2026-06-30T00:00:00.000Z",
+                        "createdAt": "2026-06-23T00:00:00.000Z",
+                        "updatedAt": "2026-06-23T00:00:00.000Z",
+                        "acceptedAt": null,
+                        "duplicateAccept": false
+                    })
+                    .to_string()
+                };
+                requests.push((request_line, body));
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{response_body}",
+                    response_body.len()
+                );
+                stream.write_all(response.as_bytes()).unwrap();
+            }
+            requests
+        });
+        (url, handle)
+    }
+
     fn start_metadata_listing_server(
         expected_requests: usize,
     ) -> (String, thread::JoinHandle<Vec<String>>) {
@@ -2680,16 +3152,22 @@ mod tests {
     }
 
     fn write_opened_test_folder_key(tree: &Path, folder_id: &str, folder_key: &FolderKey) {
+        write_opened_test_folder_keys(tree, &[(folder_id, folder_key)]);
+    }
+
+    fn write_opened_test_folder_keys(tree: &Path, keys: &[(&str, &FolderKey)]) {
         fs::create_dir_all(tree.join(".finitebrain")).unwrap();
         let mut state = AgentState::new("acme", "2026-06-24T20:46:36Z");
-        state.local_folder_keys.push(LocalFolderKey {
-            vault_id: Some("acme".to_owned()),
-            folder_id: folder_id.to_owned(),
-            key_version: 1,
-            key_base64: folder_key.to_base64(),
-            source: "test".to_owned(),
-            opened_at: "2026-06-24T20:46:36Z".to_owned(),
-        });
+        for (folder_id, folder_key) in keys {
+            state.local_folder_keys.push(LocalFolderKey {
+                vault_id: Some("acme".to_owned()),
+                folder_id: (*folder_id).to_owned(),
+                key_version: 1,
+                key_base64: folder_key.to_base64(),
+                source: "test".to_owned(),
+                opened_at: "2026-06-24T20:46:36Z".to_owned(),
+            });
+        }
         write_agent_state(tree, &state).unwrap();
     }
 
@@ -3604,6 +4082,107 @@ mod tests {
         let body: Value = serde_json::from_str(body).unwrap();
         assert_eq!(body["targetNpub"], target);
         assert_eq!(body["initialFolderAccess"][0], "general");
+    }
+
+    #[test]
+    fn invites_create_email_bootstrap_uses_opened_keys_without_sending_secret() {
+        let tmp = TempDir::new().unwrap();
+        let admin_secret = "0000000000000000000000000000000000000000000000000000000000000001";
+        import_identity_secret(&tmp, admin_secret);
+        let admin_npub = run(&tmp, &["signer", "public-key"]).trim().to_owned();
+        let getting_started_key = FolderKey::from_bytes([11; 32]);
+        let restricted_key = FolderKey::from_bytes([12; 32]);
+        let tree = tmp.path().join("org");
+        write_opened_test_folder_keys(
+            &tree,
+            &[
+                ("getting-started", &getting_started_key),
+                ("restricted", &restricted_key),
+            ],
+        );
+        let (server_url, server) = start_email_invite_server(admin_npub);
+
+        let mut env = env_for(&tmp);
+        env.cwd = tree;
+        let mut output = Vec::new();
+        run_with_env(
+            [
+                "invites",
+                "create",
+                "--vault",
+                "acme",
+                "--target",
+                "friend@example.com",
+                "--folder",
+                "restricted",
+                "--expires",
+                "2026-06-30T00:00:00.000Z",
+                "--server",
+                &server_url,
+                "--json",
+            ],
+            env,
+            &mut output,
+        )
+        .unwrap();
+        let json: Value = serde_json::from_slice(&output).unwrap();
+        let invite_secret = json["inviteSecret"].as_str().unwrap();
+        assert!(
+            json["inviteUrl"]
+                .as_str()
+                .unwrap()
+                .contains(&format!("#inviteSecret={invite_secret}"))
+        );
+
+        let requests = server.join().unwrap();
+        assert_eq!(requests.len(), 2);
+        assert!(requests[0].0.contains("/_admin/vaults/acme/metadata"));
+        let (request, body) = &requests[1];
+        assert!(request.starts_with("POST /_admin/vaults/acme/invitations"));
+        assert!(
+            !body.contains(invite_secret),
+            "server-visible request body must not contain invite secret"
+        );
+        let body: Value = serde_json::from_str(body).unwrap();
+        assert_eq!(body["target"], "friend@example.com");
+        assert!(body.get("targetNpub").is_none());
+        assert_eq!(
+            body["initialFolderAccess"],
+            serde_json::json!(["restricted"])
+        );
+        assert!(
+            body["bootstrapPayloadHash"]
+                .as_str()
+                .unwrap()
+                .starts_with("sha256:")
+        );
+        let invite_unwrap_npub = body["inviteUnwrapNpub"].as_str().unwrap();
+        let wrapped = body["bootstrapWrappedEventJson"].as_str().unwrap();
+        let event = Event::from_json(wrapped).unwrap();
+        let unwrap_keys = Keys::parse(invite_secret).unwrap();
+        let recipient = NostrPublicKey::parse(invite_unwrap_npub).unwrap();
+        let opened =
+            open_gift_wrap(&unwrap_keys, &event, &GiftWrapValidation::new(recipient)).unwrap();
+        let payload: Value = serde_json::from_str(&opened.rumor.content).unwrap();
+        assert_eq!(payload["invitedEmail"], "friend@example.com");
+        assert_eq!(
+            payload["folders"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|folder| folder["folderId"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            vec!["getting-started", "restricted"]
+        );
+        let grants = payload["grants"].as_array().unwrap();
+        assert_eq!(
+            grant_plaintext_folder_key(&grants[0], invite_secret, invite_unwrap_npub),
+            getting_started_key.to_base64()
+        );
+        assert_eq!(
+            grant_plaintext_folder_key(&grants[1], invite_secret, invite_unwrap_npub),
+            restricted_key.to_base64()
+        );
     }
 
     #[test]
