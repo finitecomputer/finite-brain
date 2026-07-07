@@ -2235,7 +2235,7 @@ mod tests {
             .await
             .expect("client response");
         assert_eq!(client_response.status(), StatusCode::OK);
-        let client_body = to_bytes(client_response.into_body(), 32 * 1024)
+        let client_body = to_bytes(client_response.into_body(), 64 * 1024)
             .await
             .expect("client body");
         let client_body = std::str::from_utf8(&client_body).expect("client utf8");

@@ -3588,11 +3588,44 @@ pre {
   padding: 8px 0 !important;
 }
 
-#vaultPeopleActionPanel .vault-people-form {
-  gap: 12px;
-  padding: 0;
-  background: transparent;
-  box-shadow: none;
+.vault-access-action-grid {
+  display: grid;
+  gap: 10px;
+}
+
+.vault-access-option {
+  margin: 0;
+  padding: 10px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.018);
+  box-shadow: var(--shadow-access-ring);
+}
+
+.vault-access-option.primary {
+  background: rgba(124, 108, 255, 0.055);
+  box-shadow:
+    var(--shadow-access-ring),
+    inset 3px 0 0 rgba(124, 108, 255, 0.45);
+}
+
+.vault-access-option + .vault-access-option {
+  margin-top: 0;
+}
+
+.vault-access-option-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 9px;
+}
+
+.vault-access-option-heading h4 {
+  margin: 0;
+}
+
+.vault-access-option-heading .pill {
+  flex-shrink: 0;
 }
 
 #vaultPeopleActionPanel .access-inline-field {
@@ -3605,6 +3638,17 @@ pre {
   width: 100%;
   padding-right: 10px;
   padding-left: 10px;
+  line-height: 1.25;
+  white-space: normal;
+}
+
+#vaultPeopleActionPanel .access-button-row {
+  grid-template-columns: minmax(0, 1fr);
+  gap: 7px;
+}
+
+#vaultPeopleActionPanel .access-button-row button {
+  width: 100%;
   line-height: 1.25;
   white-space: normal;
 }

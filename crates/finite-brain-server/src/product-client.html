@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>FiniteBrain</title>
-    <link rel="stylesheet" href="/client/app.css?v=20260707-member-details" />
+    <link rel="stylesheet" href="/client/app.css?v=20260707-access-segments" />
   </head>
   <body>
     <div class="obsidian-shell" data-workspace-view="page">
@@ -332,30 +332,90 @@
                     <circle cx="12" cy="8" r="4" />
                     <path d="M12 12c-4 0-7 2-7 6v2h14v-2c0-4-3-6-7-6z" />
                   </svg>
-                  <span>Add Vault people</span>
-                  <small id="vaultPeopleActionHint">Members and admins</small>
+                  <span>Give Vault access</span>
+                  <small id="vaultPeopleActionHint">Invite, add, or promote</small>
                 </summary>
                 <div class="access-admin-content">
-                  <div class="access-inline-form vault-people-form">
-                    <label class="access-inline-field">
-                      <input
-                        id="vaultMemberNpubInput"
-                        placeholder="name@example.com"
-                        autocomplete="off"
-                        spellcheck="false"
-                      />
-                      <button id="addVaultMemberButton" type="button" class="access-add-button">Add member</button>
-                    </label>
-                    <label class="access-inline-field">
-                      <input
-                        id="vaultAdminNpubInput"
-                        placeholder="name@example.com"
-                        autocomplete="off"
-                        spellcheck="false"
-                      />
-                      <button id="addVaultAdminButton" type="button" class="access-add-button">Add admin</button>
-                    </label>
-                    <p id="vaultPeopleHint" class="access-field-hint">Admins must already be Vault members.</p>
+                  <div class="vault-access-action-grid">
+                    <section class="access-admin-section vault-access-option primary">
+                      <div class="vault-access-option-heading">
+                        <h4>Invite by email</h4>
+                        <span class="pill ready">new person</span>
+                      </div>
+                      <label class="access-field">
+                        <span>Email</span>
+                        <input
+                          id="vaultInviteTargetNpubInput"
+                          placeholder="name@example.com"
+                          autocomplete="off"
+                          spellcheck="false"
+                        />
+                      </label>
+                      <label class="access-field">
+                        <span>Folders granted on join</span>
+                        <input
+                          id="vaultInviteFoldersInput"
+                          value="getting-started"
+                          autocomplete="off"
+                          spellcheck="false"
+                        />
+                      </label>
+                      <label class="access-field">
+                        <span>Expires</span>
+                        <input
+                          id="vaultInviteExpiresAtInput"
+                          type="datetime-local"
+                          autocomplete="off"
+                        />
+                      </label>
+                      <div class="access-button-row">
+                        <button id="createVaultInvitationButton" type="button">Create invite</button>
+                        <button id="revokeVaultInvitationButton" class="danger-action" type="button">Revoke invite</button>
+                      </div>
+                      <label class="access-field">
+                        <span>Client-only invite URL</span>
+                        <input
+                          id="vaultInviteUrlInput"
+                          type="password"
+                          autocomplete="off"
+                          spellcheck="false"
+                          readonly
+                        />
+                      </label>
+                    </section>
+
+                    <section class="access-admin-section vault-access-option">
+                      <div class="vault-access-option-heading">
+                        <h4>Add member now</h4>
+                        <span class="pill muted">existing identity</span>
+                      </div>
+                      <label class="access-inline-field">
+                        <input
+                          id="vaultMemberNpubInput"
+                          placeholder="name@example.com"
+                          autocomplete="off"
+                          spellcheck="false"
+                        />
+                        <button id="addVaultMemberButton" type="button" class="access-add-button">Add member</button>
+                      </label>
+                    </section>
+
+                    <section class="access-admin-section vault-access-option">
+                      <div class="vault-access-option-heading">
+                        <h4>Make admin</h4>
+                        <span class="pill muted">existing member</span>
+                      </div>
+                      <label class="access-inline-field">
+                        <input
+                          id="vaultAdminNpubInput"
+                          placeholder="name@example.com"
+                          autocomplete="off"
+                          spellcheck="false"
+                        />
+                        <button id="addVaultAdminButton" type="button" class="access-add-button">Add admin</button>
+                      </label>
+                      <p id="vaultPeopleHint" class="access-field-hint">Admins must already be Vault members.</p>
+                    </section>
                   </div>
                 </div>
               </details>
@@ -365,56 +425,12 @@
                   <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
                     <path d="M12 2L15.09 8.26L22 9.27L17 14.14L18.18 21.02L12 17.77L5.82 21.02L7 14.14L2 9.27L8.91 8.26L12 2Z" />
                   </svg>
-                  <span>Vault invitations</span>
-                  <small id="vaultInvitationHint">Create or accept invite</small>
+                  <span>Join with invite</span>
+                  <small id="vaultInvitationHint">Accept received invite</small>
                 </summary>
                 <div class="access-admin-content">
                   <div class="access-admin-section">
-                    <h4>Create vault invitation</h4>
-                    <label class="access-field">
-                      <span>Email</span>
-                      <input
-                        id="vaultInviteTargetNpubInput"
-                        placeholder="name@example.com"
-                        autocomplete="off"
-                        spellcheck="false"
-                      />
-                    </label>
-                    <label class="access-field">
-                      <span>Folders granted on join</span>
-                      <input
-                        id="vaultInviteFoldersInput"
-                        value="getting-started"
-                        autocomplete="off"
-                        spellcheck="false"
-                      />
-                    </label>
-                    <label class="access-field">
-                      <span>Expires</span>
-                      <input
-                        id="vaultInviteExpiresAtInput"
-                        type="datetime-local"
-                        autocomplete="off"
-                      />
-                    </label>
-                    <div class="access-button-row">
-                      <button id="createVaultInvitationButton" type="button">Create invite</button>
-                      <button id="revokeVaultInvitationButton" class="danger-action" type="button">Revoke invite</button>
-                    </div>
-                    <label class="access-field">
-                      <span>Client-only invite URL</span>
-                      <input
-                        id="vaultInviteUrlInput"
-                        type="password"
-                        autocomplete="off"
-                        spellcheck="false"
-                        readonly
-                      />
-                    </label>
-                  </div>
-
-                  <div class="access-admin-section">
-                    <h4>Accept vault invitation</h4>
+                    <h4>Accept received invitation</h4>
                     <label class="access-field">
                       <span>Invite code</span>
                       <input
@@ -682,6 +698,6 @@ Start writing here.</textarea>
       </div>
     </div>
 
-    <script src="/client/app.js?v=20260707-member-details"></script>
+    <script src="/client/app.js?v=20260707-access-segments"></script>
   </body>
 </html>

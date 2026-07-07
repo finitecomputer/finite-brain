@@ -5116,10 +5116,10 @@ const FiniteBrainProductClient = (() => {
       setText("vaultInvitationHint", "Connect signer");
     } else if (codeHint) {
       setText("vaultInvitationHint", codeHint);
-    } else if (state.metadata?.kind === "organization") {
-      setText("vaultInvitationHint", activeSignerInviteDetail());
+    } else if (inviteCodeUsable) {
+      setText("vaultInvitationHint", "Ready to accept");
     } else {
-      setText("vaultInvitationHint", activeSignerInviteDetail());
+      setText("vaultInvitationHint", "Accept received invite");
     }
   }
 
@@ -5557,7 +5557,7 @@ const FiniteBrainProductClient = (() => {
           ? "Admins must already be Vault members."
           : "Only Vault admins can change organization members and admins.";
     setText("vaultPeopleHint", hint);
-    setText("vaultPeopleActionHint", canManage ? "Members and admins" : "Admin-only controls");
+    setText("vaultPeopleActionHint", canManage ? "Invite, add, or promote" : "Admin-only controls");
   }
 
   function linkRowActionButton(label, onClick, options = {}) {
@@ -5630,7 +5630,7 @@ const FiniteBrainProductClient = (() => {
     const pendingCount = rows.filter((row) => row.status === "pending").length;
     setPill("vaultInvitationCount", `${pendingCount}`, pendingCount ? "ready" : "muted");
     const emptyText = canLoadVaultAdminLists()
-      ? "No invitations yet. Create one under Vault invitations below."
+      ? "No invitations yet. Create one under Give Vault access."
       : "Vault admins see pending invitations here.";
     setList("vaultInvitationList", rows, emptyText, (item, row) => {
       linkRowInfo(item, identityDisplay(row.targetNpub), row.status, `expires ${row.expiresAt.slice(0, 10)}`);
