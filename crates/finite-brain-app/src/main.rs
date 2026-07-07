@@ -31,6 +31,14 @@ async fn main() -> Result<(), Box<dyn Error>> {
     if let Some(url) = identity_authority_url {
         state = state.with_identity_authority_url(url);
     }
+    if let Ok(secret) = std::env::var("FINITE_BRAIN_SMOKE_NIP07_SECRET") {
+        state = state.with_smoke_nip07_signer(secret).map_err(|error| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("invalid FINITE_BRAIN_SMOKE_NIP07_SECRET: {error}"),
+            )
+        })?;
+    }
     if let Ok(mailer) = std::env::var("FINITE_BRAIN_INVITE_MAILER") {
         match mailer.trim() {
             "" | "none" => {}

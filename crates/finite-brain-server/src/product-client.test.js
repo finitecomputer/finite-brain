@@ -458,6 +458,30 @@ assert.equal(client.readerPageRows("general", draftPages)[0].label, "Draft Page"
     if (!String(ciphertext).startsWith("nip44:")) throw new Error("bad fake ciphertext");
     return Buffer.from(String(ciphertext).slice("nip44:".length), "base64url").toString("utf8");
   };
+  const localSignerSecret = "1".padStart(64, "0");
+  const peerSignerSecret = "2".padStart(64, "0");
+  const localSigner = client.createLocalNip07ProviderFromSecret(localSignerSecret);
+  const peerSigner = client.createLocalNip07ProviderFromSecret(peerSignerSecret);
+  const localPublicKey = await localSigner.getPublicKey();
+  const peerPublicKey = await peerSigner.getPublicKey();
+  assert.equal(localPublicKey, client.inviteUnwrapKeypairFromSecret(localSignerSecret).publicKeyHex);
+  const localSigned = await localSigner.signEvent({
+    kind: 27235,
+    created_at: 1780000000,
+    tags: [["u", "http://finite.test/_admin/vaults"]],
+    content: "",
+  });
+  assert.equal(localSigned.pubkey, localPublicKey);
+  assert.match(localSigned.id, /^[0-9a-f]{64}$/);
+  assert.match(localSigned.sig, /^[0-9a-f]{128}$/);
+  const localToPeer = await localSigner.nip44.encrypt(peerPublicKey, "hello peer");
+  assert.equal(await peerSigner.nip44.decrypt(localPublicKey, localToPeer), "hello peer");
+  const peerToLocal = await peerSigner.nip44.encrypt(localPublicKey, "hello local");
+  assert.equal(await localSigner.nip44.decrypt(peerPublicKey, peerToLocal), "hello local");
+  assert.equal(
+    await client.nip44DecryptWithSecret(peerSignerSecret, localPublicKey, localToPeer),
+    "hello peer"
+  );
   let grantSignedIndex = 0;
   context.window.nostr = {
     signEvent: async (template) => ({

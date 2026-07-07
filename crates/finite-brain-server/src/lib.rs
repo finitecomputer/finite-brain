@@ -66,9 +66,22 @@ const FINITEBRAIN_NOSTR_HEADER: &str = "x-finitebrain-nostr";
 const APP_SPECIFIC_KIND: u16 = 30_078;
 const NIP05_CONNECT_TIMEOUT_SECONDS: u64 = 3;
 const NIP05_READ_TIMEOUT_SECONDS: u64 = 5;
+const SECP256K1_ORDER_HEX: &str =
+    "fffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141";
 
 type Nip05Fetcher =
     Arc<dyn Fn(&Nip05WellKnownRequest) -> Result<Vec<u8>, String> + Send + Sync + 'static>;
+
+fn normalized_smoke_nip07_secret(secret_hex: impl Into<String>) -> Result<String, String> {
+    let value = secret_hex.into().trim().to_ascii_lowercase();
+    if value.len() != 64 || !value.chars().all(|character| character.is_ascii_hexdigit()) {
+        return Err("FINITE_BRAIN_SMOKE_NIP07_SECRET must be 64 hex characters".to_owned());
+    }
+    if value.chars().all(|character| character == '0') || value.as_str() >= SECP256K1_ORDER_HEX {
+        return Err("FINITE_BRAIN_SMOKE_NIP07_SECRET must be a valid secp256k1 secret".to_owned());
+    }
+    Ok(value)
+}
 
 /// Development status returned by the first smoke path.
 #[derive(Debug, Clone, Eq, PartialEq, Deserialize, Serialize)]
@@ -103,6 +116,7 @@ pub struct ServerState {
     nip05_fetcher: Nip05Fetcher,
     email_proof_verifier: Option<EmailProofVerifier>,
     invite_mailer: Option<BrainInviteMailer>,
+    smoke_nip07_signer_secret: Option<Arc<str>>,
 }
 
 type EmailProofVerifier = Arc<dyn Fn(&str, &UserId) -> Result<(), String> + Send + Sync>;
@@ -145,6 +159,7 @@ impl ServerState {
             nip05_fetcher: default_nip05_fetcher(),
             email_proof_verifier: None,
             invite_mailer: None,
+            smoke_nip07_signer_secret: None,
         }
     }
 
@@ -209,6 +224,16 @@ impl ServerState {
     ) -> Self {
         self.invite_mailer = Some(postmark_invite_mailer(server_token.into(), from.into()));
         self
+    }
+
+    /// Enable a local Product Client NIP-07 shim for browser smoke tests.
+    pub fn with_smoke_nip07_signer(
+        mut self,
+        secret_hex: impl Into<String>,
+    ) -> Result<Self, String> {
+        self.smoke_nip07_signer_secret =
+            Some(Arc::<str>::from(normalized_smoke_nip07_secret(secret_hex)?));
+        Ok(self)
     }
 
     #[cfg(test)]
@@ -386,6 +411,10 @@ pub fn router_with_state(state: ServerState) -> Router {
         .route("/client", get(product_client_handler))
         .route("/client/app.css", get(product_client_css_handler))
         .route("/client/app.js", get(product_client_js_handler))
+        .route(
+            "/client/smoke-nip07.js",
+            get(product_client_smoke_nip07_js_handler),
+        )
         .route("/client/config.json", get(product_client_config_handler))
         .route(
             "/_admin/vaults",
@@ -2227,6 +2256,8 @@ mod tests {
         assert!(client_body.contains("Render graph"));
         assert!(client_body.contains("contextMenu"));
         assert!(client_body.contains("/client/app.js"));
+        assert!(!client_body.contains("__FINITE_BRAIN_DISABLE_AUTOSTART__"));
+        assert!(!client_body.contains("/client/smoke-nip07.js"));
         assert!(!client_body.contains("Page Loop"));
         assert!(!client_body.contains("OKF Import"));
         assert!(!client_body.contains("Plan OKF import"));
@@ -2326,6 +2357,62 @@ mod tests {
         assert!(js_body.contains("kind: 27235"));
         assert!(js_body.contains("kind: APP_EVENT_KIND"));
         assert!(js_body.contains("/metadata"));
+
+        let smoke_signer_response = router
+            .oneshot(
+                Request::builder()
+                    .uri("/client/smoke-nip07.js")
+                    .body(Body::empty())
+                    .expect("valid smoke signer request"),
+            )
+            .await
+            .expect("smoke signer response");
+        assert_eq!(smoke_signer_response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn product_client_smoke_nip07_signer_is_explicitly_opt_in() {
+        let router = router_with_state(
+            test_state()
+                .with_smoke_nip07_signer(
+                    "0000000000000000000000000000000000000000000000000000000000000001",
+                )
+                .expect("valid smoke signer secret"),
+        );
+
+        let client_response = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/client")
+                    .body(Body::empty())
+                    .expect("valid client request"),
+            )
+            .await
+            .expect("client response");
+        assert_eq!(client_response.status(), StatusCode::OK);
+        let client_body = read_text_with_limit(client_response, 64 * 1024).await;
+        assert!(client_body.contains("__FINITE_BRAIN_DISABLE_AUTOSTART__"));
+        assert!(client_body.contains("/client/smoke-nip07.js"));
+        assert!(client_body.contains("/client/app.js"));
+
+        let smoke_signer_response = router
+            .oneshot(
+                Request::builder()
+                    .uri("/client/smoke-nip07.js")
+                    .body(Body::empty())
+                    .expect("valid smoke signer request"),
+            )
+            .await
+            .expect("smoke signer response");
+        assert_eq!(smoke_signer_response.status(), StatusCode::OK);
+        let smoke_signer_body = read_text_with_limit(smoke_signer_response, 32 * 1024).await;
+        assert!(smoke_signer_body.contains("createLocalNip07ProviderFromSecret"));
+        assert!(smoke_signer_body.contains("__FINITE_BRAIN_SMOKE_NIP07__"));
+        assert!(
+            smoke_signer_body
+                .contains("0000000000000000000000000000000000000000000000000000000000000001")
+        );
     }
 
     #[tokio::test]
@@ -6404,7 +6491,11 @@ mod tests {
     }
 
     async fn read_text(response: axum::response::Response) -> String {
-        let body = to_bytes(response.into_body(), 16 * 1024)
+        read_text_with_limit(response, 16 * 1024).await
+    }
+
+    async fn read_text_with_limit(response: axum::response::Response, limit: usize) -> String {
+        let body = to_bytes(response.into_body(), limit)
             .await
             .expect("response body");
         String::from_utf8(body.to_vec()).expect("utf8 response")

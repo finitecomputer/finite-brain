@@ -36,11 +36,20 @@ pub(crate) async fn smoke_ui_js_handler() -> impl IntoResponse {
     )
 }
 
-pub(crate) async fn product_client_handler() -> impl IntoResponse {
-    (
-        [(CACHE_CONTROL, PRODUCT_CLIENT_CACHE_CONTROL)],
-        Html(include_str!("../product-client.html")),
-    )
+const PRODUCT_CLIENT_APP_SCRIPT_TAG: &str =
+    r#"<script src="/client/app.js?v=20260705-access-lists"></script>"#;
+
+pub(crate) async fn product_client_handler(State(state): State<ServerState>) -> impl IntoResponse {
+    let mut html = include_str!("../product-client.html").to_owned();
+    if state.smoke_nip07_signer_secret.is_some() {
+        html = html.replace(
+            PRODUCT_CLIENT_APP_SCRIPT_TAG,
+            r#"<script>window.__FINITE_BRAIN_DISABLE_AUTOSTART__ = true;</script>
+    <script src="/client/app.js?v=20260705-access-lists"></script>
+    <script src="/client/smoke-nip07.js?v=20260705-access-lists"></script>"#,
+        );
+    }
+    ([(CACHE_CONTROL, PRODUCT_CLIENT_CACHE_CONTROL)], Html(html))
 }
 
 pub(crate) async fn product_client_css_handler() -> impl IntoResponse {
@@ -60,6 +69,41 @@ pub(crate) async fn product_client_js_handler() -> impl IntoResponse {
             (CACHE_CONTROL, PRODUCT_CLIENT_CACHE_CONTROL),
         ],
         include_str!("../product-client.js"),
+    )
+}
+
+pub(crate) async fn product_client_smoke_nip07_js_handler(
+    State(state): State<ServerState>,
+) -> Response {
+    let Some(secret) = state.smoke_nip07_signer_secret.as_deref() else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    (
+        [
+            (CONTENT_TYPE, "text/javascript; charset=utf-8"),
+            (CACHE_CONTROL, PRODUCT_CLIENT_CACHE_CONTROL),
+        ],
+        smoke_nip07_signer_script(secret),
+    )
+        .into_response()
+}
+
+fn smoke_nip07_signer_script(secret_hex: &str) -> String {
+    let secret_json = serde_json::to_string(secret_hex).expect("secret serializes");
+    format!(
+        r#"(() => {{
+  const client = window.FiniteBrainProductClient;
+  const secretHex = {secret_json};
+  if (!client) throw new Error("FiniteBrain Product Client did not load before smoke signer");
+  window.nostr = client.createLocalNip07ProviderFromSecret(secretHex);
+  const keypair = client.inviteUnwrapKeypairFromSecret(secretHex);
+  window.__FINITE_BRAIN_SMOKE_NIP07__ = {{
+    publicKeyHex: keypair.publicKeyHex,
+    npub: keypair.npub
+  }};
+  client.start();
+}})();
+"#
     )
 }
 

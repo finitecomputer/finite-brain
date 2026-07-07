@@ -1413,6 +1413,39 @@ const FiniteBrainProductClient = (() => {
     return new TextDecoder().decode(padded.slice(prefixLength, prefixLength + plaintextLength));
   }
 
+  function nip44Pad(plaintext) {
+    const plaintextBytes = new TextEncoder().encode(String(plaintext ?? ""));
+    const paddedLength = nip44PaddedLength(plaintextBytes.length);
+    let prefixLength;
+    if (plaintextBytes.length < 65536) {
+      prefixLength = 2;
+    } else {
+      prefixLength = 6;
+    }
+    const padded = new Uint8Array(prefixLength + paddedLength);
+    if (prefixLength === 2) {
+      padded[0] = (plaintextBytes.length >>> 8) & 0xff;
+      padded[1] = plaintextBytes.length & 0xff;
+    } else {
+      padded[2] = (plaintextBytes.length >>> 24) & 0xff;
+      padded[3] = (plaintextBytes.length >>> 16) & 0xff;
+      padded[4] = (plaintextBytes.length >>> 8) & 0xff;
+      padded[5] = plaintextBytes.length & 0xff;
+    }
+    padded.set(plaintextBytes, prefixLength);
+    return padded;
+  }
+
+  async function nip44EncryptWithSecret(inviteSecret, recipientHex, plaintext, options = {}) {
+    const nonce = options.nonceBytes || crypto.getRandomValues(new Uint8Array(32));
+    if (nonce.length !== 32) throw new Error("NIP-44 nonce must be 32 bytes");
+    const conversationKey = await nip44ConversationKey(inviteSecret, recipientHex);
+    const keys = await nip44MessageKeys(conversationKey, nonce);
+    const ciphertext = chacha20Xor(keys.chachaKey, keys.chachaNonce, nip44Pad(plaintext));
+    const mac = await hmacSha256(keys.hmacKey, concatBytes(nonce, ciphertext));
+    return bytesToBase64(concatBytes(Uint8Array.of(2), nonce, ciphertext, mac));
+  }
+
   async function nip44DecryptWithSecret(inviteSecret, senderHex, payload) {
     const value = String(payload || "");
     if (!value || value[0] === "#" || value.length < 132) throw new Error("NIP-44 payload is invalid");
@@ -1430,6 +1463,26 @@ const FiniteBrainProductClient = (() => {
 
   function inviteSecretDecryptAdapter(inviteSecret) {
     return (senderHex, ciphertext) => nip44DecryptWithSecret(inviteSecret, senderHex, ciphertext);
+  }
+
+  function createLocalNip07ProviderFromSecret(secretHex, options = {}) {
+    const keypair = inviteUnwrapKeypairFromSecret(secretHex);
+    return {
+      async getPublicKey() {
+        return keypair.publicKeyHex;
+      },
+      async signEvent(eventTemplate) {
+        return signEventWithInviteSecret(eventTemplate, secretHex, options);
+      },
+      nip44: {
+        async encrypt(peerHex, plaintext) {
+          return nip44EncryptWithSecret(secretHex, peerHex, plaintext);
+        },
+        async decrypt(peerHex, ciphertext) {
+          return nip44DecryptWithSecret(secretHex, peerHex, ciphertext);
+        },
+      },
+    };
   }
 
   function convertBits(data, fromBits, toBits, pad) {
@@ -6636,14 +6689,21 @@ const FiniteBrainProductClient = (() => {
   function defaultShareExpiryDateTimeLocal() {
     const date = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
     date.setSeconds(0, 0);
-    return date.toISOString().slice(0, 16);
+    return dateTimeLocalValue(date);
   }
 
   function dateTimeLocalFromIso(value) {
     const date = new Date(value);
     if (Number.isNaN(date.getTime())) throw new Error("Timestamp is invalid");
     date.setSeconds(0, 0);
-    return date.toISOString().slice(0, 16);
+    return dateTimeLocalValue(date);
+  }
+
+  function dateTimeLocalValue(date) {
+    const pad = (value) => String(value).padStart(2, "0");
+    return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(
+      date.getHours()
+    )}:${pad(date.getMinutes())}`;
   }
 
   function slugFromFolderName(name) {
@@ -8800,6 +8860,7 @@ const FiniteBrainProductClient = (() => {
     commandPaletteRows,
     contextMenuItemsForTarget,
     createClientProjection,
+    createLocalNip07ProviderFromSecret,
     createSessionKeyring,
     deriveSignerState,
     defaultVaultBootstrapFolderIds,
@@ -8827,6 +8888,7 @@ const FiniteBrainProductClient = (() => {
     initialVaultInvitationFolders,
     inviteUnwrapKeypairFromSecret,
     nip44DecryptWithSecret,
+    nip44EncryptWithSecret,
     markdownFromEditorElement,
     markdownPreviewBlocks,
     mergeSyncProjection,
