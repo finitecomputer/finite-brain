@@ -62,7 +62,7 @@ Integrate the email invite flow into the Product Client frontend end to end, the
 
 | Issue | Fixed point | Worker session | Commit | Review result | Checks |
 | --- | --- | --- | --- | --- | --- |
-| #84/#85 | prior local email invite commits | current thread | `4c8fdd3`, `78631b5`, `6a54cd4`, `0f99531` | pass: direct standards/spec review plus local CodeRabbit findings `0` | `node --check crates/finite-brain-server/src/product-client.js`; `node crates/finite-brain-server/src/product-client.test.js`; `node scripts/verify-obsidian-product-client.mjs`; `cargo test`; `cargo clippy --all-targets -- -D warnings`; `cargo build`; `git diff --check`; live browser smoke |
+| #84/#85 | prior local email invite commits | current thread | `4c8fdd3`, `78631b5`, `6a54cd4`, `392509a0795e24de01fb575fbe7959e44ba3a452` | pass: direct standards/spec review plus local CodeRabbit findings `0` | `node --check crates/finite-brain-server/src/product-client.js`; `node crates/finite-brain-server/src/product-client.test.js`; `node scripts/verify-obsidian-product-client.mjs`; `cargo test`; `cargo clippy --all-targets -- -D warnings`; `cargo build`; `git diff --check`; live browser smoke |
 
 ## Browser Smoke Evidence
 
