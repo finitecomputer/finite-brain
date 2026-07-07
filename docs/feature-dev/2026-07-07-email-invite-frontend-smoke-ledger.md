@@ -6,7 +6,7 @@
 - Loop: Feature Dev
 - Target repo: `finitecomputer/finite-brain`
 - Base branch: `staging` requested by loop; repository currently exposes `main` only locally/remotely.
-- Feature branch: pending branch-target decision; current local work is on `main`.
+- Feature branch: `feature/email-invite-frontend-smoke`
 - Human owner: plebdev
 - Started: 2026-07-07
 - Current status: PR open against `main`; local review, CodeRabbit, browser smoke, and CI passed; PR CodeRabbit fallback recorded
@@ -26,6 +26,7 @@ Integrate the email invite flow into the Product Client frontend end to end, the
 - Agent briefs: GitHub issues #84/#85
 - Review packets: `docs/feature-dev/2026-07-07-email-invite-frontend-smoke-review-packet.md`
 - Local CodeRabbit report: `docs/feature-dev/2026-07-07-local-coderabbit-email-invite-frontend-smoke.md`
+- PR CodeRabbit report: `docs/feature-dev/2026-07-07-pr-coderabbit-email-invite-frontend-smoke.md`
 - PR URL: https://github.com/finitecomputer/finite-brain/pull/86
 
 ## Commands
