@@ -238,39 +238,65 @@ assert.equal(client.hasOrganizationVaultControls({ kind: "personal" }), false);
 assert.equal(client.hasOrganizationVaultControls({ kind: "organization" }), true);
 assert.equal(client.showsCreateOrganizationControl({ kind: "personal" }), true);
 assert.equal(client.showsCreateOrganizationControl({ kind: "organization" }), false);
+const unresolvedOrgPeopleRows = client.vaultPeopleRows({
+  kind: "organization",
+  members: ["npub-admin", "npub-member"],
+  admins: ["npub-admin"],
+});
 assert.equal(
-  JSON.stringify(client.vaultPeopleRows({
-    kind: "organization",
-    members: ["npub-admin", "npub-member"],
-    admins: ["npub-admin"],
-  })),
+  JSON.stringify(unresolvedOrgPeopleRows.map(({ id, name, role, status, type, removable }) => ({
+    id,
+    name,
+    role,
+    status,
+    type,
+    removable,
+  }))),
   JSON.stringify([
     {
       id: "npub-admin",
-      name: "Email not resolved",
+      name: "npub-admin",
       role: "admin",
+      status: "No email or NIP-05 metadata loaded",
       type: "admin",
       removable: true,
     },
     {
       id: "npub-member",
-      name: "Email not resolved",
+      name: "npub-member",
       role: "member",
+      status: "No email or NIP-05 metadata loaded",
       type: "member",
       removable: true,
     },
   ])
 );
 assert.equal(
-  JSON.stringify(client.vaultPeopleRows({
-    kind: "personal",
-    ownerUserId: "npub-owner",
-  })),
+  JSON.stringify(unresolvedOrgPeopleRows[0].details.slice(0, 2)),
+  JSON.stringify([
+    { label: "Email / NIP-05", value: "Not resolved in this client" },
+    { label: "Public key", value: "npub-admin" },
+  ])
+);
+const unresolvedOwnerRows = client.vaultPeopleRows({
+  kind: "personal",
+  ownerUserId: "npub-owner",
+});
+assert.equal(
+  JSON.stringify(unresolvedOwnerRows.map(({ id, name, role, status, type, removable }) => ({
+    id,
+    name,
+    role,
+    status,
+    type,
+    removable,
+  }))),
   JSON.stringify([
     {
       id: "npub-owner",
-      name: "Email not resolved",
+      name: "npub-owner",
       role: "owner",
+      status: "No email or NIP-05 metadata loaded",
       type: "owner",
       removable: false,
     },
@@ -378,7 +404,7 @@ assert.equal(client.readerPageRows("general", draftPages)[0].label, "Draft Page"
     verifiedAt: "2026-07-06T00:00:00Z",
   });
   assert.equal(client.identityDisplay(authorNpub), "alice@example.com");
-  assert.equal(client.identityDisplay(otherNpub), "Email not resolved");
+  assert.equal(client.identityDisplay(otherNpub), client.shortKey(otherNpub));
   assert.equal(
     client.vaultPeopleRows({
       kind: "organization",
@@ -393,7 +419,7 @@ assert.equal(client.readerPageRows("general", draftPages)[0].label, "Draft Page"
       members: [authorNpub, otherNpub],
       admins: [authorNpub],
     })[1].name,
-    "Email not resolved"
+    client.shortKey(otherNpub)
   );
 
   const devGrant = {

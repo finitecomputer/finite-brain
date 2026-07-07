@@ -1659,6 +1659,78 @@ pre {
   letter-spacing: 0.5px;
 }
 
+.access-person-info-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 30px;
+  height: 30px;
+  margin-left: auto;
+  padding: 0;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: #8f8f8f;
+  cursor: pointer;
+  transition-duration: 150ms;
+  transition-property: background-color, color, transform;
+  transition-timing-function: cubic-bezier(0.2, 0, 0, 1);
+}
+
+.access-person-info-button .icon {
+  width: 15px;
+  height: 15px;
+}
+
+.access-person-info-button:hover,
+.access-person-info-button[aria-expanded="true"] {
+  background: rgba(255, 255, 255, 0.055);
+  color: #d6d2ff;
+}
+
+.access-person-info-button:not(:disabled):active {
+  transform: scale(0.96);
+}
+
+.access-person-detail-panel {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  flex: 1 1 100%;
+  gap: 5px 10px;
+  margin: 3px 0 2px 24px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.025);
+  box-shadow: var(--shadow-access-ring);
+}
+
+.access-person-detail-panel[hidden] {
+  display: none !important;
+}
+
+.access-person-detail-panel dt,
+.access-person-detail-panel dd {
+  margin: 0;
+  line-height: 1.35;
+}
+
+.access-person-detail-panel dt {
+  color: #8f8f8f;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.access-person-detail-panel dd {
+  min-width: 0;
+  color: #cfcfcf;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  font-size: 10px;
+  overflow-wrap: anywhere;
+}
+
 .access-remove-person {
   min-width: 40px;
   min-height: 40px;

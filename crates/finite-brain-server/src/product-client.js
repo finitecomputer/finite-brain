@@ -566,8 +566,47 @@ const FiniteBrainProductClient = (() => {
     return null;
   }
 
+  function identityMetadataForNpub(npub) {
+    const value = String(npub || "");
+    const identity = identityForNpub(value);
+    const email = identityEmailDisplay(identity);
+    const display = email || shortKey(value);
+    const status = email
+      ? "Email or NIP-05 metadata resolved"
+      : "No email or NIP-05 metadata loaded";
+    const details = [
+      {
+        label: "Email / NIP-05",
+        value: email || "Not resolved in this client",
+      },
+      {
+        label: "Public key",
+        value: identity?.npub || value || "-",
+      },
+    ];
+    if (identity?.hex) {
+      details.push({ label: "Hex key", value: identity.hex });
+    }
+    if (identity?.relays?.length) {
+      details.push({ label: "Relays", value: identity.relays.join(", ") });
+    }
+    if (identity?.verifiedAt) {
+      details.push({ label: "Verified", value: identity.verifiedAt });
+    }
+    return {
+      details,
+      display,
+      email,
+      npub: identity?.npub || value,
+      status,
+      tooltip: email
+        ? `${email}. Public key: ${shortKey(identity?.npub || value)}`
+        : `Showing public key fallback. ${status}.`,
+    };
+  }
+
   function identityDisplay(npub) {
-    return identityEmailDisplay(identityForNpub(npub)) || "Email not resolved";
+    return identityMetadataForNpub(npub).display;
   }
 
   async function resolveIdentityInputValue(input, message) {
@@ -5269,41 +5308,33 @@ const FiniteBrainProductClient = (() => {
 
   function vaultPeopleRows(metadata) {
     if (!metadata) return [];
+    const vaultPersonRow = (npub, role, type, removable) => {
+      const identity = identityMetadataForNpub(npub);
+      return {
+        details: identity.details,
+        id: npub,
+        name: identity.display,
+        npub: identity.npub,
+        role,
+        status: identity.status,
+        tooltip: identity.tooltip,
+        type,
+        removable,
+      };
+    };
     if (metadata.kind === "personal") {
       const owner = metadata.ownerUserId || metadata.owner_user_id || null;
-      return owner
-        ? [
-            {
-              id: owner,
-              name: accessPersonName(owner),
-              role: "owner",
-              type: "owner",
-              removable: false,
-            },
-          ]
-        : [];
+      return owner ? [vaultPersonRow(owner, "owner", "owner", false)] : [];
     }
     const rows = [];
     const admins = uniqueNpubs(metadata.admins || []);
     const members = uniqueNpubs(metadata.members || []);
     for (const admin of admins) {
-      rows.push({
-        id: admin,
-        name: accessPersonName(admin),
-        role: "admin",
-        type: "admin",
-        removable: true,
-      });
+      rows.push(vaultPersonRow(admin, "admin", "admin", true));
     }
     for (const member of members) {
       if (admins.includes(member)) continue;
-      rows.push({
-        id: member,
-        name: accessPersonName(member),
-        role: "member",
-        type: "member",
-        removable: true,
-      });
+      rows.push(vaultPersonRow(member, "member", "member", true));
     }
     return rows;
   }
@@ -5469,19 +5500,48 @@ const FiniteBrainProductClient = (() => {
       personInfo.appendChild(roleSpan);
       item.appendChild(personInfo);
 
-      if (!person.removable || !canManage) return;
-      const removeButton = document.createElement("button");
-      removeButton.className = "access-remove-person vault-person-action";
-      removeButton.type = "button";
-      removeButton.textContent = person.type === "admin" ? "Remove admin" : "Remove";
-      removeButton.addEventListener("click", () => {
-        const action = person.type === "admin" ? removeVaultAdminFromPanel : removeVaultMemberFromPanel;
-        action(person.id).catch((error) => {
-          state.lastError = error.message;
-          log("Failed to update Vault people.", { error: error.message });
-        });
+      const detailButton = document.createElement("button");
+      detailButton.className = "access-person-info-button";
+      detailButton.type = "button";
+      detailButton.title = person.tooltip;
+      detailButton.setAttribute("aria-expanded", "false");
+      detailButton.setAttribute("aria-label", `Show identity details for ${person.name}`);
+      detailButton.innerHTML =
+        '<svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9" /><path d="M12 11v5" /><path d="M12 8h.01" /></svg>';
+
+      const detailPanel = document.createElement("dl");
+      detailPanel.className = "access-person-detail-panel";
+      detailPanel.hidden = true;
+      for (const detail of person.details || []) {
+        const term = document.createElement("dt");
+        term.textContent = detail.label;
+        const value = document.createElement("dd");
+        value.textContent = detail.value;
+        detailPanel.appendChild(term);
+        detailPanel.appendChild(value);
+      }
+      detailButton.addEventListener("click", () => {
+        const isOpen = !detailPanel.hidden;
+        detailPanel.hidden = isOpen;
+        detailButton.setAttribute("aria-expanded", String(!isOpen));
       });
-      item.appendChild(removeButton);
+      item.appendChild(detailButton);
+
+      if (person.removable && canManage) {
+        const removeButton = document.createElement("button");
+        removeButton.className = "access-remove-person vault-person-action";
+        removeButton.type = "button";
+        removeButton.textContent = person.type === "admin" ? "Remove admin" : "Remove";
+        removeButton.addEventListener("click", () => {
+          const action = person.type === "admin" ? removeVaultAdminFromPanel : removeVaultMemberFromPanel;
+          action(person.id).catch((error) => {
+            state.lastError = error.message;
+            log("Failed to update Vault people.", { error: error.message });
+          });
+        });
+        item.appendChild(removeButton);
+      }
+      item.appendChild(detailPanel);
     });
   }
 
@@ -9023,6 +9083,7 @@ const FiniteBrainProductClient = (() => {
     shortKey,
     start,
     rememberIdentity,
+    identityMetadataForNpub,
     identityDisplay,
     visibleVaultOptions,
     vaultHealthBadges,
